@@ -553,6 +553,77 @@ func orphanedToolOutputs(body []byte) []byte {
 	return encoded
 }
 
+// pairToolItems mends a Responses request's tool exchange the way
+// pairToolMessages mends a Chat request's messages, for upstreams that
+// check the pairing on the chat form they turn a relayed /responses into —
+// volcengine's coding plan answers a lone function_call with 400 "An
+// assistant message with 'tool_calls' must be followed by tool messages
+// responding to each 'tool_call_id'" (#1341): a call with no answer later
+// in the input — an interrupted turn leaves its call pending — gets a
+// synthetic result right after itself, so the turn can go on. The other
+// mismatch, a result with no call, is orphanedToolOutputs' alone; a
+// result naming a call this input doesn't carry stays as it is.
+func pairToolItems(body []byte) []byte {
+	var q map[string]json.RawMessage
+	if json.Unmarshal(body, &q) != nil {
+		return body
+	}
+	var input []json.RawMessage
+	if json.Unmarshal(q["input"], &input) != nil {
+		return body
+	}
+	answered := map[string]bool{}
+	for _, raw := range input {
+		var item struct {
+			Type   string `json:"type"`
+			CallID string `json:"call_id"`
+		}
+		if json.Unmarshal(raw, &item) != nil {
+			continue
+		}
+		if (item.Type == "function_call_output" || item.Type == "custom_tool_call_output") && item.CallID != "" {
+			answered[item.CallID] = true
+		}
+	}
+	out := make([]json.RawMessage, 0, len(input)+1)
+	changed := false
+	for _, raw := range input {
+		var item struct {
+			Type   string `json:"type"`
+			CallID string `json:"call_id"`
+		}
+		if json.Unmarshal(raw, &item) != nil {
+			out = append(out, raw)
+			continue
+		}
+		switch item.Type {
+		case "function_call", "custom_tool_call":
+			out = append(out, raw)
+			if item.CallID != "" && !answered[item.CallID] {
+				kind := "function_call_output"
+				if item.Type == "custom_tool_call" {
+					kind = "custom_tool_call_output"
+				}
+				result, _ := marshalPlain(map[string]any{"type": kind, "call_id": item.CallID,
+					"output": "[The result of this tool call is unavailable: the turn was interrupted.]"})
+				out = append(out, result)
+				changed = true
+			}
+		default:
+			out = append(out, raw)
+		}
+	}
+	if !changed {
+		return body
+	}
+	q["input"], _ = marshalPlain(out)
+	encoded, err := marshalPlain(q)
+	if err != nil {
+		return body
+	}
+	return encoded
+}
+
 // mergeTurns joins consecutive messages of the same role, since the
 // Responses API splits an assistant turn into one item per part.
 func mergeTurns(msgs []Message) []Message {

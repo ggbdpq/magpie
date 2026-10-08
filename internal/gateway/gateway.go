@@ -2509,6 +2509,7 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 	// Native ChatGPT accounts accept standalone tool outputs themselves.
 	if from == provider.Responses && (p.Account == nil || p.Account.Agent != "codex") {
 		body = orphanedToolOutputs(body)
+		body = pairToolItems(body)
 	}
 	// every request to the provider goes through its own proxy, if it has
 	// one (#237)

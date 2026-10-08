@@ -899,9 +899,6 @@ func List(limit int) []Session {
 		}
 		return keys[i] < keys[j]
 	})
-	if len(keys) > limit {
-		keys = keys[:limit]
-	}
 	// every changed file, not just the latest sessions': the first read
 	// indexes them all in one run the page can show, and the stats read
 	// after it has nothing left to do
@@ -910,8 +907,13 @@ func List(limit int) []Session {
 	price := pricer()
 	out := []Session{}
 	for _, k := range keys {
+		// the limit counts sessions that assemble, not keys: an empty
+		// session newest by file mtime must not push real ones out
 		if s, ok := assemble(groups[k], price); ok {
 			out = append(out, s)
+			if len(out) == limit {
+				break
+			}
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Last.After(out[j].Last) })

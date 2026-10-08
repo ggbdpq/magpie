@@ -142,6 +142,29 @@ func TestList(t *testing.T) {
 	}
 }
 
+// The empty session newest by file mtime must not spend List's limit: with
+// limit 1 the newest nonempty session still comes back.
+func TestListLimitSkipsNewerEmptySession(t *testing.T) {
+	setup(t)
+	now := time.Now()
+	for _, f := range allFiles() {
+		mod := now.Add(-time.Hour)
+		if strings.HasPrefix(f.key, "claude:22222222-") {
+			mod = now
+		}
+		if err := os.Chtimes(f.path, mod, mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	Reset()
+	if got := List(0); len(got) != 2 {
+		t.Fatalf("fixture: got %d nonempty sessions, want 2", len(got))
+	}
+	if got := List(1); len(got) != 1 {
+		t.Fatalf("limit=1 returned %d nonempty sessions, want 1", len(got))
+	}
+}
+
 func TestIncremental(t *testing.T) {
 	claude, _ := setup(t)
 	path := filepath.Join(claude, "projects", "-work-app", "11111111-2222-3333-4444-555555555555.jsonl")

@@ -105,6 +105,11 @@ func fakeCoHome(t *testing.T) context.Context {
 	if err != nil {
 		t.Skip("no bun on PATH")
 	}
+	// the PATH bun may not have run on this machine yet: macOS checks a
+	// program before its first exec, and that check must not come out of
+	// the plugin work's one-minute context below (7ddea2c2 for the copied
+	// bun, #1306 for this one)
+	exec.Command(bun, "--version").Run()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)

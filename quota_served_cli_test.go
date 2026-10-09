@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -26,9 +25,11 @@ func TestQuotaJSONLastServedAt(t *testing.T) {
 	}
 	// no agent's CLI nor the keychain is asked: what answers is inert
 	bin := t.TempDir()
-	for _, name := range []string{"security", "secret-tool", "claude", "codex", "cursor-agent", "devin", "grok", "kiro-cli"} {
-		testenv.Program(t, filepath.Join(bin, name), "#!/bin/sh\nexit 1\n")
-	}
+	// StandIns writes the stand-ins and runs each once in the background,
+	// so the eight macOS first-exec checks overlap instead of serializing
+	// in this test: nothing has run before it in this binary, so the pool
+	// cannot serve them (#1306)
+	testenv.StandIns(bin, []string{"security", "secret-tool", "claude", "codex", "cursor-agent", "devin", "grok", "kiro-cli"})
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"balance":"7"}`) }))
 	t.Cleanup(up.Close)

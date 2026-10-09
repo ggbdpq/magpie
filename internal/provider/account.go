@@ -854,8 +854,19 @@ func codexAccount(home string) (Provider, bool) {
 		return Provider{}, false
 	}
 	id := jwtClaims(a.Tokens.IDToken)
+	user := codexUser(id)
+	// the seat in use goes by its saved name (codexName's): two Team seats
+	// of one email read alike by codexUser's alone, and the one in use
+	// would otherwise wear the first seat's name — and answer for its
+	// allowance in the routing page (#1424)
+	for _, l := range Logins("codex") {
+		if l.Active && strings.HasPrefix(strings.ToLower(l.User), strings.ToLower(user)) {
+			user = l.User
+			break
+		}
+	}
 	acct := &Account{Agent: "codex", Stream: true,
-		User: codexUser(id), Plan: claimString(id, "https://api.openai.com/auth", "chatgpt_plan_type")}
+		User: user, Plan: claimString(id, "https://api.openai.com/auth", "chatgpt_plan_type")}
 	if acct.User == "" {
 		acct.User = "ChatGPT"
 	}

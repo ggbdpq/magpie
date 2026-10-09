@@ -166,3 +166,28 @@ func TestCodexWorkspacesSavedAlike(t *testing.T) {
 		t.Fatalf("after removing %s: %v, in use %q", other, users, now)
 	}
 }
+
+// The seat Codex is signed in to goes by its own saved name: two Team
+// seats of one email read alike by codexUser's alone ("email · Team"),
+// and the account magpie reads for the one in use would otherwise wear
+// the first seat's name — and answer for its allowance in the routing
+// page (#1424).
+func TestCodexWorkspaceInUseKeepsItsName(t *testing.T) {
+	home := signIn(t)
+	codexWorkspaceSignIn(t, home, "me@example.com", "ws-one", "r-one")
+	rememberLogins(true)
+	codexWorkspaceSignIn(t, home, "me@example.com", "ws-two", "r-two")
+	rememberLogins(true)
+
+	p, ok := codexAccount(home)
+	if !ok {
+		t.Fatal("no codex account")
+	}
+	_, active := loginUsers(Logins("codex"))
+	if ws, _ := workspaceOf(t, active); ws != "ws-two" {
+		t.Fatalf("in use: %q is %s", active, ws)
+	}
+	if p.Account.User != active {
+		t.Fatalf("the seat in use reads %q; its saved name is %q", p.Account.User, active)
+	}
+}

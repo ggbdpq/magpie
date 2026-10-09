@@ -657,7 +657,14 @@ func modelObject(e provider.Entry) map[string]any {
 		m["context_window"], m["context_length"], m["max_input_tokens"] = e.Context, e.Context, e.Context
 	}
 	if e.Output > 0 {
-		m["max_output_tokens"] = e.Output
+		// kept within the window published beside it, as the agents' own
+		// limit is (#338): models.dev lists some models' output above the
+		// window the live backend reports (#1438)
+		if e.Context > 0 && e.Output > e.Context {
+			m["max_output_tokens"] = e.Context
+		} else {
+			m["max_output_tokens"] = e.Output
+		}
 	}
 	// for another magpie that has this one as its provider (remote-magpie):
 	// the APIs a request for the model goes on as it is, so it sends each

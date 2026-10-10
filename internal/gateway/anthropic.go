@@ -275,12 +275,13 @@ func withoutThinkingOff(body []byte) ([]byte, bool) {
 
 // claudeVersion finds the family's version in a Claude model id however a
 // relay spells it: claude-opus-4-6, claude-opus-5, anthropic.claude-sonnet-4.6-v1,
-// a relay's opus-5.5, or the old order, claude-3-7-sonnet.
-var claudeVersion = regexp.MustCompile(`(?:^|[^a-z0-9])(?:claude-)?(?:opus|sonnet|haiku)-(\d{1,2})(?:[-.](\d{1,2}))?(?:[^0-9]|$)|claude-(\d+)(?:[-.](\d))?-(?:opus|sonnet|haiku)`)
+// a relay's opus-5.5, claude-fable-5-1, or the old order, claude-3-7-sonnet.
+var claudeVersion = regexp.MustCompile(`(?:^|[^a-z0-9])(?:claude-)?(?:opus|sonnet|haiku|fable|mythos)-(\d{1,2})(?:[-.](\d{1,2}))?(?:[^0-9]|$)|claude-(\d+)(?:[-.](\d))?-(?:opus|sonnet|haiku)`)
 
 // adaptiveOnly is a Claude model from 4.6 on, which thinks adaptively:
 // claude-opus-5-5 refuses thinking.type=enabled with a budget ("requires
-// adaptive thinking"), so how hard it thinks goes in output_config.effort.
+// adaptive thinking"), as do Fable and Mythos 5 and 5.1, whose adaptive
+// thinking is always on, so how hard it thinks goes in output_config.effort.
 func adaptiveOnly(model string) bool {
 	m := claudeVersion.FindStringSubmatch(strings.ToLower(model))
 	if m == nil {

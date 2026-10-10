@@ -676,6 +676,13 @@ func register(ctx context.Context, m meta, redirect string) (id, secret, method 
 		return "", "", "", errors.New("the server's sign-in registered magpie but gave it no client id")
 	}
 	if out.Method != "" {
+		// the server may register magpie for another of the methods it
+		// supports than the one asked for (RFC 7591's registration
+		// response): one magpie can't send would fail the code exchange
+		// after the browser round trip, so it is said here instead
+		if !contains([]string{"none", "client_secret_post", "client_secret_basic"}, out.Method) {
+			return "", "", "", fmt.Errorf("the server's sign-in registered magpie for %s, which magpie can't do", out.Method)
+		}
 		method = out.Method
 	}
 	if out.Secret == "" {

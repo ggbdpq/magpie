@@ -203,6 +203,103 @@ func TestResponsesUpstreamEndedShort(t *testing.T) {
 	}
 }
 
+// relayUpstreamWhole serves a translated request's model from an upstream
+// answering with events and asks for the reply not streamed, as a client
+// that reads one reply whole does. kind "resp" serves it on Responses,
+// anything else on Anthropic.
+func relayUpstreamWhole(t *testing.T, kind, model string, events ...string) (int, string) {
+	t.Helper()
+	fresh(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, ev := range events {
+			io.WriteString(w, "data: "+ev+"\n\n")
+		}
+	}))
+	t.Cleanup(up.Close)
+	p := provider.Provider{ID: "up", Name: "UP", Key: "k", Models: []string{model}}
+	if kind == "resp" {
+		p.Responses = up.URL + "/v1"
+	} else {
+		p.Anthropic = up.URL
+	}
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	return post(t, "/v1/chat/completions", `{"model":"up/`+model+`","messages":[{"role":"user","content":"hi"}]}`)
+}
+
+// A reply cut short reaches a non-streaming client as it reaches a
+// streaming one: as the error, not as the whole answer the cut masquerades
+// as. Every translated reply's upstream is a stream, so an Anthropic one
+// with no stop_reason and no message_stop, or a Responses one with no
+// response.completed, would otherwise be rendered as the client's whole
+// reply, a few words in.
+func TestNonStreamEndedShort(t *testing.T) {
+	const anthTextStart = `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`
+
+	for _, tt := range []struct {
+		name   string
+		path   string
+		model  string
+		events []string
+	}{
+		{"anthropic", "", "grok-4", []string{anthStart("grok-4", 5), anthTextStart, anthText("Let me look at the")}},
+		{"responses", "resp", "gpt-6.1", []string{
+			`{"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}`,
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","content":[]}}`,
+			`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"Let me look at the"}`,
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			code, body := relayUpstreamWhole(t, tt.path, tt.model, tt.events...)
+			if code != http.StatusBadGateway || !strings.Contains(body, "ended before it was complete") {
+				t.Errorf("a cut reply served whole (status %d): %s", code, body)
+			}
+		})
+	}
+	// a reply the upstream said its last event of is served as it came
+	code, body := relayUpstreamWhole(t, "", "grok-4", anthStart("grok-4", 5), anthTextStart, anthText("Done."), relayStop("end_turn"), relayEnd)
+	if code != 200 || !strings.Contains(body, "Done.") || strings.Contains(body, "ended before") {
+		t.Errorf("status %d: %s", code, body)
+	}
+	code, body = relayUpstreamWhole(t, "resp", "gpt-6.1",
+		`{"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}`,
+		`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","content":[]}}`,
+		`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"Done."}`,
+		`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"Done."}]}}`,
+		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":5,"output_tokens":1}}}`)
+	if code != 200 || !strings.Contains(body, "Done.") || strings.Contains(body, "ended before") {
+		t.Errorf("status %d: %s", code, body)
+	}
+
+	// nothing of the cut reply was sent, so a group's next member answers
+	fresh(t)
+	for id, events := range map[string][]string{
+		"a": {`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"Let me look at the"}`},
+		"b": {`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"From b."}`,
+			`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[]}}`},
+	} {
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			io.Copy(io.Discard, r.Body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			for _, ev := range events {
+				io.WriteString(w, "data: "+ev+"\n\n")
+			}
+		}))
+		t.Cleanup(up.Close)
+		if err := provider.Save(provider.Provider{ID: id, Name: id, Key: "k", Models: []string{"m"}, Responses: up.URL + "/v1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refusalGroup(t, "a/m", "b/m")
+	code, body = post(t, "/v1/chat/completions", `{"model":"G","messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 || !strings.Contains(body, "From b.") {
+		t.Errorf("the group's next member not asked (status %d): %s", code, body)
+	}
+}
+
 // The upstream's own stop reason is kept with the request, for a reply
 // that ended too soon to be told apart by: the relay's word, not magpie's.
 func TestRelayStopReasonRecorded(t *testing.T) {

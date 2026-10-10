@@ -128,3 +128,46 @@ func TestCodexStaleCopiesSayWhichIsLeft(t *testing.T) {
 		t.Fatalf("Stale: %d, want 6 (one app, not one per process)", n)
 	}
 }
+
+// lychjck's #1461: the managed daemon keeps a long-lived helper next to it
+// (codex app-server daemon pid-update-loop) that a daemon restart doesn't
+// end and that reads no list. It matches the codex startsWith pattern and
+// no --managed-daemon, so it was counted as a "cli" copy from before
+// magpie's change: "A Codex in a terminal" that doesn't exist, forever,
+// and only killing the process cleared the row. A daemon helper is no
+// copy to reopen.
+func TestCodexDaemonHelperIsNoStaleCopy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("CODEX_HOME", "")
+	dir := filepath.Join(home, ".codex")
+	os.MkdirAll(dir, 0o755)
+	cfg := filepath.Join(dir, "config.toml")
+	os.WriteFile(cfg, []byte("model = \"gpt-6.1-sol\"\nopenai_base_url = \"http://127.0.0.1:3425/backend-api/codex\"\n"), 0o600)
+	then := time.Now().Add(-2 * time.Hour)
+	os.Chtimes(cfg, then, then)
+
+	was := running
+	t.Cleanup(func() { running = was })
+	running = func(string) []runningProc {
+		return []runningProc{
+			// the helper, from before magpie's change
+			{3 * time.Hour, "/opt/homebrew/bin/codex app-server daemon pid-update-loop"},
+		}
+	}
+	if got := codex(home).StaleCopies(); len(got) != 0 {
+		t.Fatalf("the daemon's helper counted a stale copy: %+v, want none", got)
+	}
+	// a terminal Codex from before is still one
+	running = func(string) []runningProc {
+		return []runningProc{
+			{3 * time.Hour, "/opt/homebrew/bin/codex"},
+		}
+	}
+	if n := codex(home).Stale(); n != 1 {
+		t.Fatalf("a terminal codex: %d stale, want 1", n)
+	}
+}

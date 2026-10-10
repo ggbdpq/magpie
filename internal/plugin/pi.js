@@ -480,7 +480,8 @@ async function answer(events, { model, stream, res, said }) {
 
 // load loads the pi plugins in list ({spec, target}) and gives, for each,
 // the hooks of the providers it registers, or why it couldn't load.
-// h is what host.js lends: readAuth, changeAuth, keyFor, send, directory.
+// h is what host.js lends: readAuth, changeAuth, keyFor, send, directory,
+// writeDurable.
 export async function load(h, list) {
   const home = path.join(h.directory, "pi")
   // pi keeps its settings and caches here, not in the user's ~/.pi. This
@@ -572,9 +573,10 @@ export async function load(h, list) {
     }
     if (file) {
       try {
-        const tmp = `${authFile}.${process.pid}.tmp`
-        fs.writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 })
-        fs.renameSync(tmp, authFile)
+        // flushed before it is renamed in, as plugin-auth.json is (#1505):
+        // a machine that went down between the two left every pi account
+        // gone, and the next mirror would write the rest after it
+        h.writeDurable(authFile, Buffer.from(JSON.stringify(file, null, 2)))
       } catch (e) {
         h.send({ event: "log", level: "error", message: `pi: auth.json: ${e?.message ?? e}` })
       }

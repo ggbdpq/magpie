@@ -1021,7 +1021,7 @@ async function loadPlugins(list) {
   }
   const pis = pi ? list.filter((p) => pi.isPi(p.target)) : []
   if (pis.length) {
-    const h = { readAuth, changeAuth, keyFor, send, directory }
+    const h = { readAuth, changeAuth, keyFor, send, directory, writeDurable }
     const got = await pi.load(h, pis).catch((e) => pis.map((p) => ({ spec: p.spec, error: String(e?.stack ?? e) })))
     for (const r of got) {
       for (const x of r.hooks ?? []) hooks.push(x)

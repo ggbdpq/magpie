@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/mcpauth"
 )
@@ -40,6 +41,16 @@ func through(s *Server, base string) *Server {
 			c.Headers = map[string]string{}
 		}
 		c.Headers[k] = v
+	}
+	if k := agent.KeyAt(base); k != gateway.Token {
+		// from another machine (a WSL distro under NAT) the gateway refuses
+		// a call without an enabled key, with a 401 the agent would take
+		// for the server asking it to sign in; the relay drops this
+		// Authorization for magpie's token
+		if c.Headers == nil {
+			c.Headers = map[string]string{}
+		}
+		c.Headers["Authorization"] = "Bearer " + k
 	}
 	return &c
 }

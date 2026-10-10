@@ -20,6 +20,10 @@ func keyAt(gw string) string {
 	return gateway.Token
 }
 
+// KeyAt is keyAt, for what else magpie gives an agent that reaches the
+// gateway at gw (the library's MCP servers relayed through it).
+func KeyAt(gw string) string { return keyAt(gw) }
+
 // gwKey is keyAt for the agent at p.
 func (p place) gwKey() string { return keyAt(p.gw()) }
 

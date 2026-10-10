@@ -3,9 +3,11 @@ package netproxy
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -189,5 +191,46 @@ func TestWith(t *testing.T) {
 	}
 	if env := EnvWith("", []string{"PATH=/bin"}); get(env, "HTTPS_PROXY") != "http://127.0.0.1:6152" {
 		t.Fatalf("follow env: %v", env)
+	}
+}
+
+// A provider asked with no proxy of its own goes by the global one, not by
+// a choice the ctx already held: a turn served by a provider with its own
+// ("direct", say) asks the searcher with that turn's ctx, and the
+// searcher's requests would otherwise go by the turn's choice — #1522,
+// where the search asked of a Codex account (none configured) went direct
+// to chatgpt.com while every other request took the system's proxy.
+func TestSearcherWithNoProxyOfItsOwnDropsTheChoiceTheContextHeld(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	settings.Save(settings.Settings{Proxy: "127.0.0.1:7890"})
+	turn := With(context.Background(), "direct") // the turn's provider goes by its own
+	req := (&http.Request{URL: &url.URL{Scheme: "https", Host: "chatgpt.com"}}).WithContext(With(turn, ""))
+	if p, _ := Func(req); p == nil || p.String() != "http://127.0.0.1:7890" {
+		t.Fatalf("the searcher's request goes by %v, want the global proxy", p)
+	}
+}
+
+// The same through a transport Dispatch made: the searcher's request
+// dials the proxy, never the vendor.
+func TestSearchersRequestDialsTheProxyNotTheVendor(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var hits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+	}))
+	defer proxy.Close()
+	settings.Save(settings.Settings{Proxy: proxy.URL})
+	turn := With(context.Background(), "direct")
+	req, err := http.NewRequestWithContext(With(turn, ""), http.MethodGet, "http://vendor.example/x", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Dispatch(&http.Transport{Proxy: Func}).RoundTrip(req)
+	if err != nil {
+		t.Fatalf("through the proxy: %v", err)
+	}
+	res.Body.Close()
+	if hits.Load() != 1 {
+		t.Fatalf("the proxy saw %d requests, want 1", hits.Load())
 	}
 }

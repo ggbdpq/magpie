@@ -77,15 +77,17 @@ func Held(ctx context.Context) error {
 
 // With is ctx for requests made on behalf of one provider, whose own proxy
 // is choice (issue #237: Codex through a proxy, a vendor at home without):
-// "" follows the global one (ctx is returned as it is), "direct" goes
-// through none, anything else is the proxy's address (http://, https://,
-// socks5://; host:port means http). Requests made with it through Func,
-// or through a transport Dispatch made, take that proxy.
+// "" follows the global one, dropping any choice the ctx held — a request
+// for one provider must not go by the choice of the one whose turn it was
+// asked in (#1522: a search asked of a searcher without a proxy of its own
+// went by the "direct" of the provider whose answer had needed it, and
+// dialled the vendor while every other request took the system's proxy),
+// "direct" goes through none, anything else is the proxy's address
+// (http://, https://, socks5://; host:port means http). Requests made with
+// it through Func, or through a transport Dispatch made, take that proxy.
 func With(ctx context.Context, choice string) context.Context {
-	if choice = strings.TrimSpace(choice); choice == "" {
-		return ctx
-	}
-	return context.WithValue(ctx, choiceKey{}, choice)
+	choice = strings.TrimSpace(choice)
+	return context.WithValue(ctx, choiceKey{}, &choice)
 }
 
 // Choice is the proxy ctx names (With), "" when it names none — for a CLI
@@ -96,8 +98,11 @@ func choiceOf(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	c, _ := ctx.Value(choiceKey{}).(string)
-	return c
+	c, _ := ctx.Value(choiceKey{}).(*string)
+	if c == nil {
+		return ""
+	}
+	return *c
 }
 
 // forChoice is the proxy a provider's own choice names; nil for "direct".

@@ -134,6 +134,75 @@ func TestRelayStreamEndedShort(t *testing.T) {
 	}
 }
 
+// relayResponses serves a translated request's model from a Responses
+// upstream answering with events, each a data line, and returns the Chat
+// stream magpie made of it.
+func relayResponses(t *testing.T, events ...string) string {
+	t.Helper()
+	var raw strings.Builder
+	for _, ev := range events {
+		raw.WriteString("data: " + ev + "\n\n")
+	}
+	return relayResponsesRaw(t, raw.String())
+}
+
+// relayResponsesRaw is relayResponses with the upstream's stream as it is
+// written, event lines and all.
+func relayResponsesRaw(t *testing.T, raw string) string {
+	t.Helper()
+	fresh(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, raw)
+	}))
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{ID: "up", Name: "UP", Key: "k", Models: []string{"gpt-6.1"}, Responses: up.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	code, body := post(t, "/v1/chat/completions", `{"model":"up/gpt-6.1","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 {
+		t.Fatalf("status %d: %s", code, body)
+	}
+	return body
+}
+
+// A Responses stream that stops with no response.completed is a reply cut
+// short, as an Anthropic one with no message_stop is: the client is told
+// so rather than handed a finished one (the passthrough's word for it,
+// which the translated path gave only Anthropic's streams).
+func TestResponsesUpstreamEndedShort(t *testing.T) {
+	body := relayResponses(t,
+		`{"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}`,
+		`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","content":[]}}`,
+		`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"Let me look at the"}`)
+	if chatFinish(body) == "stop" && !strings.Contains(body, "ended before it was complete") {
+		t.Errorf("a cut reply finished as whole: %s", body)
+	}
+	if !strings.Contains(body, "ended before it was complete") {
+		t.Errorf("no error for the cut reply: %s", body)
+	}
+	// a stream whose response.completed came said it was done
+	body = relayResponses(t,
+		`{"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}`,
+		`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"Done."}]}}`,
+		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":5,"output_tokens":1}}}`)
+	if got := chatFinish(body); got != "stop" || strings.Contains(body, "ended before") {
+		t.Errorf("finish_reason %q: %s", got, body)
+	}
+	// and as the passthrough counts a stream's end: a [DONE] after the
+	// reply, or the event's name where its data names no type
+	delta := "data: " + `{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"Done."}` + "\n\n"
+	for name, raw := range map[string]string{
+		"[DONE]":     delta + "data: [DONE]\n\n",
+		"event name": delta + "event: response.completed\ndata: " + `{"response":{"id":"resp_1","output":[]}}` + "\n\n",
+	} {
+		if body := relayResponsesRaw(t, raw); strings.Contains(body, "ended before") {
+			t.Errorf("%s: a stream the passthrough counts whole was told cut short: %s", name, body)
+		}
+	}
+}
+
 // The upstream's own stop reason is kept with the request, for a reply
 // that ended too soon to be told apart by: the relay's word, not magpie's.
 func TestRelayStopReasonRecorded(t *testing.T) {

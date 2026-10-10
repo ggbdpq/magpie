@@ -20,8 +20,9 @@ import (
 var versionTail = regexp.MustCompile(`(?:[-_@:](?:\d{4}-\d{2}-\d{2}|\d{2}-\d{2}|\d{6,8}|\d{3,4}|v\d+:\d+|latest|preview|exp))+$`)
 
 // vendorDot is Bedrock's region and maker before a model's name
-// (us.anthropic.claude-…).
-var vendorDot = regexp.MustCompile(`^(?:[a-z]{2,4}\.)?(?:anthropic|amazon|meta|mistral|cohere|ai21|deepseek|qwen|openai|google|moonshotai|minimax|zai)\.`)
+// (us.anthropic.claude-…), the geography of an inference profile as
+// catalog's bedrockGeos has them: global. and us-gov. among them.
+var vendorDot = regexp.MustCompile(`^(?:(?:global|us-gov|[a-z]{2,4})\.)?(?:anthropic|amazon|meta|mistral|cohere|ai21|deepseek|qwen|openai|google|moonshotai|minimax|zai)\.`)
 
 // contextTail is what Claude Code writes after a model's name for the size of
 // its context: claude-opus-5[1m].

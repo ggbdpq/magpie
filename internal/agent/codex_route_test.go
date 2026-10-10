@@ -381,3 +381,21 @@ func TestCodexSyncPutsProviderTableBack(t *testing.T) {
 		t.Fatalf("own model:\n%s", cfg)
 	}
 }
+
+// #1530: Codex registers a model's fast mode from its service_tiers, and
+// the static magpie-models.json is built from magpieModels — which didn't
+// carry OwnTier, so a standalone Codex got no tiers and no /fast.
+func TestMagpieModelsCarriesOwnTier(t *testing.T) {
+	_, _ = codexHome(t, `{"tokens":{"access_token":"x","id_token":"x.e30.x"}}`,
+		"model = \"gpt-5.5\"\n")
+	for _, m := range magpieModels("codex") {
+		if m.ID != "fake/m1" {
+			continue
+		}
+		if !m.OwnTier {
+			t.Fatal("OwnTier not carried into magpieModels")
+		}
+		return
+	}
+	t.Fatal("fake/m1 is not in magpie's catalog")
+}

@@ -112,6 +112,11 @@ func magpieModels(agent string) []catalog.Model {
 	st, find := settings.Load(), provider.GroupFinder()
 	for i, e := range shown {
 		m := catalog.Model{ID: e.ID, Name: labels[i], Provider: firstOf(e.Provider.Catalogs()), Efforts: e.Efforts, Images: e.Images || seen, ImageInput: e.ImageInput, Context: e.Context, Output: e.Output, AgentsV2: e.AgentsV2, Reasoning: e.Reasoning}
+		// a provider the user added by its address is sent the tier Codex
+		// asks for as it is — the static model file needs it for Codex to
+		// register the model's fast mode (#1530), as provider.codexListed
+		// carries for the dynamic one
+		m.OwnTier = e.Group == "" && e.Provider.Preset == "" && e.Provider.Account == nil && e.Provider.ID != ""
 		// where Codex and Claude Code compact it (#876): a threshold the
 		// user set on the model or on its provider, else the one for every
 		// model, which codexcat answers from the settings it is given

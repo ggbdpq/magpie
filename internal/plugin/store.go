@@ -190,12 +190,17 @@ func cloneJSON(v any) any {
 // writeWhole writes b to p by a rename, so a magpie or the host reading
 // p meanwhile reads the old file or the new one, never one half-written;
 // read back with steady.ReadFile, which waits out the rename on Windows.
+// The temp file is flushed before the rename: a machine that goes down
+// between the two leaves the file at its full length, zeroed (#1505).
 func writeWhole(p string, b []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(p), filepath.Base(p)+".*")
 	if err != nil {
 		return err
 	}
 	_, err = f.Write(b)
+	if err == nil {
+		err = f.Sync()
+	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

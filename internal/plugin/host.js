@@ -550,7 +550,16 @@ function readAuth() {
 function writeAuth(all) {
   fs.mkdirSync(path.dirname(authPath), { recursive: true })
   const tmp = authPath + ".tmp-" + process.pid
-  fs.writeFileSync(tmp, JSON.stringify(all, null, 2) + "\n", { mode: 0o600 })
+  // written and flushed before the rename: a machine that goes down
+  // between the two leaves plugin-auth.json at its full length with
+  // every byte zeroed, and every sign-in with it (#1505)
+  const f = fs.openSync(tmp, "w", 0o600)
+  try {
+    fs.writeSync(f, JSON.stringify(all, null, 2) + "\n")
+    fs.fsyncSync(f)
+  } finally {
+    fs.closeSync(f)
+  }
   // and a file held open by a reader refuses to be renamed over
   for (let i = 0; ; i++) {
     try {

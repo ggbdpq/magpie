@@ -256,7 +256,11 @@ func writeLogins(ls []savedLogin) error {
 }
 
 // writePrivate replaces a file readable by the user alone, atomically, so
-// an agent reading it at that moment sees either version, never half.
+// an agent reading it at that moment sees either version, never half. The
+// temp file is flushed to the disk before the rename: a rename is atomic
+// in the file system's metadata, but the data behind it reaches the disk
+// later, and a machine that goes down in between leaves the file at its
+// full length with every byte zeroed (#1505).
 func writePrivate(path string, b []byte) error {
 	defer filememo.Forget()        // read again, where a request holds it
 	path, err := edit.Target(path) // a symlink stays, its target written
@@ -276,6 +280,10 @@ func writePrivate(path string, b []byte) error {
 		return err
 	}
 	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		return err
 	}

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -233,6 +234,7 @@ func TestZedToolResultSaysIsError(t *testing.T) {
 		t.Fatal(err)
 	}
 	var errs []any
+	var texts []string
 	for _, m := range got.Messages {
 		for _, b := range m.Content {
 			if b["type"] == "tool_result" {
@@ -242,12 +244,23 @@ func TestZedToolResultSaysIsError(t *testing.T) {
 				}
 				errs = append(errs, v)
 			}
+			if b["type"] == "text" {
+				if s, ok := b["text"].(string); ok {
+					texts = append(texts, s)
+				}
+			}
 		}
 	}
 	if !bytes.Contains(raw, []byte(`12345678901234567890`)) {
 		t.Errorf("a tool input number changed: %s", raw)
 	}
-	if len(errs) != 2 || errs[0] != false || errs[1] != true {
+	// toolu_2's result answers no call in the request, so it goes out as
+	// the text it said (pairToolBlocks), where the cloud refuses a result
+	// with no call as Anthropic does; the one real result keeps is_error
+	if len(errs) != 1 || errs[0] != false {
 		t.Errorf("is_error: %v in %s", errs, raw)
+	}
+	if !slices.Contains(texts, "no") {
+		t.Errorf("what the lost result said is not kept: %v in %s", texts, raw)
 	}
 }

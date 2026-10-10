@@ -639,6 +639,16 @@ func imageBlock(p Part) aBlock {
 	return b
 }
 
+// aMessage is one message of a request built for a Messages upstream.
+type aMessage struct {
+	Role    string   `json:"role"`
+	Content []aBlock `json:"content"`
+}
+
+// interruptedTool is what an unanswered call gets, as pairToolMessages and
+// pairToolItems make for the Chat and Responses paths.
+const interruptedTool = "[The result of this tool call is unavailable: the turn was interrupted.]"
+
 // buildAnthropic renders a request for an Anthropic-style upstream.
 func buildAnthropic(r *Request, model string) []byte {
 	if r.Format != nil && r.Format.schema() == nil {
@@ -646,11 +656,7 @@ func buildAnthropic(r *Request, model string) []byte {
 		// asked for in words
 		r = r.inSystem()
 	}
-	type msg struct {
-		Role    string   `json:"role"`
-		Content []aBlock `json:"content"`
-	}
-	var msgs []msg
+	var msgs []aMessage
 	push := func(role string, blocks []aBlock) {
 		if len(blocks) == 0 {
 			return
@@ -659,7 +665,7 @@ func buildAnthropic(r *Request, model string) []byte {
 			msgs[n-1].Content = append(msgs[n-1].Content, blocks...)
 			return
 		}
-		msgs = append(msgs, msg{Role: role, Content: blocks})
+		msgs = append(msgs, aMessage{Role: role, Content: blocks})
 	}
 	for _, m := range r.Messages {
 		var results, rest []aBlock
@@ -706,6 +712,10 @@ func buildAnthropic(r *Request, model string) []byte {
 		}
 		push(role, append(results, rest...))
 	}
+	// a conversation a client left with its exchange broken — a call whose
+	// turn was interrupted, a result whose call it dropped — is mended, as
+	// the Chat and Responses paths mend theirs, where Anthropic refuses it
+	msgs = pairToolBlocks(msgs)
 	// Anthropic caches a prompt only up to a block marked for it, which a
 	// request from another API (Codex's, a Chat client's) never has: the
 	// conversation so far is marked at its last block, so the next turn,
@@ -822,6 +832,101 @@ func buildAnthropic(r *Request, model string) []byte {
 	}
 	b, _ := json.Marshal(out)
 	return b
+}
+
+// pairToolBlocks mends the tool exchange of a request built for a Messages
+// upstream, as pairToolMessages does for a Chat one (#554) and
+// pairToolItems for a relayed Responses request (#1341): Anthropic refuses
+// a tool_use the next message's tool_results don't answer ("`tool_use` ids
+// were found without `tool_result` blocks immediately after") and a
+// tool_result naming a call it never saw ("unexpected `tool_use_id` found
+// in `tool_result` blocks") — an interrupted turn or a client that dropped
+// its calls leaves both behind, and a relay serving Claude over Messages
+// passes the refusal on. A call left unanswered gets a synthetic result in
+// the user message that follows, or one of its own where none does; an
+// answer to no call becomes a text block, keeping what it said. A
+// well-formed exchange is built exactly as it was.
+func pairToolBlocks(msgs []aMessage) []aMessage {
+	out := make([]aMessage, 0, len(msgs))
+	var pending []string          // the calls of the assistant message in hand
+	open := map[string]bool{}     // which of them stand
+	answered := map[string]bool{} // pending calls a result answered
+
+	// synthetic is a call's missing result
+	synthetic := func(id string) aBlock {
+		c, _ := json.Marshal(interruptedTool)
+		return aBlock{Type: "tool_result", ToolUseID: id, Content: c, IsError: true}
+	}
+	// closeExchange answers the calls still open and ends the exchange
+	closeExchange := func() {
+		var blocks []aBlock
+		for _, id := range pending {
+			if !answered[id] {
+				blocks = append(blocks, synthetic(id))
+			}
+		}
+		if len(blocks) > 0 {
+			out = append(out, aMessage{Role: "user", Content: blocks})
+		}
+		pending, open, answered = nil, map[string]bool{}, map[string]bool{}
+	}
+	for _, m := range msgs {
+		if m.Role == "assistant" {
+			closeExchange()
+			for _, b := range m.Content {
+				if b.Type == "tool_use" {
+					pending = append(pending, b.ID)
+					open[b.ID] = true
+				}
+			}
+			out = append(out, m)
+			continue
+		}
+		var kept, rest []aBlock
+		for _, b := range m.Content {
+			if b.Type != "tool_result" {
+				rest = append(rest, b)
+				continue
+			}
+			if !open[b.ToolUseID] {
+				// answers no call of the exchange in hand — one another
+				// request carried, that closed already, or never there
+				rest = append(rest, resultSaid(b)...)
+				continue
+			}
+			if answered[b.ToolUseID] {
+				continue // a second answer: the first stands
+			}
+			answered[b.ToolUseID] = true
+			kept = append(kept, b)
+		}
+		for _, id := range pending {
+			if !answered[id] {
+				kept = append(kept, synthetic(id))
+			}
+		}
+		out = append(out, aMessage{Role: "user", Content: append(kept, rest...)})
+		pending, open, answered = nil, map[string]bool{}, map[string]bool{}
+	}
+	closeExchange()
+	return out
+}
+
+// resultSaid is what a tool_result that answers no call keeps: its text as
+// a text block, its images beside it as they came.
+func resultSaid(b aBlock) []aBlock {
+	var s string
+	if len(b.Content) > 0 && json.Unmarshal(b.Content, &s) == nil {
+		if strings.TrimSpace(s) == "" {
+			s = "Tool result received."
+		}
+		return []aBlock{{Type: "text", Text: s}}
+	}
+	var blocks []aBlock
+	if len(b.Content) > 0 && json.Unmarshal(b.Content, &blocks) == nil && len(blocks) > 0 {
+		return blocks
+	}
+	return []aBlock{{Type: "text", Text: "Tool result received."}}
 }
 
 // anthropicDecoder leaves out the blocks of Anthropic's own server tools —

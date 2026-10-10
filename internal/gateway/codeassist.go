@@ -272,6 +272,7 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 		}
 		contents = append(contents, map[string]any{"role": role, "parts": parts})
 	}
+	contents = pairFunctionTurns(contents, ag)
 	if len(contents) > 0 && contents[0]["role"] == "model" {
 		// Gemini turns away a history that opens with the model's turn
 		// (what an agent's compaction can leave): "function call turn comes
@@ -363,6 +364,74 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 	}
 	b, _ := json.Marshal(map[string]any{"model": sent, "request": req})
 	return b
+}
+
+// interruptedToolNote is the result a call left unanswered is answered
+// with, the words the chat build gives such a call (pairToolMessages).
+const interruptedToolNote = "[The result of this tool call is unavailable: the turn was interrupted.]"
+
+// pairFunctionTurns answers a model turn's function calls in the turn
+// right after it, as Google's API reads its histories ("Please ensure
+// that the number of function response parts is equal to the number of
+// function call parts of the function call turn"): a call the client
+// answers nowhere — an interrupted turn leaves its call pending, and
+// Google turns every later turn of the conversation away with 400 over
+// the one — is answered with the synthetic result the chat build gives
+// such a call (pairToolMessages, #1275), in the turn that follows the
+// calls, beside the answers of its own, or in a turn of its own when the
+// next one answers nothing.
+func pairFunctionTurns(contents []map[string]any, ag bool) []map[string]any {
+	if len(contents) == 0 {
+		return contents
+	}
+	partsOf := func(c map[string]any) []map[string]any {
+		ps, _ := c["parts"].([]map[string]any)
+		return ps
+	}
+	answered := map[string]bool{}
+	for _, c := range contents {
+		for _, p := range partsOf(c) {
+			if fr, ok := p["functionResponse"].(map[string]any); ok {
+				if id, _ := fr["id"].(string); id != "" {
+					answered[id] = true
+				}
+			}
+		}
+	}
+	key := "output"
+	if ag {
+		key = "result"
+	}
+	out := make([]map[string]any, 0, len(contents)+1)
+	for i, c := range contents {
+		out = append(out, c)
+		var synth []map[string]any
+		for _, p := range partsOf(c) {
+			fc, ok := p["functionCall"].(map[string]any)
+			if !ok {
+				continue
+			}
+			id, _ := fc["id"].(string)
+			if answered[id] {
+				continue
+			}
+			name, _ := fc["name"].(string)
+			res := map[string]any{"name": name, "response": map[string]any{key: interruptedToolNote}}
+			if id != "" {
+				res["id"] = id
+			}
+			synth = append(synth, map[string]any{"functionResponse": res})
+		}
+		if len(synth) == 0 {
+			continue
+		}
+		if i+1 < len(contents) && contents[i+1]["role"] == "user" {
+			contents[i+1]["parts"] = append(synth, partsOf(contents[i+1])...)
+			continue
+		}
+		out = append(out, map[string]any{"role": "user", "parts": synth})
+	}
+	return out
 }
 
 // thinkingConfig says how hard the model should think: a level for

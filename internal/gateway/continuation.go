@@ -56,13 +56,20 @@ const loopReasks = 1
 // without waiting on a vendor that keeps the connection open after it.
 var errStreamCut = errors.New("stream cut mid-reply")
 
-// errEndedShort is an Anthropic stream that ended, its connection closed
-// cleanly, before it said its reply had: the passthrough's word for it.
+// errEndedShort is a stream that ended, its connection closed cleanly,
+// before it said its reply had — an Anthropic one with no stop_reason and
+// no message_stop, a Responses one with no response.completed: the same
+// two the passthrough tells apart. A Chat stream may end without [DONE]
+// and be whole, so Chat is not one.
 var errEndedShort = errors.New("the reply ended before it was complete")
 
-// anthropicEnds says whether an Anthropic stream's event ends the reply:
-// its message_stop (a stop_reason is upstreamStop's), or an error.
-func anthropicEnds(data string) bool {
+// upstreamEnds says whether a stream's event ends the reply, by its type
+// as the passthrough's sniffer counts it (sniff.whole): an Anthropic
+// message_stop or error, a Responses response.completed,
+// response.incomplete or response.failed — a response.completed carrying
+// no status field among them, as relays send it. upstreamStop reads the
+// stop a stop_reason or a response status carries; this reads the type.
+func upstreamEnds(data string) bool {
 	var v struct {
 		Type string `json:"type"`
 	}
@@ -409,7 +416,8 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				serr = readSSEAlive(rd, func(_, data string) error {
 					st := upstreamStop([]byte(data))
 					u.add(Usage{Upstream: upstreamOf([]byte(data)), Stop: st})
-					ended = ended || st != "" || actual == provider.Anthropic && anthropicEnds(data)
+					ended = ended || st != "" ||
+						(actual == provider.Anthropic || actual == provider.Responses) && upstreamEnds(data)
 					if err := dec(data, attemptSee); err != nil {
 						return err
 					}
@@ -422,12 +430,15 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				if errors.Is(serr, errStreamCut) {
 					serr = nil
 				}
-				if serr == nil && failed == "" && !ended && !relooped && actual == provider.Anthropic && r.Context().Err() == nil {
+				if serr == nil && failed == "" && !ended && !relooped &&
+					(actual == provider.Anthropic || actual == provider.Responses) && r.Context().Err() == nil {
 					// an Anthropic stream that just stopped — no
-					// stop_reason, no message_stop — is a reply cut
-					// short, not a finished one: a relay's (蓝猫 on
-					// Discord) read as whole ended the agent's turn a
-					// few words in, with nothing to say why
+					// stop_reason, no message_stop — or a Responses one
+					// with no response.completed is a reply cut short,
+					// not a finished one: a relay's (蓝猫 on Discord)
+					// read as whole ended the agent's turn a few words
+					// in, with nothing to say why, and a Responses reply
+					// whole would say completed it never said
 					serr = errEndedShort
 				}
 			}

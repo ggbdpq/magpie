@@ -90,7 +90,7 @@ func TestFableAndMythosNeverGetABudget(t *testing.T) {
 				t.Fatalf("status %d: %s", code, body)
 			}
 			got := up.last()
-			if th, _ := json.Marshal(got["thinking"]); string(th) != `{"type":"adaptive"}` {
+			if th, _ := json.Marshal(got["thinking"]); string(th) != `{"display":"summarized","type":"adaptive"}` {
 				t.Errorf("thinking = %s, want adaptive", th)
 			}
 			oc, _ := got["output_config"].(map[string]any)

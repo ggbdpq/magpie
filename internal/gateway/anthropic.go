@@ -326,7 +326,7 @@ func adaptiveThinking(body []byte) []byte {
 	if th.Get("type").String() != "enabled" || !adaptiveOnly(gjson.GetBytes(body, "model").String()) {
 		return body
 	}
-	thinking := map[string]any{"type": "adaptive"}
+	thinking := map[string]any{"type": "adaptive", "display": "summarized"}
 	if d := th.Get("display"); d.Exists() {
 		thinking["display"] = d.Value()
 	}
@@ -726,7 +726,11 @@ func buildAnthropic(r *Request, model string) []byte {
 		maxTokens = 16384
 	}
 	if (r.Thinking || r.Effort != "") && adaptiveOnly(model) {
-		out["thinking"] = map[string]any{"type": "adaptive"}
+		// display=summarized: the newer Claudes (Fable, Mythos, Opus 4.7 and
+		// 5.x, Sonnet 5, Haiku 5.5) default their thinking display to
+		// omitted, and a client that asked to think wants to see the
+		// summary (#1485); on 4.6 and earlier it is the default anyway
+		out["thinking"] = map[string]any{"type": "adaptive", "display": "summarized"}
 		if e := r.Effort; e != "" {
 			if e == "xhigh" && noXhigh(model) {
 				e = "max"

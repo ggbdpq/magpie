@@ -63,7 +63,7 @@ func TestAdaptiveThinking(t *testing.T) {
 	}
 	var out map[string]any
 	json.Unmarshal(buildAnthropic(&Request{Thinking: true, Effort: "xhigh"}, "claude-opus-5-5"), &out)
-	if th, _ := json.Marshal(out["thinking"]); string(th) != `{"type":"adaptive"}` {
+	if th, _ := json.Marshal(out["thinking"]); string(th) != `{"display":"summarized","type":"adaptive"}` {
 		t.Errorf("thinking = %s", th)
 	}
 	if oc, _ := json.Marshal(out["output_config"]); string(oc) != `{"effort":"xhigh"}` {
@@ -115,5 +115,35 @@ func TestGLMEffortInOutputConfig(t *testing.T) {
 		if got, _ := json.Marshal(v); string(got) != want {
 			t.Errorf("%s:\n got  %s\n want %s", body, got, want)
 		}
+	}
+}
+
+// The Claudes that think only adaptively default their thinking display to
+// omitted (Fable, Mythos, Opus 4.7 and 5.x, Sonnet 5, Haiku 5.5 — Anthropic's
+// "Controlling thinking display"), so a thinking block built without a
+// display leaves the client without any reasoning to show (#1485). The built
+// and the rewritten thinking therefore carry display=summarized unless the
+// client brought its own; on 4.6 and earlier, whose default is summarized,
+// naming it is a no-op.
+func TestAdaptiveThinkingCarriesASummarizedDisplay(t *testing.T) {
+	out := map[string]any{}
+	json.Unmarshal(buildAnthropic(&Request{Thinking: true, Effort: "high"}, "claude-fable-5-1"), &out)
+	if th, _ := json.Marshal(out["thinking"]); string(th) != `{"display":"summarized","type":"adaptive"}` {
+		t.Fatalf("built thinking = %s, want a summarized display", th)
+	}
+
+	body := []byte(`{"model":"anth/claude-fable-5-1","max_tokens":32000,"thinking":{"type":"enabled","budget_tokens":10000},"messages":[{"role":"user","content":"hi"}]}`)
+	out = map[string]any{}
+	json.Unmarshal(adaptiveThinking(body), &out)
+	if th, _ := json.Marshal(out["thinking"]); string(th) != `{"display":"summarized","type":"adaptive"}` {
+		t.Fatalf("relayed thinking = %s, want a summarized display", th)
+	}
+
+	// a client's own display is kept as it came
+	kept := []byte(`{"model":"anth/claude-fable-5-1","max_tokens":32000,"thinking":{"type":"enabled","budget_tokens":10000,"display":"omitted"},"messages":[{"role":"user","content":"hi"}]}`)
+	out = map[string]any{}
+	json.Unmarshal(adaptiveThinking(kept), &out)
+	if th, _ := json.Marshal(out["thinking"]); string(th) != `{"display":"omitted","type":"adaptive"}` {
+		t.Fatalf("the client's display was not kept: %s", th)
 	}
 }

@@ -277,17 +277,42 @@ func adaptiveOnly(model string) bool {
 	return major > 4 || major == 4 && minor >= 6
 }
 
+// betweenToolsOnly is a Claude model from 5.5 on, which refuses
+// thinking.type=disabled outright — "To turn thinking off on this model,
+// send \"thinking\": {\"type\": \"between_tools\"} instead" (#1454).
+// between_tools is the lowest thinking setting such a model takes; an
+// older Claude still takes disabled, so its thinking goes as it came.
+func betweenToolsOnly(model string) bool {
+	m := claudeVersion.FindStringSubmatch(strings.ToLower(model))
+	if m == nil {
+		return false
+	}
+	v := m[1:3]
+	if m[3] != "" {
+		v = m[3:5]
+	}
+	major, _ := strconv.Atoi(v[0])
+	minor, _ := strconv.Atoi(v[1])
+	return major > 5 || major == 5 && minor >= 5
+}
+
 // adaptiveThinking is an Anthropic request as a model that thinks only
 // adaptively takes it: thinking.type=enabled with a budget — sent by an
 // agent that doesn't know the model (its name in magpie, an alias, or a
 // group's member, mapped to the vendor's later), or by magpie fitting an
 // effort to it — goes as thinking.type=adaptive, with the budget as the
 // effort it is nearest in output_config.effort unless one is there (Keenc
-// on Discord: claude-opus-5-5 answered 400). Read off the model the body
-// is sent with, the vendor's own name; any other request, older Claudes'
-// included, goes as it came, and "disabled" stays.
+// on Discord: claude-opus-5-5 answered 400). From 5.5 on a turned-off
+// thinking goes as thinking.type=between_tools, which the API asks for
+// instead of "disabled" (911Liam's #1454: Claude Code's auto-mode
+// classifier asks thinking off). Read off the model the body is sent
+// with, the vendor's own name; any other request, older Claudes'
+// included, goes as it came.
 func adaptiveThinking(body []byte) []byte {
 	th := gjson.GetBytes(body, "thinking")
+	if th.Get("type").String() == "disabled" && betweenToolsOnly(gjson.GetBytes(body, "model").String()) {
+		return withFields(body, map[string]any{"thinking": map[string]any{"type": "between_tools"}})
+	}
 	if th.Get("type").String() != "enabled" || !adaptiveOnly(gjson.GetBytes(body, "model").String()) {
 		return body
 	}

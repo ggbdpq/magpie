@@ -13,7 +13,9 @@ import (
 )
 
 // adaptiveVendor answers as Anthropic does for a model from 4.6 on: a 400
-// for thinking.type=enabled, which claude-opus-5-5 no longer takes.
+// for thinking.type=enabled, which claude-opus-5-5 no longer takes, and,
+// from 5.5 on (#1454), a 400 for thinking.type=disabled too — between_tools
+// is what the API asks for instead.
 type adaptiveVendor struct {
 	mu     sync.Mutex
 	bodies []map[string]any
@@ -28,9 +30,15 @@ func (v *adaptiveVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	v.mu.Unlock()
 	th, _ := m["thinking"].(map[string]any)
 	model, _ := m["model"].(string)
-	if th["type"] == "enabled" && strings.Contains(model, "5-5") || strings.Contains(model, "5.5") && th["type"] == "enabled" {
+	fiveFive := strings.Contains(model, "5.5") || strings.Contains(model, "5-5")
+	if fiveFive && th["type"] == "enabled" {
 		w.WriteHeader(400)
 		io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"thinking.type.enabled is not supported for this model. Use thinking.type.adaptive and output_config.effort to control thinking behavior."}}`)
+		return
+	}
+	if fiveFive && th["type"] == "disabled" {
+		w.WriteHeader(400)
+		io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"To turn thinking off on this model, send \"thinking\": {\"type\": \"between_tools\"} instead of {\"type\": \"disabled\"}. The model does not think before responding. The short updates it writes between tool calls come back as thinking blocks."}}`)
 		return
 	}
 	if m["stream"] == true {
@@ -57,8 +65,9 @@ func (v *adaptiveVendor) last() map[string]any {
 // and magpie sent it so — relaying an agent's budget as it came, and
 // building one for a model magpie knows by another name than the vendor's.
 // Every request reaching an Anthropic endpoint for it asks adaptive
-// thinking, with the effort in output_config; an older Claude keeps its
-// budget, and "disabled" stays.
+// thinking, with the effort in output_config; from 5.5 on a turned-off
+// thinking goes as between_tools, and an older Claude keeps its budget and
+// its disabled.
 func TestAdaptiveOnlyModelsNeverGetABudget(t *testing.T) {
 	fresh(t)
 	up := &adaptiveVendor{}
@@ -91,8 +100,11 @@ func TestAdaptiveOnlyModelsNeverGetABudget(t *testing.T) {
 		{"chat's effort, name mapped after", "/v1/chat/completions",
 			`{"model":"relay/opus","reasoning_effort":"low","messages":[{"role":"user","content":"hi"}]}`,
 			`{"type":"adaptive"}`, "low"},
-		{"disabled stays", "/v1/messages",
+		{"disabled becomes between_tools", "/v1/messages",
 			`{"model":"relay/claude-opus-5.5","max_tokens":100,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":"hi"}]}`,
+			`{"type":"between_tools"}`, ""},
+		{"an older Claude's disabled stays", "/v1/messages",
+			`{"model":"relay/claude-sonnet-4-5","max_tokens":100,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":"hi"}]}`,
 			`{"type":"disabled"}`, ""},
 		{"an older Claude keeps its budget", "/v1/messages",
 			`{"model":"relay/claude-sonnet-4-5","max_tokens":32000,"thinking":{"type":"enabled","budget_tokens":10000},"messages":[{"role":"user","content":"hi"}]}`,

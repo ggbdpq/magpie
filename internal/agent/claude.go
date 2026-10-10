@@ -429,7 +429,7 @@ func claude(home string) *Agent { return claudeIn(here(home)) }
 // a WSL distro's (see wsl.go), its settings.json naming the gateway as it
 // reaches it from there.
 func claudeIn(at place) *Agent {
-	path := filepath.Join(at.home, ".claude", "settings.json")
+	path := filepath.Join(at.claudeHome(), "settings.json")
 	// a model in the env is read as magpie serves it, its dashed spelling
 	// taken back (claudeModelEnv)
 	rawEnv := func(k string) string { v, _ := edit.GetJSON(path, "env."+k); return v }
@@ -1860,7 +1860,7 @@ func StandIn(agent, model string) string {
 	if agent == "codex" {
 		return codexStandIn(filepath.Join(here(home).codexHome(), "config.toml"))
 	}
-	if m := claudeStandIn(filepath.Join(home, ".claude", "settings.json"), model); m != "" || runtime.GOOS != "windows" {
+	if m := claudeStandIn(filepath.Join(here(home).claudeHome(), "settings.json"), model); m != "" || runtime.GOOS != "windows" {
 		return m
 	}
 	// a Claude Code in WSL is known by the same User-Agent

@@ -77,6 +77,17 @@ func (p place) codexHome() string {
 	return appdir.CodexHomeIn(p.home)
 }
 
+// claudeHome is Claude Code's folder at the place: $CLAUDE_CONFIG_DIR on
+// this machine, ~/.claude in a distro, whose variables magpie can't read.
+// Claude Code reads its settings.json there (2.1.296 checked), so the
+// wiring goes through this.
+func (p place) claudeHome() string {
+	if d := p.getenv("CLAUDE_CONFIG_DIR"); d != "" {
+		return d
+	}
+	return filepath.Join(p.home, ".claude")
+}
+
 // exists is whether there is a file or folder at path, as an agent looks
 // for the one it reads; false at a cold place.
 func (p place) exists(path string) bool {

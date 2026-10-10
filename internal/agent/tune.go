@@ -74,7 +74,7 @@ func tuneWhere(home, agent, knob, model string) (tunePlace, error) {
 	home = tuneHome(home)
 	switch agent {
 	case "claude":
-		path := filepath.Join(home, ".claude", "settings.json")
+		path := filepath.Join(here(home).claudeHome(), "settings.json")
 		switch knob {
 		case TuneCompact:
 			n := claudeName(model)

@@ -164,6 +164,9 @@ func TestWSLClaudePick(t *testing.T) {
 		nat := t.TempDir()
 		os.MkdirAll(filepath.Join(nat, ".claude"), 0o755)
 		os.WriteFile(filepath.Join(nat, ".claude", "settings.json"), []byte(before), 0o644)
+		// this native Claude Code lives at nat: its folder variable moves
+		// what magpie wires, so it names nat's, not syncHome's
+		t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(nat, ".claude"))
 		n := claude(nat)
 		n.Field("model").Set("relay/glm-4.6")
 		n.Field("effort").Set("max")

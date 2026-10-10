@@ -241,6 +241,26 @@ func TestSignInBySecretBasic(t *testing.T) {
 	}
 }
 
+// A server that registers magpie for a method magpie can't send — RFC
+// 7591's registration response lets it assign another of the methods it
+// supports than the one asked for — is said no at the registration,
+// before the browser is opened, not at the code exchange after it.
+func TestSignInRefusesAssignedSecretJWT(t *testing.T) {
+	home(t)
+	f := mcpauthtest.New(t)
+	f.AuthMethods = []string{"client_secret_jwt", "client_secret_basic"}
+	f.Assign = "client_secret_jwt"
+	st, err := mcpauth.Start(t.Context(), "neon", f.URL)
+	if err != nil {
+		if !strings.Contains(err.Error(), "can't do") {
+			t.Fatalf("signing in to a server that registered magpie for client_secret_jwt: %v", err)
+		}
+		return
+	}
+	mcpauth.Cancel(st.ID)
+	t.Fatalf("the sign-in page was opened for a client magpie can't authenticate as: %s", st.URL)
+}
+
 // An authorization server that is an OpenID provider, as Vercel's is, gives
 // a refresh token only to a sign-in that asks for offline_access, while the
 // server names only "openid": magpie asks for it too when the authorization

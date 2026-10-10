@@ -53,6 +53,11 @@ type Fake struct {
 	// another is refused (RFC 7591's invalid_client_metadata), and a client
 	// registered for a secret is given one and has to send it as it said
 	AuthMethods []string
+	// Assign is a server that registers the client for another of the
+	// methods it supports than the one asked for, as RFC 7591's
+	// registration response lets it: the token endpoint takes it as
+	// registered
+	Assign string
 
 	codes   map[string]codeGrant
 	secrets map[string]string // client id → secret, of those that have one
@@ -106,6 +111,9 @@ func New(t *testing.T) *Fake {
 		var reg map[string]any
 		json.NewDecoder(r.Body).Decode(&reg)
 		method, _ := reg["token_endpoint_auth_method"].(string)
+		if f.Assign != "" {
+			method = f.Assign
+		}
 		f.mu.Lock()
 		f.Registered = append(f.Registered, reg)
 		id := fmt.Sprintf("client-%d", len(f.Registered))

@@ -4510,9 +4510,12 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		return t.event, t.release
 	}
 	var col collector
+	ended := false // the upstream said its reply ended
 	see, held := written(zenSee(zen, col.add))
 	err = readSSE(rd, func(_, data string) error {
 		u.add(Usage{Upstream: upstreamOf([]byte(data))})
+		ended = ended || upstreamStop([]byte(data)) != "" ||
+			(actual == provider.Anthropic || actual == provider.Responses) && upstreamEnds(data)
 		return dec(data, see)
 	})
 	held()
@@ -4528,6 +4531,15 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 			u.ErrType = turnedAwayErrType
 		}
 		return writeError(w, from, 502, p.Name+": "+said), said
+	}
+	if col.err == "" && !ended && (actual == provider.Anthropic || actual == provider.Responses) && r.Context().Err() == nil {
+		// an Anthropic stream that just stopped — no stop_reason, no
+		// message_stop — or a Responses one with no response.completed is
+		// a reply cut short, not a finished one, as a streaming client is
+		// told (streamTranslated): handed whole, a non-streaming client
+		// ends its turn a few words in, as if done
+		msg := p.Name + ": " + errEndedShort.Error()
+		return writeError(w, from, 502, msg), msg
 	}
 	if empty && !saidAnything(col.res.Parts) && answersNothing(col.res.Stop) {
 		msg := p.Name + ": " + emptyReply

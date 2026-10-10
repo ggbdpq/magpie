@@ -3912,6 +3912,16 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 		res.Body.Close()
 		res.Body = io.NopCloser(bytes.NewReader(b))
+		if to == provider.Anthropic && res.StatusCode == http.StatusBadRequest &&
+			samplingDeprecated.Match(b) && (req.Temp != nil || req.TopP != nil) {
+			// a Claude by a name samplingAsTaken can't read refuses the
+			// sampling a Chat or Responses client sent (#1454): asked once
+			// more without it, as a relayed request is
+			r := *req
+			r.Temp, r.TopP = nil, nil
+			req = &r
+			continue
+		}
 		if req.GeminiCompat && res.StatusCode == http.StatusBadRequest {
 			if l := geminiRefusedLevel(b); l != "" {
 				// a thinking level the model hasn't, turned away: Gemini's

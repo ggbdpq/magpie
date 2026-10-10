@@ -217,7 +217,10 @@ func TestZedRequestShapes(t *testing.T) {
 func TestZedToolResultSaysIsError(t *testing.T) {
 	req := &Request{Model: "m", MaxTokens: 10, Messages: []Message{
 		{Role: "user", Parts: []Part{{Kind: Text, Text: "run echo hi"}}},
-		{Role: "assistant", Parts: []Part{{Kind: ToolCall, ID: "toolu_1", Name: "bash", Args: json.RawMessage(`{"command":"echo hi","n":12345678901234567890}`)}}},
+		{Role: "assistant", Parts: []Part{
+			{Kind: ToolCall, ID: "toolu_1", Name: "bash", Args: json.RawMessage(`{"command":"echo hi","n":12345678901234567890}`)},
+			{Kind: ToolCall, ID: "toolu_2", Name: "bash", Args: json.RawMessage(`{"command":"false"}`)},
+		}},
 		{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: "toolu_1", Text: "hi"}, {Kind: ToolResult, CallID: "toolu_2", Text: "no", IsError: true}}},
 	}}
 	raw, _, err := zedRequest(req, "anthropic", "claude-sonnet-5-5")

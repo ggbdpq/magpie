@@ -3903,6 +3903,12 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 		if err != nil {
 			return nil, to, err
 		}
+		if to == provider.Responses && (p.Account == nil || p.Account.Agent != "codex") {
+			// a call a Chat or Messages client left unanswered is answered
+			// as a Responses client's is (attempt): OpenAI's Responses API
+			// refuses it "No tool output found for function call"
+			body = pairToolItems(body)
+		}
 		if to == provider.Chat && (p.IsBedrock() || p.IsAzure()) {
 			body = asCompletionTokens(body)
 		}

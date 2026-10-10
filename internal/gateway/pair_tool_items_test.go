@@ -108,3 +108,41 @@ func TestResponsesRelayAnswersALoneCall(t *testing.T) {
 		t.Fatalf("the lone call went unanswered: %s", f.got)
 	}
 }
+
+// A Chat or Messages client's interrupted turn translated to a Responses
+// upstream goes with its lone call answered too, as a Responses client's
+// is: OpenAI's Responses API refuses a call no result answers ("No tool
+// output found for function call"), and the request magpie builds for it
+// had sent the call as it came.
+func TestTranslatedToResponsesAnswersALoneCall(t *testing.T) {
+	for _, c := range []struct{ name, path, body string }{
+		{"chat", "/v1/chat/completions", `{"model":"fake/m1","stream":true,"messages":[` +
+			`{"role":"user","content":"run it"},` +
+			`{"role":"assistant","content":null,"tool_calls":[{"id":"call_lone","type":"function","function":{"name":"echo","arguments":"{}"}}]},` +
+			`{"role":"user","content":"go on"}]}`},
+		{"messages", "/v1/messages", `{"model":"fake/m1","max_tokens":64,"stream":true,"messages":[` +
+			`{"role":"user","content":"run it"},` +
+			`{"role":"assistant","content":[{"type":"tool_use","id":"call_lone","name":"echo","input":{}}]},` +
+			`{"role":"user","content":"go on"}]}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := &fake{t: t, reply: sse(`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}`)}
+			setup(t, provider.Responses, f)
+			if code, out := post(t, c.path, c.body); code != 200 {
+				t.Fatalf("status %d: %s", code, out)
+			}
+			if f.path != "/v1/responses" {
+				t.Fatalf("not sent as Responses: %s", f.path)
+			}
+			answered := false
+			for _, it := range inputOf(t, f.got) {
+				if it["type"] == "function_call_output" && it["call_id"] == "call_lone" {
+					answered = true
+				}
+			}
+			if !answered {
+				t.Fatalf("the lone call went unanswered: %s", f.got)
+			}
+		})
+	}
+}

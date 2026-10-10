@@ -616,12 +616,15 @@ func register(ctx context.Context, m meta, redirect string) (id, secret, method 
 	}
 	method = "none"
 	if len(m.AuthMethods) > 0 && !contains(m.AuthMethods, "none") {
-		method = m.AuthMethods[0]
-		if !contains(m.AuthMethods, "client_secret_post") && !contains(m.AuthMethods, "client_secret_basic") {
-			return "", "", "", fmt.Errorf("the server's token endpoint takes only %s, which magpie can't do", strings.Join(m.AuthMethods, ", "))
-		}
-		if contains(m.AuthMethods, "client_secret_post") {
+		// the metadata's order is no preference: one listing private_key_jwt
+		// first, which magpie can't do, may take a secret too
+		switch {
+		case contains(m.AuthMethods, "client_secret_post"):
 			method = "client_secret_post"
+		case contains(m.AuthMethods, "client_secret_basic"):
+			method = "client_secret_basic"
+		default:
+			return "", "", "", fmt.Errorf("the server's token endpoint takes only %s, which magpie can't do", strings.Join(m.AuthMethods, ", "))
 		}
 	}
 	reg := map[string]any{

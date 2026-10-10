@@ -282,17 +282,31 @@ var claudeVersion = regexp.MustCompile(`(?:^|[^a-z0-9])(?:claude-)?(?:opus|sonne
 // claude-opus-5-5 refuses thinking.type=enabled with a budget ("requires
 // adaptive thinking"), so how hard it thinks goes in output_config.effort.
 func adaptiveOnly(model string) bool {
+	major, minor, ok := claudeVersionOf(model)
+	return ok && (major > 4 || major == 4 && minor >= 6)
+}
+
+// noXhigh is a Claude that thinks only adaptively but has no xhigh effort,
+// Opus and Sonnet 4.6, so it is asked max in its place. Every later one
+// takes xhigh (platform.claude.com/docs/en/build-with-claude/effort), and
+// max there spends without limit.
+func noXhigh(model string) bool {
+	major, minor, ok := claudeVersionOf(model)
+	return ok && major == 4 && minor == 6
+}
+
+func claudeVersionOf(model string) (major, minor int, ok bool) {
 	m := claudeVersion.FindStringSubmatch(strings.ToLower(model))
 	if m == nil {
-		return false
+		return 0, 0, false
 	}
 	v := m[1:3]
 	if m[3] != "" {
 		v = m[3:5]
 	}
-	major, _ := strconv.Atoi(v[0])
-	minor, _ := strconv.Atoi(v[1])
-	return major > 4 || major == 4 && minor >= 6
+	major, _ = strconv.Atoi(v[0])
+	minor, _ = strconv.Atoi(v[1])
+	return major, minor, true
 }
 
 // adaptiveThinking is an Anthropic request as a model that thinks only
@@ -317,7 +331,7 @@ func adaptiveThinking(body []byte) []byte {
 	if gjson.GetBytes(body, "output_config.effort").String() == "" {
 		if e := effortOfBudget(int(th.Get("budget_tokens").Int())); e != "" {
 			if e == "xhigh" {
-				e = "max" // as buildAnthropic asks it: 4.6 has no xhigh
+				e = "max" // a budget can't tell xhigh from max (budgetOf), and 4.6 has no xhigh
 			}
 			oc, _ := gjson.GetBytes(body, "output_config").Value().(map[string]any)
 			if oc == nil {
@@ -711,7 +725,7 @@ func buildAnthropic(r *Request, model string) []byte {
 	if (r.Thinking || r.Effort != "") && adaptiveOnly(model) {
 		out["thinking"] = map[string]any{"type": "adaptive"}
 		if e := r.Effort; e != "" {
-			if e == "xhigh" {
+			if e == "xhigh" && noXhigh(model) {
 				e = "max"
 			}
 			out["output_config"] = map[string]any{"effort": e}

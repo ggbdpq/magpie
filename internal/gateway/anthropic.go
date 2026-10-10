@@ -726,7 +726,11 @@ func buildAnthropic(r *Request, model string) []byte {
 		maxTokens = 16384
 	}
 	if (r.Thinking || r.Effort != "") && adaptiveOnly(model) {
-		out["thinking"] = map[string]any{"type": "adaptive"}
+		// Opus 4.7 and later leave the thinking text out unless asked
+		// (display "omitted" by default), and a Chat or Responses client
+		// that asked to reason would see none of it; OpenAI is asked for
+		// its summary and the Claude subscription for summarized alike
+		out["thinking"] = map[string]any{"type": "adaptive", "display": "summarized"}
 		if e := r.Effort; e != "" {
 			if e == "xhigh" && noXhigh(model) {
 				e = "max"

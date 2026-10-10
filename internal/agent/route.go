@@ -116,6 +116,28 @@ func magpieModels(agent string) []catalog.Model {
 		// user set on the model or on its provider, else the one for every
 		// model, which codexcat answers from the settings it is given
 		m.Compact = provider.CompactSetIn(st, e.ID, find)
+		// the service tiers Codex is offered, as codexListed marks them for
+		// the lists the gateway hands a Codex (#1530): a provider the user
+		// added by its address is sent the tier Codex asks for as it is
+		// (#1234), another magpie's model keeps the tiers its own Codex is
+		// offered, and a group with a ChatGPT account's GPT model in it is
+		// switched fast. The catalog file written for a standalone Codex CLI
+		// offered none, so its /fast was never there.
+		if agent == "codex" {
+			m.OwnTier = e.Group == "" && e.Provider.Preset == "" && e.Provider.Account == nil && e.Provider.ID != ""
+			if e.Group == "" && e.Provider.IsRemoteMagpie() {
+				m.Tiers = e.Tiers
+			}
+			if e.Group != "" {
+				_, members, _ := find(e.ID)
+				for _, mb := range members {
+					if a := mb.Provider.Account; a != nil && a.Agent == "codex" && strings.HasPrefix(mb.Model, "gpt-") {
+						m.Fast = true
+						break
+					}
+				}
+			}
+		}
 		// what a call costs the user (Pi's cost, #781)
 		if pr, ok := provider.EntryPriceIn(st, find, e); ok {
 			m.Price = &pr

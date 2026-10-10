@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -331,13 +332,16 @@ func TestUpdateCLI(t *testing.T) {
 func TestUpdateWithBunBridgesSOCKS(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	const socks = "socks5://127.0.0.1:4401"
-	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"} {
+	names := []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"}
+	for _, k := range names {
 		t.Setenv(k, socks)
 	}
+	// the proxy URLs only: NO_PROXY's hosts or Node's NODE_USE_ENV_PROXY=1,
+	// set on the machine running the test, name no proxy
 	proxies := func(env []string) []string {
 		var out []string
 		for _, kv := range env {
-			if k, v, _ := strings.Cut(kv, "="); strings.HasSuffix(strings.ToUpper(k), "_PROXY") && v != "" {
+			if k, v, _ := strings.Cut(kv, "="); slices.Contains(names, k) && v != "" {
 				out = append(out, v)
 			}
 		}

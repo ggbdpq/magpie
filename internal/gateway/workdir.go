@@ -13,6 +13,11 @@ package gateway
 //   - Pi (1.1): the system prompt's "<cwd>\n/x\n</cwd>", backslashes as /.
 //   - OpenCode (2.0): "<env>\n  Working directory: /x\n…</env>", in the
 //     system prompt or, when it changes, a later message.
+//   - Gemini CLI (0.10–0.29): its first message's environment,
+//     "I'm currently working in the directory: /x" (several roots:
+//     "the following directories:" with "  - /x" lines beneath).
+//     0.30 and later name them in <session_context> under
+//     "- **Workspace Directories:**", each "  - /x".
 //
 // Of those it says, the last one goes: an agent that moved says so after.
 // An agent that says none of them has no folder: a rule by folder doesn't
@@ -30,6 +35,12 @@ var (
 	cwdTag = regexp.MustCompile(`<cwd>\s*([^<\n]+?)\s*</cwd>`)
 	envDir = regexp.MustCompile(`(?m)^\s*Working directory: (.+)$`)
 	wasDir = regexp.MustCompile(` \(was .*\)$`)
+	// Gemini CLI's own line, and the heading whose "  - /x" lines hold
+	// its folders (one root's older wording, several roots' older and
+	// newer headings alike)
+	geminiDir  = regexp.MustCompile(`(?m)^\s*I'm currently working in the directory: (.+)$`)
+	geminiDirs = regexp.MustCompile(`(?m)^\s*(?:I'm currently working in the following directories:|- \*\*Workspace Directories:\*\*)\s*$`)
+	dirItem    = regexp.MustCompile(`^[ \t]+- (.+)$`)
 )
 
 // workDir is the folder the request says its agent works in; "" when it

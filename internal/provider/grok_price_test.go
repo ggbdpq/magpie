@@ -56,3 +56,30 @@ func TestGrokEffortListPrice(t *testing.T) {
 		t.Errorf("PricedName(grok-4.7-low-fast) = %q", got)
 	}
 }
+
+// A window the id names without a k (grokWindowLabel writes a window that
+// no multiple of 1000 is as bare digits) is priced as its model, as one
+// spelled with a k is.
+func TestGrokWindowWithoutKListPrice(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755)
+	os.WriteFile(catalog.CachePath(), []byte(`{
+	  "xai":{"id":"xai","models":{
+	    "grok-4.7":{"id":"grok-4.7","cost":{"input":2,"output":6,"cache_read":0.5}}}}}`), 0o644)
+	catalog.Reset()
+	t.Cleanup(catalog.Reset)
+
+	grok := Provider{ID: "grok", Name: "Grok (SuperGrok)"}
+	for _, id := range []string{"grok-4.7@131072", "x-ai/grok-4.7@131072"} {
+		if pr, ok := grok.ListPrice(id); !ok || pr.Input != 2 || pr.Output != 6 || pr.CacheRead != 0.5 {
+			t.Errorf("ListPrice(%q) = %+v, %v; want grok-4.7's $2/$6/$0.5", id, pr, ok)
+		}
+		if pr, ok := MakerPrice(id); !ok || pr.Input != 2 {
+			t.Errorf("MakerPrice(%q) = %+v, %v; want grok-4.7's", id, pr, ok)
+		}
+	}
+}

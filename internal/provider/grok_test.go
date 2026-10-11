@@ -84,6 +84,29 @@ func TestGrokSignsWindow(t *testing.T) {
 	}
 }
 
+// A window the id names without a k (131072: grokWindowLabel writes a
+// window that no multiple of 1000 is as bare digits) is signed as that
+// window at the model Grok lists, not sent as an id of its own.
+func TestGrokSignsWindowWithoutK(t *testing.T) {
+	home := t.TempDir()
+	grokSignedIn(t, home, "me@x.ai")
+	acct := &Account{Agent: "grok"}
+	grokSigned(acct, home)
+	for _, c := range []struct{ model, sent, window string }{
+		{"grok-4.7@131072", "grok-4.7", "131072"},
+		{"grok-4.7@500k", "grok-4.7", "500000"},
+	} {
+		body := []byte(`{"model":"` + c.model + `","input":"hi"}`)
+		req, _ := http.NewRequest("POST", "http://grok.invalid/responses", strings.NewReader(string(body)))
+		if err := acct.sign(context.Background(), req, body); err != nil {
+			t.Fatal(err)
+		}
+		if req.Header.Get("x-grok-model-override") != c.sent || req.Header.Get("x-grok-context-window") != c.window {
+			t.Errorf("%s: headers = %v, want %s at window %s", c.model, req.Header, c.sent, c.window)
+		}
+	}
+}
+
 // A request is signed with the sign-in of its account's home, as the CLI
 // signs its own.
 func TestGrokSigns(t *testing.T) {

@@ -26,6 +26,7 @@
 // plugin's getAuth, client.auth.set and loader see that account alone.
 
 import { AsyncLocalStorage } from "node:async_hooks"
+import dns from "node:dns"
 import fs from "node:fs"
 import http2 from "node:http2"
 import net from "node:net"
@@ -323,24 +324,95 @@ function loopback(host) {
   return host === "localhost" || host.endsWith(".localhost") || host === "::1" || /^127\./.test(host)
 }
 
+// A host on the user's own network — another computer's magpie, an LLM
+// relay on the NAS — is reached directly, whatever proxy the host was
+// started with, as magpie's own requests take it (netproxy.Func, lan.go,
+// #982): a proxy is for reaching vendors, one elsewhere can't reach the
+// user's network, and one here is handed LAN names it cannot resolve. A
+// provider's own proxy (via) is still taken as it is, as on the Go side.
+const lanSeen = new Map() // host → { lan, at }
+const LAN_KEEP = 60e3
+const LAN_WAIT = 400
+
+// lanIP says whether the address host names is one of the user's own
+// networks: a private, link-local or carrier-grade NAT (Tailscale's
+// 100.64/10) one, as netproxy.lanIP takes them.
+function lanIP(host) {
+  if (net.isIP(host) === 4) {
+    const [a, b] = host.split(".").map(Number)
+    return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+      (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127)
+  }
+  if (net.isIP(host) === 6) {
+    const h = host.toLowerCase()
+    if (h.startsWith("::ffff:")) return lanIP(h.slice(7))
+    const first = h.split(":")[0]
+    return /^f[cd]/.test(first) || /^fe[89ab]$/.test(first)
+  }
+  return false
+}
+
+// onLAN says whether host is on the user's own network: a .local name, an
+// address of one above, or a name every address of which is one of those,
+// looked up once a minute and waited for 400 ms at most — a name that
+// doesn't resolve here is not, since the proxy is what reaches it.
+async function onLAN(host) {
+  if (host.endsWith(".local") || lanIP(host)) return true
+  const hit = lanSeen.get(host)
+  if (hit && Date.now() - hit.at < LAN_KEEP) return hit.lan
+  let lan = false
+  try {
+    const as = await Promise.race([
+      dns.promises.lookup(host, { all: true, verbatim: true }),
+      new Promise((r) => setTimeout(r, LAN_WAIT)),
+    ])
+    lan = Array.isArray(as) && as.length > 0 && as.every((a) => lanIP(a.address))
+  } catch {
+    lan = false
+  }
+  if (lanSeen.size >= 256) lanSeen.clear()
+  lanSeen.set(host, { lan, at: Date.now() })
+  return lan
+}
+
 // proxyFor is the proxy a fetch of input goes through, "" for none.
-function proxyFor(input) {
+async function proxyFor(input) {
   const u = hostOf(input)
   if (!u || loopback(u.host)) return ""
   const own = via.getStore()
   if (own === "direct") return ""
   if (own) return own
+  const global = u.protocol === "https:" ? globalProxy.https : u.protocol === "http:" ? globalProxy.http : ""
+  if (global === "") return ""
   if (globalProxy.no.some((n) => n === "*" || u.host === n || u.host.endsWith("." + n))) return ""
-  return u.protocol === "https:" ? globalProxy.https : u.protocol === "http:" ? globalProxy.http : ""
+  if (await onLAN(u.host)) return ""
+  return global
+}
+
+// proxyForNow is proxyFor without the host lookup: what can be said at
+// once, for http2.connect, which returns its session now. A .local name
+// and an address of the user's own network are still left direct there; a
+// LAN name that needs looking up waits for no one and goes as it did.
+function proxyForNow(input) {
+  const u = hostOf(input)
+  if (!u || loopback(u.host)) return ""
+  const own = via.getStore()
+  if (own === "direct") return ""
+  if (own) return own
+  const global = u.protocol === "https:" ? globalProxy.https : u.protocol === "http:" ? globalProxy.http : ""
+  if (global === "") return ""
+  if (globalProxy.no.some((n) => n === "*" || u.host === n || u.host.endsWith("." + n))) return ""
+  if (u.host.endsWith(".local") || lanIP(u.host)) return ""
+  return global
 }
 
 // reach is what a check's fetches came to: whether one got an answer, and
 // the first that got none
 const reach = new AsyncLocalStorage()
 
-function sent(input, init) {
+async function sent(input, init) {
   if (init && "proxy" in init) return bunFetch(input, init)
-  const p = proxyFor(input)
+  const p = await proxyFor(input)
   if (!p) return bunFetch(input, init)
   return bunFetch(input, { ...init, proxy: p }).catch(async (e) => {
     if (e?.name === "AbortError" || init?.signal?.aborted) throw e
@@ -448,7 +520,7 @@ http2.connect = function connect(authority, options, listener) {
   } catch {
     return h2connect.call(this, authority, options, listener)
   }
-  const p = options?.createConnection ? "" : proxyFor(u.href)
+  const p = options?.createConnection ? "" : proxyForNow(u.href)
   if (!p) return h2connect.call(this, authority, options, listener)
   const host = u.hostname.replace(/^\[|\]$/g, "")
   const port = Number(u.port || (u.protocol === "http:" ? 80 : 443))

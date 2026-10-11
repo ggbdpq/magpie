@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -144,9 +146,17 @@ var mu sync.Mutex
 
 func Path() string { return filepath.Join(settings.Dir(), "caller-keys.json") }
 
+func validKeys(b []byte) bool {
+	var keys []Key
+	return json.Unmarshal(b, &keys) == nil
+}
+
+// load is the named key store, or its last good generation when a crash
+// left the file it can't be read from (#1505); an error when neither
+// reads, for a change not to write the store over as none.
 func load() ([]Key, error) {
-	b, err := os.ReadFile(Path())
-	if errors.Is(err, os.ErrNotExist) {
+	b, err := lastgood.Read(Path(), validKeys)
+	if errors.Is(err, fs.ErrNotExist) {
 		return []Key{}, nil
 	}
 	if err != nil {
@@ -517,6 +527,12 @@ func configureLAN(on, rotate bool) error {
 func save(keys []Key) error {
 	b, err := json.MarshalIndent(keys, "", "  ")
 	if err != nil {
+		return err
+	}
+	// the store there now is kept before it is replaced (#1505): one a
+	// crash left unreadable reads from its .bak, and one that doesn't read
+	// at all is copied aside, never written over
+	if err := lastgood.Keep(Path(), validKeys, 0o600); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(Path()), 0o755); err != nil {

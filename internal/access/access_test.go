@@ -88,6 +88,14 @@ func TestConcurrentKeyCreationAndCorruptStore(t *testing.T) {
 	}
 	secret, _ := Update("copy-key", Change{Key: keys[0].ID})
 	os.WriteFile(Path(), []byte("broken"), 0o600)
+	// with its last good generation, the store reads from the .bak and the
+	// keys still answer (#1505)
+	if _, ok := Authenticate(secret); !ok {
+		t.Fatal("a corrupt store with a last good one lost its keys")
+	}
+	// with none, what doesn't read answers nothing and is never written
+	// over
+	os.Remove(Path() + ".bak")
 	if _, ok := Authenticate(secret); ok {
 		t.Fatal("corrupt store accepted a key")
 	}
@@ -198,6 +206,9 @@ func TestLegacyLANKeyMigrationRetryAndFailure(t *testing.T) {
 	if err := os.WriteFile(Path(), []byte("broken"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// without its last good generation, a store that doesn't read is not
+	// migrated over
+	os.Remove(Path() + ".bak")
 	if err := MigrateLegacyLANKey(); err == nil {
 		t.Fatal("migration accepted a corrupt store")
 	}

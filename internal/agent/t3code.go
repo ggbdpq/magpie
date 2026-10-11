@@ -138,7 +138,10 @@ func t3InstanceJSON(path, gw string) map[string]any {
 		"driver": "claudeAgent", "displayName": "magpie", "enabled": true,
 		"environment": []map[string]any{
 			{"name": "ANTHROPIC_BASE_URL", "value": gw, "sensitive": false},
-			{"name": "ANTHROPIC_AUTH_TOKEN", "value": gateway.Token, "sensitive": false},
+			// the token Claude Code itself is routed with at gw (at.gwKey):
+			// the LAN sharing key when the gateway is reached beyond
+			// loopback, where gateway.Token is turned away
+			{"name": "ANTHROPIC_AUTH_TOKEN", "value": keyAt(gw), "sensitive": false},
 		},
 		"config": config,
 	}

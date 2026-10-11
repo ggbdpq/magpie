@@ -120,7 +120,9 @@ func air(home, cfg string) *Agent {
 				return "Air's Magpie agent (" + filepath.Base(path) + ") is gone, so Air no longer reaches magpie"
 			}
 			return wiringOff("Air", ocPath, func(k string) (string, bool) { return edit.GetJSON(ocPath, "provider."+magpieID+".options."+k) },
-				"baseURL", gatewayV1(), "apiKey", gateway.Token)
+				// the key for the gateway's address (keyAt): the LAN sharing
+				// key where the gateway is reached beyond loopback
+				"baseURL", gatewayV1(), "apiKey", keyAt(gateway.URL()))
 		},
 		Sync: func() error {
 			return syncJSONInOrder(ocPath, "provider."+magpieID, provider)

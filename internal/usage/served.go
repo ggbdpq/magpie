@@ -29,10 +29,19 @@ var vendorDot = regexp.MustCompile(`^(?:(?:global|us-gov|[a-z]{2,4})\.)?(?:anthr
 // its context: claude-opus-5[1m].
 var contextTail = regexp.MustCompile(`\[[^\]]*\]$`)
 
+// windowTail is the context window an id names after "@": grok-4.7@500k
+// (#1608), the Cursor plugin's claude-opus-5-5@300k — the size the id is
+// offered at, as [1m] is for Claude Code's. The request goes out under the
+// model's own name (the CLI sends the plain id with its window header), and
+// the vendor's list names the model, never the window, so a reply naming the
+// plain model is the model asked for.
+var windowTail = regexp.MustCompile(`@\d+[km]?$`)
+
 // bareModel is a model's name without its maker or path, its version, the
 // size of its context or its case.
 func bareModel(m string) string {
 	m = contextTail.ReplaceAllString(strings.ToLower(strings.TrimSpace(m)), "")
+	m = windowTail.ReplaceAllString(m, "")
 	if i := strings.LastIndexByte(m, '/'); i >= 0 {
 		m = m[i+1:]
 	}

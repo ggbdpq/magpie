@@ -150,22 +150,35 @@ func (s *Server) serveDecisionGroup(w http.ResponseWriter, r *http.Request, body
 		}
 		status, b, header, err := s.postDecide(r.Context(), c.p, c.model, withModel(body, c.model))
 		if err != nil {
-			fail, rest := failOther, (*Rest)(nil)
+			// magpie's own turn-away (the MaxRPM's *errRPM) is nobody's
+			// failure: nothing rests, and the agent is told 429 with
+			// Retry-After, as a chat request on a full minute is (#892)
 			var tooMany *errRPM
-			if r.Context().Err() == nil && !errors.As(err, &tooMany) {
+			over := r.Context().Err() == nil && errors.As(err, &tooMany)
+			said := http.StatusBadGateway
+			if over {
+				said = http.StatusTooManyRequests
+			}
+			fail, rest := failOther, (*Rest)(nil)
+			if r.Context().Err() == nil && !over {
 				// unreachable: it rests, as a chat's would
 				fail, rest = s.decideFailed(c, http.StatusBadGateway, nil, []byte(err.Error()))
 			}
 			if !last && r.Context().Err() == nil {
-				tried(http.StatusBadGateway, err.Error(), fail, rest, Usage{})
+				tried(said, err.Error(), fail, rest, Usage{})
 				skipped = append(skipped, c.label()+": "+err.Error())
 				continue
 			}
 			last = true
-			tried(http.StatusBadGateway, err.Error(), fail, rest, Usage{})
+			tried(said, err.Error(), fail, rest, Usage{})
 			msg := err.Error()
 			if len(skipped) > 0 {
 				msg += " (tried first: " + strings.Join(skipped, "; ") + ")"
+			}
+			if over {
+				w.Header().Set("Retry-After", tooMany.retryAfter())
+				writeError(w, provider.Chat, http.StatusTooManyRequests, msg)
+				return
 			}
 			writeError(w, provider.Chat, http.StatusBadGateway, msg)
 			return
@@ -256,11 +269,14 @@ func (s *Server) askDecisionGroup(model string, intents []string, prev before, e
 		}
 		var refused decideRefused
 		var answer answerError
+		var tooMany *errRPM
 		switch {
 		case errors.As(err, &refused):
 			s.decideFailed(c, refused.status, refused.header, refused.body)
 		case errors.As(err, &answer), errors.Is(err, context.Canceled):
 			// it answered, not in System One's shape: nothing to rest for
+		case errors.As(err, &tooMany):
+			// magpie's own turn-away: nobody rests for it (#892)
 		default:
 			s.decideFailed(c, http.StatusBadGateway, nil, []byte(err.Error()))
 		}

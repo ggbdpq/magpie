@@ -382,7 +382,10 @@ func (s *Server) postDecide(ctx context.Context, p provider.Provider, model stri
 	}
 	res, err := p.Do(s.client, req)
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("%s: %v", p.Name, err)
+		// %w, so magpie's own turn-away (the MaxRPM's *errRPM the
+		// transport answers) still says itself through it, as a chat
+		// request's does
+		return 0, nil, nil, fmt.Errorf("%s: %w", p.Name, err)
 	}
 	defer res.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))

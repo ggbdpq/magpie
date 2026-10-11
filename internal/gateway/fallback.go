@@ -764,6 +764,8 @@ func modelRefused(status int, body []byte) bool {
 	default:
 		return false
 	}
+	// the words are matched decoded, too (#1669)
+	body = wordsOf(body)
 	return unservedWords.Match(body) && !quotaWords.Match(body) && !refusedWords.Match(body)
 }
 
@@ -788,6 +790,8 @@ func modelRetired(status int, body []byte) bool {
 	default:
 		return false
 	}
+	// the words are matched decoded, too (#1669)
+	body = wordsOf(body)
 	return retiredWords.Match(body) && !quotaWords.Match(body)
 }
 
@@ -876,6 +880,8 @@ func elsewhere(left []candidate, c candidate) []candidate {
 // that failed this way: the vendor was busy, out of quota or failing, or
 // this key or provider can't serve it — not the request itself at fault.
 func retryable(status int, body []byte) bool {
+	// the words are matched decoded, too (#1669)
+	body = wordsOf(body)
 	switch {
 	case overflowed(status, body):
 		// a conversation too long for the model is as long on every

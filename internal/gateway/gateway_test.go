@@ -655,6 +655,23 @@ func TestAnthropicPassthroughAlwaysThinksInChinese(t *testing.T) {
 	}
 }
 
+// The same refusal, escaped as \uXXXX the way a relay whose encoder
+// escapes what isn't ASCII sends it (#1669): asked again all the same.
+func TestAnthropicPassthroughAlwaysThinksInEscapedChinese(t *testing.T) {
+	f := &fake{t: t, ctype: "application/json", reply: `{"id":"msg","type":"message","content":[]}`}
+	f.refuse = func(b []byte) (int, string) {
+		if bytes.Contains(b, []byte(`"disabled"`)) {
+			return 400, `{"type":"error","error":{"type":"invalid_request_error","message":"\u8be5\u6a21\u578b\u59cb\u7ec8\u652f\u6301\u601d\u8003\uff0c\u4e0d\u53ef\u5173\u95ed"}}`
+		}
+		return 0, ""
+	}
+	setup(t, provider.Anthropic, f)
+	code, body := post(t, "/v1/messages", `{"model":"m1","max_tokens":5,"messages":[{"role":"user","content":"title?"}],"thinking":{"type":"disabled"}}`)
+	if code != 200 || f.calls != 2 || bytes.Contains(f.got, []byte("thinking")) || !bytes.Contains(f.got, []byte(`"title?"`)) {
+		t.Fatalf("%d %s after %d calls, last sent %s", code, body, f.calls, f.got)
+	}
+}
+
 func TestOpenRouterMandatoryReasoningRetries(t *testing.T) {
 	const refusal = `{"error":{"message":"OpenRouter: Reasoning is mandatory for this endpoint and cannot be disabled.","type":"invalid_request_error"},"type":"error"}`
 	for _, tc := range []struct {

@@ -3652,7 +3652,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
 				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 			}
-		} else if nb, ok := withoutThinkingOff(body); ok && (alwaysThinks.Match(b) || mandatoryReasoning.Match(b) || thinkingOffRefused.Match(b)) {
+		} else if nb, ok := withoutThinkingOff(body); ok && (alwaysThinks.Match(wordsOf(b)) || mandatoryReasoning.Match(b) || thinkingOffRefused.Match(b)) {
 			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
 				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 			}
@@ -4121,7 +4121,7 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 			continue
 		}
 		if to == provider.Anthropic && req.ThinkOff && res.StatusCode == http.StatusBadRequest &&
-			(alwaysThinks.Match(b) || mandatoryReasoning.Match(b) || thinkingOffRefused.Match(b)) {
+			(alwaysThinks.Match(wordsOf(b)) || mandatoryReasoning.Match(b) || thinkingOffRefused.Match(b)) {
 			// a vendor's model that always thinks (GLM-5.3, #699) refuses
 			// the thinking off a client asked for (#1636): asked again
 			// thinking at its least, as it was before, and so from then on

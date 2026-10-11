@@ -243,6 +243,26 @@ func TestModelNotInPlanRestsTheModelNotTheKey(t *testing.T) {
 	}
 }
 
+// The same words said escaped as \uXXXX (a relay whose encoder escapes
+// what isn't ASCII, #1669) are read by the other deciders too: what
+// rests the model alone, and what another provider may answer.
+func TestEscapedWordsReadByTheOtherDeciders(t *testing.T) {
+	unserved := []byte(`{"error":{"code":7,"message":"\u8be5\u6a21\u578b\u4e0d\u652f\u6301\u5f53\u524d\u4ee4\u724c\u8ba1\u5212"}}`)
+	if !modelRefused(403, unserved) {
+		t.Errorf("escaped 模型不支持: modelRefused false; the key would rest for its model")
+	}
+	if !modelRefused(403, []byte(`{"error":{"message":"该模型不支持当前令牌计划"}}`)) {
+		t.Errorf("the same refusal unescaped: modelRefused false")
+	}
+	quota := []byte(`{"error":{"message":"\u989d\u5ea6\u5df2\u7528\u5b8c\uff0c\u8bf7\u660e\u5929\u518d\u8bd5","type":"invalid_request_error"}}`)
+	if !retryable(400, quota) {
+		t.Errorf("escaped 额度已用完: retryable false; the next decision model isn't asked")
+	}
+	if !retryable(400, []byte(`{"error":{"message":"额度已用完，请明天再试","type":"invalid_request_error"}}`)) {
+		t.Errorf("the same refusal unescaped: retryable false")
+	}
+}
+
 // Two ChatGPT accounts ticked: the one Codex is signed in to is out of
 // quota, so the request goes to the saved one, signed with its own tokens.
 func TestSubscriptionAccountsTakeOver(t *testing.T) {

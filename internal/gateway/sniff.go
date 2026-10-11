@@ -124,6 +124,12 @@ func (s *usageSniffer) parse(b []byte) {
 			s.u.ErrType = provider.ErrorType(body)
 		}
 	}
+	if s.sse && geminiEnds(b) {
+		// a Gemini chunk ends its reply by its shape: a candidate's
+		// finishReason, or the final chunk's usageMetadata (geminiEnds);
+		// its chunks name no type and there is no [DONE]
+		s.ended = true
+	}
 	if up := upstreamOf(b); up != "" {
 		s.u.Upstream = up
 	}

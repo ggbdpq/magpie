@@ -17,6 +17,7 @@ package gateway
 // isn't asked to go on (prefill.go).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -86,6 +87,9 @@ func upstreamEnds(data string) bool {
 // neither is a reply cut short, as an Anthropic stream with no
 // message_stop is.
 func geminiEnds(data []byte) bool {
+	if !bytes.Contains(data, []byte(`"finishReason"`)) && !bytes.Contains(data, []byte(`"usageMetadata"`)) {
+		return false
+	}
 	var ch struct {
 		Response *struct {
 			Candidates []struct {

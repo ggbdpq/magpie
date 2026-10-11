@@ -3795,7 +3795,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		switch {
 		case rerr != nil && rerr != io.EOF:
 			failed = cutMidReply(p.Name, rerr)
-		case proto == provider.Anthropic || proto == provider.Responses:
+		case proto == provider.Anthropic || proto == provider.Responses || proto == provider.Gemini:
+			// a Gemini stream is told by its shape, which the sniffer
+			// reads now: a finishReason, or the final usageMetadata
 			failed = p.Name + ": the reply ended before it was complete"
 		}
 		if failed != "" {
@@ -3829,6 +3831,8 @@ func streamFailure(proto provider.Protocol, msg string) []byte {
 		name = "response.failed"
 		v = map[string]any{"type": name, "response": map[string]any{"object": "response", "status": "failed",
 			"error": map[string]any{"code": "server_error", "message": msg}}}
+	case provider.Gemini:
+		v = map[string]any{"error": map[string]any{"code": 502, "message": msg, "status": "UNAVAILABLE"}}
 	default:
 		name = "error"
 		v = map[string]any{"type": name, "error": map[string]any{"type": "api_error", "message": msg}}

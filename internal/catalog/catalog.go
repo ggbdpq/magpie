@@ -408,13 +408,56 @@ func load() map[string]mdProvider {
 					named := map[string]map[string]int{}
 					sizes, outs := map[string]map[int]int{}, map[string]map[int]int{}
 					levels := map[string]map[string]int{}
-					// one vote a provider for each list it gives a model: a
-					// gateway listing it under each host it routes to
-					// (llmgateway's deepinfra/…, xiaomi/…) votes once, not once
-					// a host
 					voted := map[string]bool{}
 					listed = map[string]bool{}
 					canonical = map[string]bool{}
+					// vote is what one entry says of a model, counted for
+					// the id it names it by: its window, reply limit,
+					// thinking, images, levels and name. One vote a
+					// provider for each list it gives a model: a gateway
+					// listing it under each host it routes to (llmgateway's
+					// deepinfra/…, xiaomi/…) votes its levels once, not
+					// once a host.
+					vote := func(who, own, by string, x mdModel) {
+						if x.Name != "" && x.Name != own && x.Name != who {
+							if named[who] == nil {
+								named[who] = map[string]int{}
+							}
+							named[who][x.Name]++
+						}
+						if e := x.efforts(); len(e) > 0 {
+							l := strings.Join(e, ",")
+							if levels[who] == nil {
+								levels[who] = map[string]int{}
+							}
+							if k := by + "\x00" + who + "\x00" + l; !voted[k] {
+								voted[k] = true
+								levels[who][l]++
+							}
+						}
+						if x.Thinks || len(x.efforts()) > 0 {
+							reasons[who]++
+						} else {
+							reasons[who]--
+						}
+						if slices.Contains(x.Modalities.Input, "image") {
+							votes[who]++
+						} else {
+							votes[who]--
+						}
+						if w := x.window(); w > 0 {
+							if sizes[who] == nil {
+								sizes[who] = map[int]int{}
+							}
+							sizes[who][w]++
+						}
+						if o := x.Limit.Output; o > 0 {
+							if outs[who] == nil {
+								outs[who] = map[int]int{}
+							}
+							outs[who][o]++
+						}
+					}
 					for pid, p := range m {
 						for id, x := range p.Models {
 							listed[bareID(id)] = true
@@ -422,43 +465,22 @@ func load() map[string]mdProvider {
 								canonical[bareID(x.Canonical)] = true
 							}
 							OneHourFor(id, x.Cost)
-							if x.Name != "" && x.Name != id && x.Name != bareID(id) {
-								if named[bareID(id)] == nil {
-									named[bareID(id)] = map[string]int{}
-								}
-								named[bareID(id)][x.Name]++
+							vote(bareID(id), id, pid, x)
+						}
+					}
+					// and a model no catalog lists by its id, one entries
+					// only name as their canonical_model_id (#1520), takes
+					// their word for it too: its window, thinking, images
+					// and name are the model's, whoever serves it. One
+					// listed by its id keeps the answers it has, so nothing
+					// known changes.
+					for pid, p := range m {
+						for id, x := range p.Models {
+							if _, _, ok := strings.Cut(x.Canonical, "/"); !ok {
+								continue
 							}
-							if e := x.efforts(); len(e) > 0 {
-								l := strings.Join(e, ",")
-								if levels[bareID(id)] == nil {
-									levels[bareID(id)] = map[string]int{}
-								}
-								if k := pid + "\x00" + bareID(id) + "\x00" + l; !voted[k] {
-									voted[k] = true
-									levels[bareID(id)][l]++
-								}
-							}
-							if x.Thinks || len(x.efforts()) > 0 {
-								reasons[bareID(id)]++
-							} else {
-								reasons[bareID(id)]--
-							}
-							if slices.Contains(x.Modalities.Input, "image") {
-								votes[bareID(id)]++
-							} else {
-								votes[bareID(id)]--
-							}
-							if w := x.window(); w > 0 {
-								if sizes[bareID(id)] == nil {
-									sizes[bareID(id)] = map[int]int{}
-								}
-								sizes[bareID(id)][w]++
-							}
-							if o := x.Limit.Output; o > 0 {
-								if outs[bareID(id)] == nil {
-									outs[bareID(id)] = map[int]int{}
-								}
-								outs[bareID(id)][o]++
+							if c := bareID(x.Canonical); !listed[c] {
+								vote(c, id, pid, x)
 							}
 						}
 					}

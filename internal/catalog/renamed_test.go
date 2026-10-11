@@ -144,7 +144,7 @@ func TestClaude1MMarkIsTheClaudeModel(t *testing.T) {
 // resellers listed it).
 const canonicalRenameCatalog = `{
   "openai": {"name":"OpenAI","models": {
-    "gpt-daybreak-red-latest": {"id":"gpt-daybreak-red-latest","name":"Daybreak Red",
+    "gpt-daybreak-red-latest": {"id":"gpt-daybreak-red-latest","name":"Daybreak Red","reasoning":true,
       "modalities":{"input":["text","image"],"output":["text"]},
       "cost":{"input":12.5,"output":75,"cache_read":1.25,"cache_write":15.625},
       "limit":{"context":400000,"output":128000},
@@ -180,6 +180,41 @@ func TestRelayRenameReachesACanonicalOnlyID(t *testing.T) {
 	}
 }
 
+// The word an entry says of the model its canonical_model_id names is the
+// model's, though no catalog lists the model by that id: Daybreak Red's
+// entry is gpt-5.6-cyber, so its window, reply limit, thinking, images and
+// name are gpt-5.6-cyber's — asked as given (WorkBuddy's shape, #1520) and
+// behind a relay's prefix (#1383's).
+func TestCanonicalOnlyIDCarriesItsMakerWord(t *testing.T) {
+	writeCatalog(t, canonicalRenameCatalog)
+
+	for _, id := range []string{"gpt-5.6-cyber", "claude-gpt-5.6-cyber"} {
+		if got := ContextOf(id); got != 400_000 {
+			t.Errorf("ContextOf(%q) = %d, want 400000", id, got)
+		}
+		if got := OutputOf(id); got != 128_000 {
+			t.Errorf("OutputOf(%q) = %d, want 128000", id, got)
+		}
+		if !Thinks(id) {
+			t.Errorf("Thinks(%q) = false, want true", id)
+		}
+		if !SeesImages(id) {
+			t.Errorf("SeesImages(%q) = false, want true", id)
+		}
+		if got := NameOf(id); got != "Daybreak Red" {
+			t.Errorf("NameOf(%q) = %q, want Daybreak Red", id, got)
+		}
+	}
+	// a listed model's answers are as they were: the daybreak entry's own
+	// id keeps its own window and name
+	if got := ContextOf("gpt-daybreak-red-latest"); got != 400_000 {
+		t.Errorf("ContextOf(gpt-daybreak-red-latest) = %d, want 400000", got)
+	}
+	if got := NameOf("gpt-daybreak-red-latest"); got != "Daybreak Red" {
+		t.Errorf("NameOf(gpt-daybreak-red-latest) = %q, want Daybreak Red", got)
+	}
+}
+
 // canonicalPrefixCatalog is models.dev's api.json as fetched on 2026-10-11
 // for the entries in the shape the guard is about: Cortecs lists Claude's
 // Sonnet 4 as claude-sonnet-4, canonically anthropic/claude-sonnet-4-0 —
@@ -210,12 +245,13 @@ func TestCanonicalIDIsNeverTakenForAnother(t *testing.T) {
 	if p, ok := PricedBy([]string{"drift"}, "claude-sonnet-4-0"); ok {
 		t.Errorf("PricedBy(drift, claude-sonnet-4-0) = %+v, want none", p)
 	}
-	// no data of its own yet: unknown, not Drift's window or name
-	if got := ContextOf("claude-sonnet-4-0"); got != 0 {
-		t.Errorf("ContextOf(claude-sonnet-4-0) = %d, want 0", got)
+	// what it carries is Claude's, as Cortecs's entry says of it, never
+	// Drift's
+	if got := ContextOf("claude-sonnet-4-0"); got != 200_000 {
+		t.Errorf("ContextOf(claude-sonnet-4-0) = %d, want 200000", got)
 	}
-	if got := NameOf("claude-sonnet-4-0"); got != "" {
-		t.Errorf("NameOf(claude-sonnet-4-0) = %q, want none", got)
+	if got := NameOf("claude-sonnet-4-0"); got != "Claude Sonnet 4" {
+		t.Errorf("NameOf(claude-sonnet-4-0) = %q, want Claude Sonnet 4", got)
 	}
 	// the model the id is Drift's for keeps its own price, and a listed id
 	// in front of the prefix is priced by its own entry

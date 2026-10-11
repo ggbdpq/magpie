@@ -362,6 +362,12 @@ var (
 	// listed are the bare ids of every model models.dev lists, whatever it
 	// says of them: an id listed is never taken for another (renamed)
 	listed map[string]bool
+	// canonical are the bare ids of every model models.dev says an entry is
+	// (canonical_model_id, #1520): DeepSeek's deepseek-flash is
+	// deepseek/deepseek-v4.1-flash, the id WorkBuddy and the relays serve it
+	// under, which no catalog lists by it. One is a model as a listed one
+	// is, so it is never taken for another either (renamed)
+	canonical map[string]bool
 
 	syncMu sync.Mutex
 )
@@ -408,9 +414,13 @@ func load() map[string]mdProvider {
 					// a host
 					voted := map[string]bool{}
 					listed = map[string]bool{}
+					canonical = map[string]bool{}
 					for pid, p := range m {
 						for id, x := range p.Models {
 							listed[bareID(id)] = true
+							if _, _, ok := strings.Cut(x.Canonical, "/"); ok {
+								canonical[bareID(x.Canonical)] = true
+							}
 							OneHourFor(id, x.Cost)
 							if x.Name != "" && x.Name != id && x.Name != bareID(id) {
 								if named[bareID(id)] == nil {
@@ -493,7 +503,7 @@ func Reset() {
 	loadMu.Lock()
 	defer loadMu.Unlock()
 	loaded = false
-	mdev, images, windows, outputs, efforts, thinks, names, listed = nil, nil, nil, nil, nil, nil, nil, nil
+	mdev, images, windows, outputs, efforts, thinks, names, listed, canonical = nil, nil, nil, nil, nil, nil, nil, nil, nil
 }
 
 // Sync downloads the models.dev catalog into CachePath. It serializes with
@@ -875,16 +885,19 @@ var relayPrefixes = []string{"claude-"}
 // by b (found), and the window the rename names, if any: a window mark
 // taken off ("deepseek-v4.1-flash[1m]", "[200k]", and Claude Code's
 // claude-opus-5[1m], which is claude-opus-5), then a relay's prefix
-// ("claude-deepseek-v4.1-flash"). An id models.dev lists is always its own
-// model, never renamed; a prefix comes off only when what is left is
-// listed, and names a version ("claude-auto" is not the router "auto").
+// ("claude-deepseek-v4.1-flash"). An id models.dev lists, or knows as an
+// entry's canonical_model_id, is always its own model, never renamed
+// (cortecs's claude-sonnet-4 is claude-sonnet-4-0, not sonnet-4-0); a
+// prefix comes off only when what is left is known — listed, or an entry's
+// canonical_model_id (#1520) — and names a version ("claude-auto" is not
+// the router "auto").
 func renamed(b string) (string, int, bool) {
-	if _, ok := found(b, listed); ok {
+	if knownModel(b) {
 		return "", 0, false
 	}
 	r, w := unmarked(b)
 	if r != b {
-		if _, ok := found(r, listed); ok {
+		if knownModel(r) {
 			return r, w, true
 		}
 	}
@@ -893,11 +906,23 @@ func renamed(b string) (string, int, bool) {
 		if !ok || !strings.ContainsAny(rest, "0123456789") {
 			continue
 		}
-		if _, ok := found(rest, listed); ok {
+		if knownModel(rest) {
 			return rest, w, true
 		}
 	}
 	return "", 0, false
+}
+
+// knownModel is whether models.dev knows b as a model: listed by its id,
+// or named as an entry's canonical_model_id (#1520) — a model no catalog
+// lists by it, which relays serve and Claude Code asks for under a prefix.
+// Either is found as found finds an id, a level or tag after it too.
+func knownModel(b string) bool {
+	if _, ok := found(b, listed); ok {
+		return true
+	}
+	_, ok := found(b, canonical)
+	return ok
 }
 
 // unmarked is a bare id without a window mark at its end ("[1m]",

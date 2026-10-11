@@ -76,6 +76,55 @@ func upstreamEnds(data string) bool {
 	return json.Unmarshal([]byte(data), &v) == nil && lastEvent(v.Type)
 }
 
+// geminiEnds says whether a Gemini chunk ends the reply, the way
+// upstreamEnds does for events that name their type: Gemini's and Code
+// Assist's chunks name no type and there is no [DONE], so the last one is
+// known by the finishReason a candidate carries (Code Assist's wrap theirs
+// in a response) or by the usageMetadata the final chunk carries — a
+// reply that ends on that alone said nothing (#667), and is the empty
+// reply's to answer, not a cut one's. A read that ends on a chunk with
+// neither is a reply cut short, as an Anthropic stream with no
+// message_stop is.
+func geminiEnds(data []byte) bool {
+	var ch struct {
+		Response *struct {
+			Candidates []struct {
+				FinishReason string `json:"finishReason"`
+			} `json:"candidates"`
+			Usage *struct{} `json:"usageMetadata"`
+		} `json:"response"`
+		Candidates []struct {
+			FinishReason string `json:"finishReason"`
+		} `json:"candidates"`
+		Usage *struct{} `json:"usageMetadata"`
+	}
+	if json.Unmarshal(data, &ch) != nil {
+		return false
+	}
+	if ch.Usage != nil || ch.Response != nil && ch.Response.Usage != nil {
+		return true
+	}
+	for _, c := range ch.Candidates {
+		if c.FinishReason != "" {
+			return true
+		}
+	}
+	if ch.Response != nil {
+		for _, c := range ch.Response.Candidates {
+			if c.FinishReason != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// geminiKin is an upstream whose chunks a codeAssistDecoder reads:
+// Gemini (a custom provider's Gemini URL, Vertex AI) and Code Assist.
+func geminiKin(actual provider.Protocol) bool {
+	return actual == provider.Gemini || actual == provider.CodeAssist
+}
+
 // groupTryKey marks a try of a routing group's member. A member whose
 // stream breaks with an error mid-reply is failed as it used to be — the
 // group answers the agent's retry with another of its members (#733) —
@@ -417,7 +466,8 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 					st := upstreamStop([]byte(data))
 					u.add(Usage{Upstream: upstreamOf([]byte(data)), Stop: st})
 					ended = ended || st != "" ||
-						(actual == provider.Anthropic || actual == provider.Responses) && upstreamEnds(data)
+						(actual == provider.Anthropic || actual == provider.Responses) && upstreamEnds(data) ||
+						geminiKin(actual) && geminiEnds([]byte(data))
 					if err := dec(data, attemptSee); err != nil {
 						return err
 					}
@@ -431,14 +481,16 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 					serr = nil
 				}
 				if serr == nil && failed == "" && !ended && !relooped &&
-					(actual == provider.Anthropic || actual == provider.Responses) && r.Context().Err() == nil {
+					(actual == provider.Anthropic || actual == provider.Responses || geminiKin(actual)) && r.Context().Err() == nil {
 					// an Anthropic stream that just stopped — no
 					// stop_reason, no message_stop — or a Responses one
 					// with no response.completed is a reply cut short,
 					// not a finished one: a relay's (蓝猫 on Discord)
 					// read as whole ended the agent's turn a few words
 					// in, with nothing to say why, and a Responses reply
-					// whole would say completed it never said
+					// whole would say completed it never said. A Gemini
+					// stream is told by its finishReason, which its
+					// chunks name no other way.
 					serr = errEndedShort
 				}
 			}

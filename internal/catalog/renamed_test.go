@@ -181,13 +181,49 @@ func TestRelayRenameReachesACanonicalOnlyID(t *testing.T) {
 	}
 }
 
+// The word an entry says of the model its canonical_model_id names is the
+// model's, though no catalog lists the model by that id: Daybreak Red's
+// entry is gpt-5.6-cyber, so its window (limit.input, as a listed model's
+// is), reply limit, thinking, images and name are gpt-5.6-cyber's — asked
+// as given (WorkBuddy's shape, #1520) and behind a relay's prefix (#1383's).
+func TestCanonicalOnlyIDCarriesItsServingEntriesWord(t *testing.T) {
+	writeCatalog(t, canonicalRenameCatalog)
+
+	for _, id := range []string{"gpt-5.6-cyber", "claude-gpt-5.6-cyber"} {
+		if got := ContextOf(id); got != 272_000 {
+			t.Errorf("ContextOf(%q) = %d, want 272000", id, got)
+		}
+		if got := OutputOf(id); got != 128_000 {
+			t.Errorf("OutputOf(%q) = %d, want 128000", id, got)
+		}
+		if !Thinks(id) {
+			t.Errorf("Thinks(%q) = false, want true", id)
+		}
+		if !SeesImages(id) {
+			t.Errorf("SeesImages(%q) = false, want true", id)
+		}
+		if got := NameOf(id); got != "Daybreak Red" {
+			t.Errorf("NameOf(%q) = %q, want Daybreak Red", id, got)
+		}
+	}
+	// a listed model's answers are as they were: the daybreak entry's own
+	// id keeps its own window and name
+	if got := ContextOf("gpt-daybreak-red-latest"); got != 272_000 {
+		t.Errorf("ContextOf(gpt-daybreak-red-latest) = %d, want 272000", got)
+	}
+	if got := NameOf("gpt-daybreak-red-latest"); got != "Daybreak Red" {
+		t.Errorf("NameOf(gpt-daybreak-red-latest) = %q, want Daybreak Red", got)
+	}
+}
+
 // canonicalPrefixCatalog is models.dev's api.json as fetched on 2026-10-11
 // for the entries in the shape the guard is about: Cortecs lists Claude's
-// Sonnet 4 as claude-sonnet-4, canonically anthropic/claude-sonnet-4-0 —
-// the canonical id itself starts with the prefix a relay puts in front —
-// and no catalog lists claude-sonnet-4-0 by it (one of the canonical-only
-// ids). A catalog naming a sonnet-4-0 of its own, here Drift's, must not
-// take Claude's model for it.
+// Sonnet 4 as claude-sonnet-4 and Requesty as claude-sonnet-4@eu, both
+// canonically anthropic/claude-sonnet-4-0 — the canonical id itself starts
+// with the prefix a relay puts in front — and no catalog lists
+// claude-sonnet-4-0 by it (one of the canonical-only ids). A catalog naming
+// a sonnet-4-0 of its own, here Drift's, must not take Claude's model for
+// it.
 const canonicalPrefixCatalog = `{
   "cortecs": {"name":"Cortecs","models": {
     "claude-sonnet-4": {"id":"claude-sonnet-4","name":"Claude Sonnet 4 (latest)",
@@ -195,6 +231,14 @@ const canonicalPrefixCatalog = `{
       "modalities":{"input":["text","image","pdf"],"output":["text"]},
       "cost":{"input":2.989,"output":14.945,"cache_read":0.296,"cache_write":3.707},
       "limit":{"context":200000,"output":65000},
+      "canonical_model_id":"anthropic/claude-sonnet-4-0"}}},
+  "requesty": {"name":"Requesty","models": {
+    "claude-sonnet-4@eu": {"id":"claude-sonnet-4@eu","name":"Claude Sonnet 4 (latest) (EU)",
+      "attachment":true,"reasoning":true,
+      "modalities":{"input":["text","image","pdf"],"output":["text"]},
+      "cost":{"input":3,"output":15,"cache_read":0.3,"cache_write":3.75,
+        "tiers":[{"input":6,"output":22.5,"cache_read":0.6,"cache_write":7.5,"tier":{"type":"context","size":200000}}]},
+      "limit":{"context":1000000,"output":64000},
       "canonical_model_id":"anthropic/claude-sonnet-4-0"}}},
   "drift": {"name":"Drift","models": {
     "sonnet-4-0": {"id":"sonnet-4-0","name":"Drift Sonnet",
@@ -214,12 +258,17 @@ func TestCanonicalIDIsNeverTakenForAnother(t *testing.T) {
 			t.Errorf("PricedBy(drift, %q) = %+v, want none", id, p)
 		}
 	}
-	// no data of its own yet: unknown, not Drift's window or name
-	if got := ContextOf("claude-sonnet-4-0"); got != 0 {
-		t.Errorf("ContextOf(claude-sonnet-4-0) = %d, want 0", got)
+	// what it carries is Claude's, as the entries serving it say of it,
+	// never Drift's; Cortecs and Requesty both vote, and their tie goes to
+	// the smaller window and reply limit and the shorter name
+	if got := ContextOf("claude-sonnet-4-0"); got != 200_000 {
+		t.Errorf("ContextOf(claude-sonnet-4-0) = %d, want 200000", got)
 	}
-	if got := NameOf("claude-sonnet-4-0"); got != "" {
-		t.Errorf("NameOf(claude-sonnet-4-0) = %q, want none", got)
+	if got := OutputOf("claude-sonnet-4-0"); got != 64_000 {
+		t.Errorf("OutputOf(claude-sonnet-4-0) = %d, want 64000", got)
+	}
+	if got := NameOf("claude-sonnet-4-0"); got != "Claude Sonnet 4 (latest)" {
+		t.Errorf("NameOf(claude-sonnet-4-0) = %q, want Claude Sonnet 4 (latest)", got)
 	}
 	// the model the id is Drift's for keeps its own price, and a listed id
 	// in front of the prefix is priced by its own entry

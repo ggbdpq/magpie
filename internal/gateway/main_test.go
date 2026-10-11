@@ -59,6 +59,12 @@ func isolatedTests(m *testing.M) (int, error) {
 			return 1, err
 		}
 	}
+	// The machine's proxy variables too: net/http freezes them into its
+	// first routed request, so a test that sets its own afterwards (search's
+	// Auto, by ALL_PROXY alone) reads the machine's instead, and its
+	// searcher goes out through a proxy that cannot reach the test's
+	// servers.
+	testenv.ClearProxy()
 	// Finding an inert CLI also prevents discovery from falling back to
 	// one installed at an absolute system path. Tests can prepend their
 	// own fakes, as fakeClaude does, and still use ordinary shell tools.
@@ -94,9 +100,16 @@ func isolatedTests(m *testing.M) (int, error) {
 }
 
 // The package's tests run as an isolated test binary: nothing the marker
-// turns off (a CLI identity kept on disk, #1524) runs behind a test's back.
+// turns off (a CLI identity kept on disk, #1524) runs behind a test's back,
+// and no proxy of the machine's stands for net/http to freeze into its
+// first routed request.
 func TestRunsAsAnIsolatedTestBinary(t *testing.T) {
 	if os.Getenv(testenv.Marker) == "" {
 		t.Fatalf("TestMain left %s unset", testenv.Marker)
+	}
+	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		if v, ok := os.LookupEnv(k); ok {
+			t.Errorf("TestMain left %s=%q set", k, v)
+		}
 	}
 }

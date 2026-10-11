@@ -34,13 +34,18 @@ func (group) join(*exec.Cmd) {}
 // caller, which waits for it next.
 func (group) kill(cmd *exec.Cmd) {
 	pgid := cmd.Process.Pid
-	if signalGroup(pgid) != nil {
+	// the one kill function for the whole kill, taken once: the loop below
+	// outlives the caller, so a loop a kill began earlier, another test's
+	// among them, is still reading while a test swaps signalGroup for its
+	// own, and no test can wait for a loop it didn't start.
+	signal := signalGroup
+	if signal(pgid) != nil {
 		return // none of it is left
 	}
 	go func() {
 		for end := time.Now().Add(killFor); time.Now().Before(end); {
 			time.Sleep(5 * time.Millisecond)
-			if signalGroup(pgid) != nil {
+			if signal(pgid) != nil {
 				return
 			}
 		}
@@ -48,6 +53,7 @@ func (group) kill(cmd *exec.Cmd) {
 }
 
 // signalGroup kills the group pgid leads; a var so a test can have it miss.
+// Readers take it once at kill's entry, never from the loop's goroutine.
 var signalGroup = func(pgid int) error { return syscall.Kill(-pgid, syscall.SIGKILL) }
 
 // killFor is how long a group is signalled again while some of it lives.

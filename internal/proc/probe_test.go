@@ -138,6 +138,11 @@ func TestProbeKillEndsWhatTheSignalMissed(t *testing.T) {
 	old := signalGroup
 	var mu sync.Mutex
 	missed := false
+	// the kill's retry loop reads signalGroup on its own goroutine, past
+	// the probe's end: it ends at the first signal that finds the group
+	// gone, so the test waits for that before putting the old one back
+	loopDone := make(chan struct{})
+	var once sync.Once
 	signalGroup = func(pgid int) error {
 		mu.Lock()
 		first := !missed
@@ -146,9 +151,20 @@ func TestProbeKillEndsWhatTheSignalMissed(t *testing.T) {
 		if first {
 			return nil // sent, and reached nobody
 		}
-		return old(pgid)
+		err := old(pgid)
+		if err != nil {
+			once.Do(func() { close(loopDone) })
+		}
+		return err
 	}
-	t.Cleanup(func() { signalGroup = old })
+	t.Cleanup(func() {
+		select {
+		case <-loopDone:
+		case <-time.After(15 * time.Second):
+			t.Error("the kill loop still signals the group")
+		}
+		signalGroup = old
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	done := runProbe(ProbeContext(ctx, sh))

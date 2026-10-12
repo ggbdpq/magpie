@@ -244,7 +244,8 @@ func askRemoteKeyLimit(ctx context.Context, p Provider, key string) (*remoteKeyA
 		return nil, fmt.Errorf("%s answered %s", remoteName(p), res.Status)
 	}
 	var a remoteKeyAnswer
-	if err := json.Unmarshal(b, &a); err != nil || a.Limited == nil {
+	if err := json.Unmarshal(b, &a); err != nil || a.Limited == nil ||
+		*a.Limited && (a.Limit == nil || a.Limit.TokenLimit <= 0 && a.Limit.CostLimit <= 0) {
 		// not the answer of a magpie's keyLimit: something else at that
 		// address, or a reply cut short
 		return nil, fmt.Errorf("%s answered its key's limit in a form magpie doesn't read", remoteName(p))

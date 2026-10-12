@@ -91,10 +91,11 @@ var usedCache struct {
 	m       map[string]map[string]Allowance // agent → user → allowance
 	at      map[string]time.Time
 	loading map[string]chan struct{} // closed when the fetch in flight is done
-	// renewed: when an account's windows were last started again (a
-	// Codex reset spent), by agent/user: a reading begun before says
-	// nothing of them
-	renewed map[string]time.Time
+	// renewed: the generation when an account's windows were started
+	// again. Read/reset order cannot use the clock: two events can have
+	// the same timestamp, even with its monotonic part.
+	renewed    map[string]uint64
+	generation uint64
 	// seen: each account's windows as last read, and when, by
 	// agent/user, kept through a reading that failed, for the next to be
 	// told renewed by (renewedFrom)
@@ -420,11 +421,11 @@ func Allowances(agent string) map[string]Allowance {
 	if done == nil && time.Since(c.at[agent]) > time.Minute {
 		done = make(chan struct{})
 		c.loading[agent] = done
+		began := c.generation
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			share := renewalShare(agent) // read before the lock: it reads providers.json
-			began := time.Now()
 			all := map[string]Allowance{}
 			readings, readAt := loginUsageAt(ctx, agent)
 			for user, q := range readings {
@@ -446,7 +447,7 @@ func Allowances(agent string) map[string]Allowance {
 			var renewed []string
 			for user, a := range all {
 				key := agent + "/" + strings.ToLower(user)
-				if c.renewed[key].After(began) {
+				if c.renewed[key] > began {
 					// started again while this was read: not known till
 					// it is read again, at once
 					delete(all, user)
@@ -578,9 +579,10 @@ func forgetAllowance(agent, user string) {
 	c.Lock()
 	defer c.Unlock()
 	if c.renewed == nil {
-		c.renewed = map[string]time.Time{}
+		c.renewed = map[string]uint64{}
 	}
-	c.renewed[agent+"/"+strings.ToLower(user)] = time.Now()
+	c.generation++
+	c.renewed[agent+"/"+strings.ToLower(user)] = c.generation
 	delete(c.seen, agent+"/"+strings.ToLower(user)) // told already, by renewedNow
 	if c.at != nil {
 		c.at[agent] = time.Time{}

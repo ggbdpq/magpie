@@ -116,6 +116,76 @@ func TestSavedButSignedOutCanBeRemoved(t *testing.T) {
 	}
 }
 
+// The keychain item under the account is the sign-in Claude Code goes by,
+// emptied or not: it reads no file beside it (yetone/magpie#1742). So an
+// emptied item beside a still-parseable file is signed out, and a sign-in
+// made in magpie is put in the item, not beside it.
+func TestClaudeEmptiedKeychainItemIsTheSignInBesideAFile(t *testing.T) {
+	shellFakes(t)
+	home := claudeHome(t)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("USER", "tester")
+	creds := claudeSignIn(t, home, time.Now().Add(time.Hour))
+	bin := filepath.Join(home, "bin")
+	os.MkdirAll(bin, 0o755)
+	added := filepath.Join(home, "added.log")
+	// what Claude Code left of a refused refresh: the item is there, and it
+	// reads as JSON, only with no tokens in it
+	testenv.Program(t, filepath.Join(bin, "security"), `#!/bin/sh
+case "$1" in
+find-generic-password)
+	case "$*" in
+	*"-a tester"*) echo '{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0,"refreshTokenExpiresAt":1791392301433}}' ;;
+	*) exit 1 ;;
+	esac ;;
+add-generic-password)
+	echo "$*" >> '`+added+`' ;;
+*) exit 1 ;;
+esac
+`)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	claudeKeychain = true
+	forgetClaudeCredential()
+	if _, loc, ok := readClaudeCredential(); ok {
+		t.Fatalf("an emptied keychain item was passed over for the file beside it (%+v)", loc)
+	} else if !loc.keychain || loc.account != "tester" {
+		t.Fatalf("the emptied item is not where a sign-in would go: %+v", loc)
+	}
+	if err := putClaudeLogin(savedLogin{Agent: "claude", User: "fresh@example.com", Auth: mustJSONRaw(t, map[string]any{
+		"claudeAiOauth": map[string]any{
+			"accessToken": "fresh-access", "refreshToken": "fresh-refresh",
+			"expiresAt": time.Now().Add(time.Hour).UnixMilli(), "subscriptionType": "max",
+		}})}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(creds); strings.Contains(string(b), "fresh-access") {
+		t.Fatal("the fresh sign-in went into the file beside the item Claude Code reads")
+	}
+	if b, _ := os.ReadFile(added); !strings.Contains(string(b), "fresh-access") {
+		t.Fatalf("the fresh sign-in was not put in the keychain item: %s", b)
+	}
+}
+
+// With no item under the account, the file beside it is the sign-in, as
+// Claude Code reads it.
+func TestClaudeFileSignInWhenNoKeychainItem(t *testing.T) {
+	shellFakes(t)
+	home := claudeHome(t)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("USER", "tester")
+	creds := claudeSignIn(t, home, time.Now().Add(time.Hour))
+	bin := filepath.Join(home, "bin")
+	os.MkdirAll(bin, 0o755)
+	testenv.Program(t, filepath.Join(bin, "security"), "#!/bin/sh\nexit 1\n")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	claudeKeychain = true
+	forgetClaudeCredential()
+	c, loc, ok := readClaudeCredential()
+	if !ok || c.OAuth.AccessToken != "sk-ant-oat01-old" || loc.keychain || loc.path != creds {
+		t.Fatalf("the file is not the sign-in where no keychain item is: %v %+v %+v", ok, c.OAuth, loc)
+	}
+}
+
 // Claude Code's sign-in is read from the keychain as Claude Code reads it,
 // under its account: another item for the same service (one an earlier
 // sign-in left) that comes first by service alone isn't taken for it.

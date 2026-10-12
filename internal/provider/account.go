@@ -432,6 +432,15 @@ func readClaudeCredential() (claudeCredentials, claudeCredentialLocation, bool) 
 	if settings.AccountDiscoveryOff() {
 		return claudeCredentials{}, claudeCredentialLocation{}, false
 	}
+	if claudeKeychain {
+		// the item under the account ($USER) is the sign-in Claude Code goes
+		// by, emptied or not: it reads no file beside it, so an emptied item
+		// is a sign-out even where an older file still parses, and a sign-in
+		// made in magpie is put in the item, not beside it (#1742)
+		if c, loc, ok, found := claudeKeychainItem(claudeKeychainAccount()); found {
+			return c, loc, ok
+		}
+	}
 	path := claudeCredentialsPath()
 	if b, err := readAccountFile(path); err == nil {
 		if c, ok := parseClaudeCredentials(b); ok {
@@ -441,34 +450,44 @@ func readClaudeCredential() (claudeCredentials, claudeCredentialLocation, bool) 
 	if !claudeKeychain {
 		return claudeCredentials{}, claudeCredentialLocation{}, false
 	}
-	// Claude Code reads the item under its account ($USER); by service
-	// alone the keychain may hand back another one — left from an earlier
-	// sign-in — which isn't the sign-in in use
-	account := claudeKeychainAccount()
-	var c claudeCredentials
-	var ok, wasHex bool
-	for _, args := range [][]string{{"-a", account}, nil} {
-		out, err := proc.Command("security", append([]string{"find-generic-password", "-s", "Claude Code-credentials", "-w"}, args...)...).Output()
-		if err != nil {
-			continue
-		}
-		var b []byte
-		b, wasHex = keychainText(bytes.TrimSpace(out))
-		if c, ok = parseClaudeCredentials(b); ok {
-			break
-		}
+	// by service alone the keychain may hand back another item — left from an
+	// earlier sign-in — which isn't the sign-in in use: Claude Code reads no
+	// such item, so it only serves when neither the account's item nor the
+	// file has a sign-in to run on
+	if c, loc, ok, found := claudeKeychainItem(""); found && ok {
+		return c, loc, ok
 	}
-	if !ok {
-		return claudeCredentials{}, claudeCredentialLocation{}, false
+	return claudeCredentials{}, claudeCredentialLocation{}, false
+}
+
+// claudeKeychainItem reads the "Claude Code-credentials" item for a keychain
+// account, or by service alone when the account is "". found says an item is
+// there that reads as JSON — the sign-in Claude Code goes by, emptied or not
+// (an item that reads as no JSON it takes for an absent one, and so does
+// readClaudeDir of the item in a config directory); ok, that it holds tokens
+// to run on.
+func claudeKeychainItem(account string) (c claudeCredentials, loc claudeCredentialLocation, ok, found bool) {
+	args := []string{"find-generic-password", "-s", "Claude Code-credentials", "-w"}
+	if account != "" {
+		args = append(args, "-a", account)
 	}
-	loc := claudeCredentialLocation{keychain: true, account: account}
-	if wasHex {
+	out, err := proc.Command("security", args...).Output()
+	if err != nil {
+		return claudeCredentials{}, claudeCredentialLocation{}, false, false
+	}
+	b, wasHex := keychainText(bytes.TrimSpace(out))
+	c, ok = parseClaudeCredentials(b)
+	if c.raw == nil {
+		return claudeCredentials{}, claudeCredentialLocation{}, false, false
+	}
+	loc = claudeCredentialLocation{keychain: true, account: claudeKeychainAccount()}
+	if wasHex && ok {
 		// written by magpie before it wrote them on one line: Claude Code
 		// reads that hex as no sign-in, so it is written again as it
 		// writes it
 		saveClaudeCredential(loc, c)
 	}
-	return c, loc, ok
+	return c, loc, ok, true
 }
 
 // claudeKeychainAccount is the account Claude Code keeps its sign-in

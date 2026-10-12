@@ -104,7 +104,7 @@ func RefreshUsage(ctx context.Context, provider, user string) {
 	ctx, seq := quotaReading(ctx)
 	if provider == "claude" {
 		// Claude Code's /usage, run when the user asks (claudeWindows)
-		claudeAsked.Store(time.Now().UnixNano())
+		markClaudeUsageAsked()
 	}
 	var wg sync.WaitGroup
 	wg.Add(3)

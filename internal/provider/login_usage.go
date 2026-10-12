@@ -198,8 +198,8 @@ func loginReading(ctx context.Context, l Login) loginUsageEntry {
 		}
 		c.pending[key] = r
 		ctx, _ = quotaReading(ctx)
+		asked := claudeAskGeneration.Load()
 		go func() {
-			start := time.Now()
 			// read for all who wait for it: no one's ctx cuts it short, but
 			// it is bounded as the Usage page's refresh is
 			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), subscriptionTimeout)
@@ -211,7 +211,7 @@ func loginReading(ctx context.Context, l Login) loginUsageEntry {
 			// (AskClaudeUsage), as SubscriptionUsage reads it: neither is kept
 			if c.pending[key] == r {
 				delete(c.pending, key)
-				if l.Agent != "claude" || claudeAsked.Load() <= start.UnixNano() {
+				if l.Agent != "claude" || claudeAskGeneration.Load() == asked {
 					if c.m == nil {
 						c.m = map[string]loginUsageEntry{}
 					}

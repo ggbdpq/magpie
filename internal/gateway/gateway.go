@@ -2841,6 +2841,7 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 	// Normalize for the actual destination, separately on each fallback.
 	// Native ChatGPT accounts accept standalone tool outputs themselves.
 	if from == provider.Responses && (p.Account == nil || p.Account.Agent != "codex") {
+		body = joinToolRuns(body)
 		body = orphanedToolOutputs(body)
 		body = pairToolItems(body)
 	}

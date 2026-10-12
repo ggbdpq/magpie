@@ -481,6 +481,106 @@ func parseResponses(body []byte) (*Request, error) {
 	return r, nil
 }
 
+// toolCallItem is a Responses input item that calls a tool, and
+// toolResultItem one that answers a call.
+func toolCallItem(t string) bool {
+	switch t {
+	case "function_call", "custom_tool_call", "tool_search_call":
+		return true
+	}
+	return false
+}
+
+func toolResultItem(t string) bool {
+	switch t {
+	case "function_call_output", "custom_tool_call_output", "tool_search_output":
+		return true
+	}
+	return false
+}
+
+// joinToolRuns moves an item that sits inside a run of tool calls and
+// results — between one of its calls and a result still owed — to the end
+// of that run, where the run a strict upstream checks is whole. Codex
+// writes such an item itself: when a tool returned an image it resized, its
+// <image_resize_notice> goes between the two results of one assistant step,
+// and an upstream that checks the exchange on the chat form it turns a
+// relayed request into refuses the whole request, naming a result that is
+// in it — Volcengine's coding plan answers 400 "An assistant message with
+// 'tool_calls' must be followed by tool messages responding to each
+// 'tool_call_id'" (#1752). This is the ordering half of the mend
+// pairToolMessages has made on the Chat build since #1275, beside
+// pairToolItems (a call no result answers, #1341) and orphanedToolOutputs
+// (a result with no call). An item between two exchanges that are each
+// whole stays where it is, and a call whose result is behind it or not in
+// the request opens no run: the result naming a call another request
+// carried stays as it is, and pairToolItems sets a lone call's synthetic
+// result right after the call. A moved item keeps its bytes, and moved
+// items keep their order among each other.
+func joinToolRuns(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`_call"`)) {
+		return body
+	}
+	var q map[string]json.RawMessage
+	if decodeJSON(body, &q) != nil {
+		return body
+	}
+	var input []json.RawMessage
+	if decodeJSON(q["input"], &input) != nil {
+		return body
+	}
+	type item struct {
+		Type   string `json:"type"`
+		CallID string `json:"call_id"`
+	}
+	items := make([]item, len(input))
+	answerAt := map[string]int{} // a call's first result in the request, by index
+	for i, raw := range input {
+		if decodeJSON(raw, &items[i]) != nil {
+			items[i] = item{}
+			continue
+		}
+		if toolResultItem(items[i].Type) && items[i].CallID != "" {
+			if _, ok := answerAt[items[i].CallID]; !ok {
+				answerAt[items[i].CallID] = i
+			}
+		}
+	}
+	out := make([]json.RawMessage, 0, len(input))
+	var held []json.RawMessage // items a run in hand broke, in their order
+	moved := false
+	owed := map[string]bool{} // calls of the run in hand whose result is still ahead
+	for i, raw := range input {
+		t, id := items[i].Type, items[i].CallID
+		switch {
+		case toolCallItem(t):
+			if id != "" && answerAt[id] > i {
+				owed[id] = true
+			}
+		case toolResultItem(t) && id != "":
+			delete(owed, id)
+		case len(owed) > 0:
+			held, moved = append(held, raw), true
+			continue
+		}
+		out = append(out, raw)
+		if len(owed) == 0 && len(held) > 0 {
+			out = append(out, held...)
+			held = nil
+		}
+	}
+	out = append(out, held...)
+	if !moved {
+		return body
+	}
+	q["input"], _ = marshalPlain(out)
+	encoded, err := marshalPlain(q)
+	if err != nil {
+		return body
+	}
+	return encoded
+}
+
 // orphanedToolOutputs turns a tool result with no call ID into a user message.
 // Codex uses standalone outputs for cross-thread notifications. Backends
 // requiring paired outputs still need the delivered text, without a fake call ID.

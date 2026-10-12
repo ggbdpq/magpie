@@ -68,9 +68,13 @@ func serveMCP(w http.ResponseWriter, r *http.Request, what string, limit int64, 
 		http.Error(w, "POST JSON-RPC messages here (MCP Streamable HTTP)", http.StatusMethodNotAllowed)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, limit))
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if int64(len(body)) > limit {
+		http.Error(w, "MCP request body exceeds the size limit", http.StatusRequestEntityTooLarge)
 		return
 	}
 	body = bytes.TrimSpace(body)

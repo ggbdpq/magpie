@@ -209,6 +209,12 @@ its own. Legacy SSE isn't served; a client that only speaks stdio mounts it
 through `mcp-remote`. The path has two segments under `/mcp/`, so it can't
 hide a signed-in server's `/mcp/{name}`.
 
+The shared `serveMCP` reads at most one byte past each server's body limit
+(1 MiB for web search, 32 MiB for vision). An oversized body is refused
+with HTTP 413 before any JSON-RPC message is executed, including when no
+Content-Length is known; a body exactly at the limit is still accepted.
+`TestOwnMCPRejectsOversizedBody` covers both servers and the boundary.
+
 It is a gateway route like the others. `lanGuard` takes a gateway key from
 another machine (only while magpie is shared) and refuses a rebound browser
 host, and the handler checks `local`/`sharedWith` again as a backstop when

@@ -255,6 +255,98 @@ func stepcodeStartup(cfg stepcodeTOML) string {
 	return first
 }
 
+// stepcodeRenameRef is one enabledModels entry with provider from renamed
+// to to. A glob or a thinking level after the model stays. An entry that
+// does not name that provider is the user's and is left as it is.
+func stepcodeRenameRef(s, from, to string) (string, bool) {
+	rest, ok := strings.CutPrefix(s, magpieID+"/"+from+"/")
+	if !ok {
+		return s, false
+	}
+	return magpieID + "/" + to + "/" + rest, true
+}
+
+// stepcodeRenameList renames magpie/<from>/ entries. The model just set is
+// appended before the old entry is renamed onto the same text, so that
+// second copy is dropped. A list that names nothing of that provider is
+// returned unchanged, a repeated entry of the user's included.
+func stepcodeRenameList(pats []string, from, to string) ([]string, bool) {
+	if len(pats) == 0 {
+		return pats, false
+	}
+	out := make([]string, 0, len(pats))
+	seen := map[string]bool{}
+	fromRename := map[string]bool{}
+	renamed := false
+	for _, p := range pats {
+		n, hit := stepcodeRenameRef(p, from, to)
+		renamed = renamed || hit
+		if seen[n] && (hit || fromRename[n]) {
+			continue
+		}
+		if !seen[n] {
+			seen[n] = true
+			fromRename[n] = hit
+		}
+		out = append(out, n)
+	}
+	if !renamed {
+		return pats, false
+	}
+	return out, true
+}
+
+// stepcodeRenameRefs moves enabledModels off a renamed provider, in the
+// file and in the scope disconnect remembers, so a reset does not put the
+// old id back and still takes out only what magpie appended.
+func stepcodeRenameRefs(at place, path, from, to string) (bool, error) {
+	cur, err := readStepcodeTOML(path)
+	if err != nil {
+		return false, err
+	}
+	moved := false
+	if cur.Scope != nil {
+		next, ok := stepcodeRenameList(*cur.Scope, from, to)
+		if ok {
+			raw, err := stepcodeScopeRaw(next)
+			if err != nil {
+				return false, err
+			}
+			if err := edit.SetTOMLTopPreserving(path, edit.KV{Path: "enabledModels", Value: raw}); err != nil {
+				return false, err
+			}
+			moved = true
+		}
+	}
+	state, err := loadStepcodeState(at)
+	if err != nil {
+		return moved, err
+	}
+	if state == nil {
+		return moved, nil
+	}
+	changed := false
+	if next, ok := stepcodeRenameList(state.OrigScope, from, to); ok {
+		state.OrigScope = next
+		changed = true
+	}
+	if next, ok := stepcodeRenameList(state.LastScope, from, to); ok {
+		state.LastScope = next
+		changed = true
+	}
+	if next, ok := stepcodeRenameList(state.AppendedScope, from, to); ok {
+		state.AppendedScope = next
+		changed = true
+	}
+	if !changed {
+		return moved, nil
+	}
+	if err := stepcodeStoreState(at, state); err != nil {
+		return moved, err
+	}
+	return true, nil
+}
+
 func stepcodeIn(at place) *Agent {
 	dir := stepcodeDir(at)
 	path := filepath.Join(dir, "config.toml")
@@ -419,6 +511,11 @@ func stepcodeIn(at place) *Agent {
 				return err
 			}
 			return syncJSON(modelsPath, "providers."+magpieID, block)
+		},
+		// enabledModels names models beyond the one field, as omp's list
+		// does: a provider renamed has to take those entries with it
+		RenameRefs: func(from, to string) (bool, error) {
+			return stepcodeRenameRefs(at, path, from, to)
 		},
 		Fields: []Field{
 			{

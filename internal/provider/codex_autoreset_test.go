@@ -1,7 +1,14 @@
 package provider
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,5 +85,81 @@ func TestAutoResetKeptPastRestart(t *testing.T) {
 	a.Unlock()
 	if !kept {
 		t.Fatal("what was spent was forgotten")
+	}
+}
+
+// A codex-autoreset.json a crash left unreadable (#1505's zeroed file, or
+// a half-written one) is copied aside before a use is written over it, as
+// codex-resets-used.json's is: read as none it would have the week's
+// auto-use spend a second reset, and the write would take the evidence
+// with it. The use itself is still kept.
+func TestAutoResetUnreadableKeptAside(t *testing.T) {
+	signIn(t)
+	if err := SetCodexAutoReset("me@example.com", true); err != nil {
+		t.Fatal(err)
+	}
+	p := autoReset.where()
+	os.MkdirAll(filepath.Dir(p), 0o755)
+	bad := strings.Repeat("\x00", 64) // what a hard power-off left of #1505's files
+	if err := os.WriteFile(p, []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := &autoReset
+	a.Lock()
+	a.path = "" // read afresh, as a new magpie would
+	a.Unlock()
+
+	soon := time.Now().Add(20 * time.Minute).UTC().Format(time.RFC3339)
+	var consumed atomic.Int32
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/backend-api/wham/usage":
+			json.NewEncoder(w).Encode(map[string]any{"plan_type": "pro",
+				"rate_limit": map[string]any{
+					"primary_window":   map[string]any{"used_percent": 10, "limit_window_seconds": 18000},
+					"secondary_window": map[string]any{"used_percent": 100, "limit_window_seconds": 604800, "reset_at": time.Now().Add(72 * time.Hour).Unix()},
+				},
+				"rate_limit_reset_credits": map[string]any{"available_count": 2}})
+		case "/backend-api/wham/rate-limit-reset-credits":
+			json.NewEncoder(w).Encode(map[string]any{"available_count": 2, "credits": []any{
+				map[string]any{"id": "soon", "status": "available", "expires_at": soon},
+			}})
+		case "/backend-api/wham/rate-limit-reset-credits/consume":
+			consumed.Add(1)
+			json.NewEncoder(w).Encode(map[string]any{"code": "reset", "windows_reset": 2})
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(fake.Close)
+	oldBase := CodexBase
+	CodexBase = fake.URL + "/backend-api/codex"
+	t.Cleanup(func() { CodexBase = oldBase })
+
+	if out, err := AutoUseCodexReset(t.Context(), "me@example.com"); err != nil || out.Code != "reset" {
+		t.Fatalf("the week used up: %+v %v", out, err)
+	}
+	aside, _ := filepath.Glob(p + ".bad-*")
+	if len(aside) != 1 {
+		t.Fatalf("the unreadable file was written over with nothing kept aside: %v", aside)
+	}
+	if kept, _ := os.ReadFile(aside[0]); string(kept) != bad {
+		t.Fatalf("the copy holds %q, want the unreadable bytes", kept)
+	}
+	// and the use itself is kept: read afresh, no second one this week
+	a.Lock()
+	a.path = "" // as a new magpie would
+	a.load()
+	_, ok := a.spent["me@example.com"]
+	a.Unlock()
+	if !ok {
+		t.Fatal("what was spent was forgotten")
+	}
+	fakeCodexResets(t, 2, nil) // would say the week is not used up, if asked
+	if out, err := AutoUseCodexReset(t.Context(), "me@example.com"); err != nil || out.Code != "" {
+		t.Fatalf("a second one the same week: %+v %v", out, err)
+	}
+	if consumed.Load() != 1 {
+		t.Fatalf("consumed %d resets, want 1", consumed.Load())
 	}
 }

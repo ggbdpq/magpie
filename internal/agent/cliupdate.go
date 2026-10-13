@@ -207,7 +207,12 @@ func howInstalled(spec cliSpec, bin string) *updater {
 			if len(spec.npm) > 0 {
 				pkg = spec.npm[0]
 			}
-			return &updater{via: "self", pkg: pkg, cmd: c, latest: spec.latest}
+			u := &updater{via: "self", pkg: pkg, cmd: c, latest: spec.latest}
+			// Its updater may call npm by name; use this install's node and npm.
+			if n := fromNodeModules(pkg, bin, slash); n != nil {
+				u.path = n.path
+			}
+			return u
 		}
 	}
 	// a formula of the agent's own is Homebrew's, though a Node one keeps

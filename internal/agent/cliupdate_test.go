@@ -173,6 +173,34 @@ func TestHowInstalled(t *testing.T) {
 		}
 	}
 
+	// OmO's updater calls npm by name; npm's node must belong to the same
+	// install too, or its global prefix follows the other node on PATH.
+	omoPrefix := filepath.Join(tmp, "node4")
+	file(t, filepath.Join(omoPrefix, "lib/node_modules/omo-ai/bin/omo.js"), "#!/bin/sh\nexec npm i -g omo-ai@5.1.32\n")
+	ownNpm := file(t, filepath.Join(omoPrefix, "bin/npm"), "#!/usr/bin/env node\n")
+	file(t, filepath.Join(omoPrefix, "bin/node"), "#!/bin/sh\n[ \"$1\" = '"+ownNpm+"' ] || exit 1\nprintf '%s\\n' 'updated with own node/npm'\n")
+	file(t, filepath.Join(fake, "npm"), "#!/usr/bin/env node\n")
+	file(t, filepath.Join(fake, "node"), "#!/bin/sh\nprintf '%s\\n' 'npm error code EACCES' >&2\nexit 1\n")
+	omo := link(t, "../lib/node_modules/omo-ai/bin/omo.js", filepath.Join(omoPrefix, "bin/omo"))
+	self := howInstalled(cliSpecs["omo"], omo)
+	if self == nil {
+		t.Fatal("OmO has no updater")
+	}
+	if self.via != "self" || !reflect.DeepEqual(self.cmd, []string{omo, "update"}) || self.path != filepath.Join(omoPrefix, "bin") {
+		t.Errorf("omo in an npm tree: %+v", self)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if out, err := runUpdate(ctx, self); err != nil || string(out) != "updated with own node/npm\n" {
+		t.Fatalf("OmO used another install's node/npm: %q, %v", out, err)
+	}
+	if err := os.Remove(ownNpm); err != nil {
+		t.Fatal(err)
+	}
+	if u := howInstalled(cliSpecs["omo"], omo); u == nil || u.via != "self" || u.path != "" || u.admin || !reflect.DeepEqual(u.cmd, []string{omo, "update"}) {
+		t.Fatalf("OmO without its own npm: %+v", u)
+	}
+
 	// bun's global, with bun beside the link
 	home := filepath.Join(tmp, "home")
 	file(t, filepath.Join(home, ".bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js"), "")
@@ -292,6 +320,11 @@ func TestHowInstalledWindowsShim(t *testing.T) {
 	u := howInstalled(cliSpecs["claude"], shim)
 	if u == nil || !reflect.DeepEqual(u.cmd, []string{npm, "install", "-g", "--prefix", dir, "@anthropic-ai/claude-code@latest"}) {
 		t.Fatalf("windows shim: %+v", u)
+	}
+	file(t, filepath.Join(dir, `node_modules\omo-ai\bin\omo.js`), "")
+	omo := file(t, filepath.Join(dir, "omo.cmd"), "@ECHO off\r\n\"%dp0%\\node_modules\\omo-ai\\bin\\omo.js\" %*\r\n")
+	if u := howInstalled(cliSpecs["omo"], omo); u == nil || u.via != "self" || u.path != dir || !reflect.DeepEqual(u.cmd, []string{omo, "update"}) {
+		t.Fatalf("Windows OmO self-update: %+v", u)
 	}
 	// the native claude.exe in ~/.local/bin updates itself
 	exe := file(t, filepath.Join(t.TempDir(), `.local\bin\claude.exe`), "MZ")

@@ -130,7 +130,7 @@ func TestOmoCLI(t *testing.T) {
 		t.Fatalf("version %q", v)
 	}
 	u := howInstalled(cliSpecs["omo"], "/home/me/.bun/bin/omo")
-	if u == nil || u.via != "self" || u.pkg != "omo-ai" || strings.Join(u.cmd, " ") != "/home/me/.bun/bin/omo update" {
+	if u == nil || u.via != "self" || u.pkg != "omo-ai" || strings.Join(u.cmd, " ") != "/home/me/.bun/bin/omo update" || u.path != "" {
 		t.Fatalf("%+v", u)
 	}
 }

@@ -330,3 +330,46 @@ func TestClaudeRunKeysLeaveOutTheBillingLine(t *testing.T) {
 		t.Fatal("a key leaves out the system prompt itself")
 	}
 }
+
+// A run started anew is told each image of the answered turns where it
+// sits, with when it was sent, and the turn to answer's unlabeled (#1751):
+// told as bare blocks, a history's eighteen images read as ones the user
+// had just attached, and the model re-read two of them with view_image to
+// find out. Both images still go, none dropped or replaced.
+func TestClaudeRunToldHistoryImagesAsEarlier(t *testing.T) {
+	h := newResumeHarness(t)
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+	body := `{"model":"claude-sonnet-5","max_tokens":100,"system":"rules","tools":[{"name":"read","input_schema":{"type":"object"}}],"messages":[
+		{"role":"user","content":[{"type":"text","text":"look at it"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + png + `"}}]},
+		{"role":"assistant","content":"a cat"},
+		{"role":"user","content":[{"type":"text","text":"and this one"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + png + `"}}]}]}`
+	var u Usage
+	if code, msg := h.s.serveClaudeSubscription(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)), provider.Anthropic, h.p, "claude-sonnet-5", []byte(body), &u); code != 200 {
+		t.Fatalf("%d %s", code, msg)
+	}
+	runs := h.runs()
+	if len(runs) != 1 {
+		t.Fatalf("runs: %v", runs)
+	}
+	var told string
+	for _, log := range runs {
+		if at := strings.Index(log, "\ntold "); at >= 0 {
+			told = log[at:]
+		}
+	}
+	// the stdin line's JSON escapes the markers' angle brackets, the label
+	// has none of them
+	end := strings.Index(told, "/conversation_history")
+	if end < 0 {
+		t.Fatalf("the run was not told the history apart:\n%s", told)
+	}
+	if !strings.Contains(told[:end], "[image sent with an earlier message]") {
+		t.Fatalf("the history's image was not told as earlier:\n%s", told[:end])
+	}
+	if strings.Contains(told[end:], "[image sent with an earlier message]") {
+		t.Fatalf("the turn to answer's image was labeled:\n%s", told[end:])
+	}
+	if strings.Count(told, png) != 2 {
+		t.Fatalf("the run was told %d images, the conversation has two:\n%s", strings.Count(told, png), told)
+	}
+}

@@ -2534,7 +2534,7 @@ func renderClaudePrompt(req *Request) ([]map[string]any, error) {
 			label = "Assistant"
 		}
 		text.WriteString(label + ": ")
-		blocks = renderParts(blocks, &text, m.Parts, offered)
+		blocks = renderParts(blocks, &text, m.Parts, offered, split > 0 && i < split)
 		text.WriteString("\n\n")
 		if i+1 <= chunked && (i+1)%historyChunk == 0 {
 			blocks = append(blocks, map[string]any{"type": "text", "text": text.String()})
@@ -2655,7 +2655,7 @@ func renderClaudeTurn(msgs []Message, tools []Tool) []map[string]any {
 			}
 			text.WriteString(label + ": ")
 		}
-		blocks = renderParts(blocks, &text, m.Parts, offered)
+		blocks = renderParts(blocks, &text, m.Parts, offered, false)
 	}
 	return closeBlocks(blocks, &text)
 }
@@ -2670,7 +2670,15 @@ func renderClaudeTurn(msgs []Message, tools []Tool) []map[string]any {
 // tool's last line, the model read them as tool output and went on with the
 // task (#1878). Only the message's parts say where the result ends; what the
 // tool wrote stays inside it, whatever it says.
-func renderParts(blocks []map[string]any, text *strings.Builder, parts []Part, offered map[string]bool) []map[string]any {
+//
+// historic marks the parts of turns answered already (<conversation_history>,
+// renderClaudePrompt): each image or file in them is labeled where it sits
+// with when it was sent. The head note (historyOpen) says it once for the
+// whole section; eighteen images later the model took a history's tool
+// images for new attachments and re-read two of them with view_image to
+// find out (#1751). The turn to answer's images are unlabeled: labeled is
+// earlier, unlabeled is new.
+func renderParts(blocks []map[string]any, text *strings.Builder, parts []Part, offered map[string]bool, historic bool) []map[string]any {
 	open := "" // the tool result told last, not closed yet
 	for _, p := range parts {
 		if open != "" && (p.Kind == Text || p.Kind == File) {
@@ -2681,6 +2689,9 @@ func renderParts(blocks []map[string]any, text *strings.Builder, parts []Part, o
 		case Text:
 			text.WriteString(p.Text)
 		case File:
+			if historic {
+				text.WriteString("\n[file sent with an earlier message]")
+			}
 			text.WriteString(attachmentText(p))
 		case Thinking:
 			text.WriteString(p.Text)
@@ -2695,9 +2706,21 @@ func renderParts(blocks []map[string]any, text *strings.Builder, parts []Part, o
 			open = p.CallID
 			// the images the tool returned follow its text
 			for _, im := range p.Images {
+				if historic {
+					text.WriteString("\n[image an earlier tool call returned]")
+				}
 				blocks = imageBlocks(blocks, text, im)
 			}
 		case Image:
+			if historic {
+				// an image beside a tool's unclosed result went with it
+				// (findRun): the tool's, not one the user attached
+				if open != "" {
+					text.WriteString("\n[image an earlier tool call returned]")
+				} else {
+					text.WriteString("\n[image sent with an earlier message]")
+				}
+			}
 			blocks = imageBlocks(blocks, text, p)
 		}
 	}

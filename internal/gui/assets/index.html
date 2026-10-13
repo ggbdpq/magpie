@@ -15,6 +15,7 @@
 <link rel="stylesheet" href="sessions.css">
 <link rel="stylesheet" href="context.css">
 <link rel="stylesheet" href="omarchy.css">
+<link rel="stylesheet" href="bridge.css">
 </head>
 <body>
 <script src="compat.js"></script>
@@ -101,6 +102,11 @@
   <section class="panel-routing" id="panelRouting" hidden></section>
   <section class="panel-usage" id="panelUsage" hidden></section>
 </main>
+
+<!-- the switchboard's stage (shell.js): the agents' bank, the river the
+     bridges cross, the model sources' bank; shown only when the reader
+     turns the layout on in Settings -->
+<main class="view sb-stage" id="view-switchboard" hidden></main>
 
 <main class="view" id="view-providers" hidden>
   <div id="fileError" hidden></div>
@@ -285,6 +291,10 @@
       <div class="row pref">
         <div class="who"><div class="name" data-t>Language</div></div>
         <button type="button" id="langPick" class="sess-pick pref-pick" aria-label="Language" aria-haspopup="menu" aria-expanded="false"></button>
+      </div>
+      <div class="row pref" id="layoutRow" hidden>
+        <div class="who"><div class="name" data-t>Switchboard layout</div><div class="sub" data-t>Preview the new layout: agents on the left, model sources on the right</div></div>
+        <div id="layoutSegs"></div>
       </div>
       <div class="row pref" id="gatewayModeRow" hidden>
         <div class="who"><div class="name" data-t>Gateway mode</div><div class="sub" id="gatewayModeSub"></div></div>
@@ -523,6 +533,9 @@
   </section>
 </main>
 
+<!-- the inspector (inspector.js): the picked card or bridge, enlarged -->
+<aside class="sb-inspector" id="sbInspector" hidden></aside>
+
 <footer class="foot">
   <button type="button" class="text prof-btn" id="profBtn" hidden aria-haspopup="dialog" aria-expanded="false"><span data-t>Profiles</span><em id="profN"></em></button>
   <span id="pqAge" class="pq-age" hidden></span>
@@ -556,6 +569,7 @@
 <script src="i18n.js"></script>
 <script src="caller-keys.js"></script>
 <script src="purposes.js"></script>
+<script src="shell.js"></script>
 <script src="app.js"></script>
 <script src="routing.js"></script>
 <script src="library.js"></script>

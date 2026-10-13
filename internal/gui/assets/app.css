@@ -3848,3 +3848,25 @@ input[type="checkbox"]:disabled { opacity: .45; }
 
 /* a disabled model's pattern, as typed (#1867): an id or a glob */
 .disabled-model .name { font-family: var(--code); font-size: 12px; overflow-wrap: anywhere; }
+
+/* ---- switchboard tokens (bridge.css builds on these) ---- */
+:root {
+  --river: #eceef3;
+  --sheen-a: var(--accent);
+  --sheen-b: #0e9f9a;
+  --sb-top: 56px;
+  --sb-inspector: 388px;
+  --sb-rewind: 132px;
+  --sb-left: clamp(260px, 22vw, 320px);
+  --sb-right: clamp(280px, 24vw, 340px);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --river: #13161c;
+    --sheen-b: #2dd4bf;
+  }
+}
+:root[data-theme="dark"] {
+  --river: #13161c;
+  --sheen-b: #2dd4bf;
+}

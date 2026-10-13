@@ -5148,4 +5148,16 @@
   words();
   start();
   poll();
+
+  // the switchboard's bridge (bridge.js) reads the stage through this
+  // doorway: the same helpers and live rows the page itself is drawn from,
+  // read-only. A seat's key in the rows map carries its model (seat()); the
+  // doorway takes the bare account or key id too, its first seat then.
+  const seatOf = (id) => rows.has(id) ? id : [...rows.keys()].find((k) => k.startsWith(id) && k.charCodeAt(id.length) === 0) || id;
+  window.magpieRouting = Object.freeze({
+    FOLD_AT, LONG,
+    shownRow: (id) => shownRow(seatOf(id)),
+    wiresTo, cardOf,
+    familyWindows,
+  });
 })();

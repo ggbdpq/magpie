@@ -20901,6 +20901,7 @@ function renderSettings() {
   renderFonts(s);
   $("#themeSegs").replaceChildren(segs(THEMES.map(([id, name]) => [id, t(name)]), s.theme, (theme) => savePrefs({ ...keep, theme })));
   renderLangPick(s, keep);
+  window.magpieShell?.renderSettings?.();
   renderGatewayMode(s);
   // a browser tab has its own zoom, and magpie leaves it to it
   $("#textSizeRow").hidden = web;
@@ -23811,7 +23812,7 @@ async function show(v) {
     }
   }
   view = v;
-  const title = ({ agents: "Agents", providers: "Providers", gateway: "Gateway", routing: "Routing", usage: "Usage", sessions: "Sessions", library: "Library", plugins: "Plugins", settings: "Settings" })[v];
+  const title = ({ agents: "Agents", providers: "Providers", gateway: "Gateway", routing: "Routing", usage: "Usage", sessions: "Sessions", library: "Library", plugins: "Plugins", settings: "Settings", switchboard: "Switchboard" })[v];
   $("#pageTitle").dataset.en = title;
   $("#pageTitle").textContent = t(title);
   if (mode === "window") {
@@ -23825,7 +23826,7 @@ async function show(v) {
   $("#prefs").classList.toggle("on", v === "settings");
   if (v === "settings") $("#prefs").setAttribute("aria-current", "page"); else $("#prefs").removeAttribute("aria-current");
   navSubs();
-  for (const id of ["agents", "providers", "gateway", "routing", "usage", "sessions", "library", "plugins", "settings"]) $("#view-" + id).hidden = v !== id;
+  for (const id of ["agents", "providers", "gateway", "routing", "usage", "sessions", "library", "plugins", "settings", "switchboard"]) $("#view-" + id).hidden = v !== id;
   // back to where the reader was in it, and again once it has what it loads
   const back = () => backToReader($("#view-" + v));
   requestAnimationFrame(back);
@@ -24054,8 +24055,8 @@ try { navPick = localStorage.getItem("magpie.navLayout") || ""; } catch { /* by 
 if (navPick !== "side" && navPick !== "top") navPick = "";
 function layoutNav() {
   if (mode !== "window") return;
-  // magpie web on a phone has its own tab bar and no title bar
-  const on = !phoneWeb() && (navPick ? navPick === "side" : sideQuery.matches);
+  // magpie web on a phone and the switchboard have their own navigation
+  const on = !document.body.classList.contains("switchboard") && !phoneWeb() && (navPick ? navPick === "side" : sideQuery.matches);
   if (layoutNav.done && on === sideNav()) {
     // the button goes with the phone's layout all the same
     const was = $("#sideToggle").hidden;
@@ -24881,3 +24882,6 @@ else if (mode === "window" && !gatewayMode && !sideNav()) slide($("#nav"), "nav"
 // in gateway mode the first page is Providers, Agents' tab gone
 if (gatewayMode) setGatewayMode(true);
 load();
+// the switchboard shell's boot, once this one's is done (shell.js); a
+// classic load has it do its Settings wiring and nothing more
+window.magpieShell?.boot?.();

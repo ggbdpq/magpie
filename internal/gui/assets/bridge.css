@@ -1,0 +1,54 @@
+/* bridge.css — the switchboard shell (shell.js) and, later, the bridge
+   itself (bridge.js). Everything is scoped under body.switchboard or a
+   .sb-* class, so with the layout off none of this applies and the classic
+   window is what it was. The tokens are appended to app.css; Omarchy maps
+   its three colours in omarchy.css. */
+
+/* the header: the two-page switch where the classic tabs sat, the title
+   bar at the design's height */
+body.switchboard .top { height: var(--sb-top); }
+body.switchboard #nav,
+body.switchboard #side,
+body.switchboard #sideToggle,
+body.switchboard #crumb { display: none !important; }
+.sb-seg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); --wails-draggable: no-drag; }
+
+/* the stage: the agents' bank, the river the bridges cross, the model
+   sources' bank */
+#view-switchboard {
+  display: grid;
+  grid-template-columns: var(--sb-left) minmax(140px, 1fr) var(--sb-right);
+  column-gap: 24px;
+  padding: 28px 40px;
+}
+.sb-bank { min-width: 0; }
+.sb-h { margin: 0 0 12px; font-size: 13px; font-weight: 500; color: var(--muted); }
+.sb-river {
+  position: relative;
+  min-height: 320px;
+  border-radius: 12px;
+  background: linear-gradient(90deg, transparent, var(--river) 18%, var(--river) 82%, transparent);
+}
+.sb-calm {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  margin: 0; padding: 0 24px;
+  color: var(--muted); font-size: 13px; text-align: center;
+}
+
+/* the inspector: the picked card or bridge, enlarged; it opens over the
+   stage's right edge, never pushing it */
+.sb-inspector {
+  position: fixed; top: var(--sb-top); right: 0; bottom: 0; z-index: 12;
+  width: var(--sb-inspector); max-width: 92vw;
+  padding: 22px 24px; overflow-y: auto;
+  background: var(--card); border-left: 1px solid var(--line);
+}
+
+/* under the sidebar's width the banks stack, the river between them
+   (the list projection of the bridge lands with bridge.js) */
+@media (max-width: 1023px) {
+  #view-switchboard { grid-template-columns: 1fr; row-gap: 20px; padding: 20px 16px; }
+  .sb-river { min-height: 0; background: none; }
+  .sb-calm { position: static; padding: 8px 0; }
+}

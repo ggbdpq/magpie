@@ -68,3 +68,7 @@ html.omarchy ::selection { background: var(--om-sel); color: var(--accent); }
 html.omarchy body.side-nav :is(#nav button[data-view], #prefs).on { background: var(--om-sel); box-shadow: inset 0 0 0 1px var(--om-sel-line); color: var(--accent); }
 html.omarchy .nav-hl { background: var(--om-sel); }
 html.omarchy .nav-s.cur { color: var(--accent); }
+
+/* the switchboard's three colours are Omarchy's own: the sheen runs from
+   the accent back to it, the river is a faint fill */
+html.omarchy { --sheen-a: var(--accent); --sheen-b: var(--accent); --river: var(--om-hover); }

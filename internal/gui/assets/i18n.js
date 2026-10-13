@@ -4,6 +4,12 @@
 // works. {name} slots are filled by t(str, vars).
 const I18N = {
   zh: {
+    "Switchboard": "接线台",
+    "Classic": "经典",
+    "Model sources": "模型来源",
+    "Agents on the left, model sources on the right; the bridges between them are drawn here.": "左岸是 Agent，右岸是模型来源，它们之间的桥画在这里。",
+    "Switchboard layout": "接线台布局",
+    "Preview the new layout: agents on the left, model sources on the right": "预览新布局：左边是 Agent，右边是模型来源",
     "Manage": "管理",
     "Manage agents": "批量管理",
     "Hiding only changes this list, not an agent's connection or settings. Unhidden agents may stay under Not set up.": "隐藏只改变列表显示，不影响 Agent 的接入或设置。取消隐藏后，Agent 仍可能留在「未设置」中。",
@@ -4593,6 +4599,12 @@ const I18N = {
     "~/.dsh/settings.yaml sets its own DeepSeek endpoint or key, which dsh puts over magpie's; clear it in dsh's Models page to go through magpie.": "~/.dsh/settings.yaml 设置了自己的 DeepSeek 地址或 Key，dsh 会优先用它而不是 magpie 的；请在 dsh 的 Models 页面清除它，才能走 magpie。",
   },
   "zh-TW": {
+    "Switchboard": "接線台",
+    "Classic": "經典",
+    "Model sources": "模型來源",
+    "Agents on the left, model sources on the right; the bridges between them are drawn here.": "左岸是 Agent，右岸是模型來源，它們之間的橋畫在這裡。",
+    "Switchboard layout": "接線台版面",
+    "Preview the new layout: agents on the left, model sources on the right": "預覽新版面：左邊是 Agent，右邊是模型來源",
     "Codex thread descriptions": "Codex 對話描述",
     "Description": "描述",
     "Manage": "管理",
@@ -9165,6 +9177,12 @@ const I18N = {
     "~/.dsh/settings.yaml sets its own DeepSeek endpoint or key, which dsh puts over magpie's; clear it in dsh's Models page to go through magpie.": "~/.dsh/settings.yaml 設定了自己的 DeepSeek 位址或 Key，dsh 會優先用它而不是 magpie 的；請在 dsh 的 Models 頁面清除它，才能走 magpie。",
   },
   ja: {
+    "Switchboard": "スイッチボード",
+    "Classic": "クラシック",
+    "Model sources": "モデルソース",
+    "Agents on the left, model sources on the right; the bridges between them are drawn here.": "左に Agent、右にモデルソース。その間の橋がここに描かれます。",
+    "Switchboard layout": "スイッチボードレイアウト",
+    "Preview the new layout: agents on the left, model sources on the right": "新しいレイアウトのプレビュー：左に Agent、右にモデルソース",
     "Manage": "管理",
     "Manage agents": "エージェントを一括管理",
     "Hiding only changes this list, not an agent's connection or settings. Unhidden agents may stay under Not set up.": "非表示は一覧の表示のみを変更し、エージェントの接続や設定には影響しません。非表示を解除しても「未設定」に残る場合があります。",
@@ -13739,6 +13757,12 @@ const I18N = {
     "~/.dsh/settings.yaml sets its own DeepSeek endpoint or key, which dsh puts over magpie's; clear it in dsh's Models page to go through magpie.": "~/.dsh/settings.yaml に独自の DeepSeek エンドポイントやキーがあり、dsh は magpie のものよりそちらを優先します。magpie を経由するには dsh の Models ページで消してください。",
   },
   de: {
+    "Switchboard": "Switchboard",
+    "Classic": "Klassisch",
+    "Model sources": "Modellquellen",
+    "Agents on the left, model sources on the right; the bridges between them are drawn here.": "Links die Agents, rechts die Modellquellen; die Brücken dazwischen werden hier gezeichnet.",
+    "Switchboard layout": "Switchboard-Layout",
+    "Preview the new layout: agents on the left, model sources on the right": "Vorschau des neuen Layouts: Agents links, Modellquellen rechts",
     "Manage": "Verwalten",
     "Manage agents": "Agents verwalten",
     "Hiding only changes this list, not an agent's connection or settings. Unhidden agents may stay under Not set up.": "Ausblenden ändert nur die Liste, nicht die Verbindung oder Einstellungen eines Agents. Nach dem Einblenden können Agents unter „Nicht eingerichtet“ bleiben.",

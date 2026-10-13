@@ -3456,6 +3456,13 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		// only the ChatGPT backend runs Codex's tool search as Codex sends it
 		if p.Account == nil || p.Account.Agent != "codex" {
 			body, searchFn = searchAsFunction(body)
+			// a vendor that turned the search's own item types away is
+			// asked with them as functions from the start (#1755)
+			if !s.fits(p.ID, searchItemsRefused(model), proto) {
+				if nb, ok := searchItemsAsFunction(body); ok {
+					body, searchFn = nb, true
+				}
+			}
 		}
 		body = forVendor(p, body)
 		if replay {
@@ -3696,6 +3703,24 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			if nb := plainItemIDs(body); !bytes.Equal(nb, body) {
 				refused = append(refused, itemIDsRefused(model))
 				body = nb
+				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
+					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+				}
+				continue
+			}
+		}
+		if len(fs) == 0 && len(ms) == 0 && proto == provider.Responses && itemTypeRefused.Match(b) {
+			// and Codex's search calls themselves, which a vendor that
+			// knows none of Codex's item types turns the whole request
+			// away over (Xiaomi MiMo: "input item type
+			// 'tool_search_call' is not supported by this gateway
+			// phase", #1755): asked once more as the functions they
+			// are, and so from then on. An upstream that knows the
+			// types takes them as they came (callItemIDs gives a call
+			// its tsc_ id), so the lift waits for the refusal.
+			if nb, ok := searchItemsAsFunction(body); ok {
+				refused = append(refused, searchItemsRefused(model))
+				body, searchFn = nb, true
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
 					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 				}

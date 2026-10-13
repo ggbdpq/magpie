@@ -1,7 +1,10 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -213,6 +216,95 @@ func TestToolSearchRelayed(t *testing.T) {
 	}
 	if items[2]["type"] != "function_call" || items[2]["name"] != "exec_command" {
 		t.Fatalf("another call changed: %v", items[2])
+	}
+}
+
+// A later turn of a tool-search session may offer the search no more:
+// with no deferred tool left to find (every one loaded, or its server
+// gone) Codex omits the tool_search tool (spec_plan.rs keeps it only
+// while a deferred tool remains, missing_deferred_tools), while the
+// conversation keeps the search's calls, and Codex replays those every
+// turn (ensure_call_outputs_present). An upstream that knows the item
+// types takes them as they came (TestResponsesRelayCallIDs); one that
+// knows none turns the whole request away (#1755: Xiaomi MiMo, "input
+// item type 'tool_search_call' is not supported by this gateway
+// phase"), is asked once more with the calls and results as a
+// function's and the tools found in the tools, and from then on gets
+// the lift without being refused first.
+func TestToolSearchRelayedWithoutTheSearch(t *testing.T) {
+	fresh(t)
+	var got []string
+	refused := false
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = append(got, string(b))
+		if bytes.Contains(b, []byte(`"tool_search_call"`)) || bytes.Contains(b, []byte(`"tool_search_output"`)) {
+			refused = true
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(400)
+			io.WriteString(w, `{"error":{"message":"Xiaomi MiMo: input item type 'tool_search_call' is not supported by this gateway phase.","type":"invalid_request_error","param":null,"code":null}}`)
+			return
+		}
+		w.Header()["Content-Type"] = nil
+		io.WriteString(w, sse(`data: {"type":"response.completed","response":{"id":"r1","output":[],"usage":{"input_tokens":5,"output_tokens":2}}}`))
+	}))
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Models: []string{"m1"},
+		Responses: up.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	noSearch := `"tools":[{"type":"function","name":"exec_command","parameters":{"type":"object"}}]`
+	ask := `{"model":"relay/m1","stream":true,` + noSearch + `,` + searchInput + `}`
+	s := New().Handler()
+	post := func() string {
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/responses", strings.NewReader(ask)))
+		if rec.Code != 200 {
+			t.Fatalf("%d %s", rec.Code, rec.Body)
+		}
+		return rec.Body.String()
+	}
+	post()
+	if !refused {
+		t.Fatalf("the upstream was never asked the items as they came: %d calls", len(got))
+	}
+	sent := got[len(got)-1]
+	for _, gone := range []string{`"tool_search_call"`, `"tool_search_output"`, `"execution"`, `"defer_loading"`} {
+		if strings.Contains(sent, gone) {
+			t.Errorf("relayed with %s: %s", gone, sent)
+		}
+	}
+	var q struct {
+		Tools []rTool `json:"tools"`
+		Input []struct {
+			Type      string `json:"type"`
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+			Output    string `json:"output"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal([]byte(sent), &q); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.Tools) != 2 || q.Tools[0].Name != "exec_command" || q.Tools[1].Type != "namespace" || q.Tools[1].Name != "mcp__cal" || len(q.Tools[1].Tools) != 1 {
+		t.Fatalf("tools = %+v", q.Tools)
+	}
+	if in := q.Input[1]; in.Type != "function_call" || in.CallID != "s1" || in.Name != "tool_search" || !strings.Contains(in.Arguments, "calendar create") {
+		t.Fatalf("search call = %+v", in)
+	}
+	if in := q.Input[2]; in.Type != "function_call_output" || in.CallID != "s1" || !strings.Contains(in.Output, "mcp__cal__create_event") {
+		t.Fatalf("search output = %+v", in)
+	}
+	// the next turn is asked with the lift and no refusal first
+	calls := len(got)
+	refused = false
+	post()
+	if refused || len(got) != calls+1 {
+		t.Fatalf("next turn: refused %v, %d calls", refused, len(got)-calls)
+	}
+	if !strings.Contains(got[len(got)-1], `"name":"tool_search"`) {
+		t.Fatalf("next turn relayed raw: %s", got[len(got)-1])
 	}
 }
 

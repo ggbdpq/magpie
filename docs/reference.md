@@ -1968,6 +1968,7 @@ you press *Add*. `magpie import <link>` does the same in a terminal.
 | `chat`      | OpenAI Chat Completions base URL (`…/v1`)                          |
 | `responses` | OpenAI Responses base URL (`…/v1`)                                 |
 | `anthropic` | Anthropic Messages base URL (the root, without `/v1`)              |
+| `gemini`    | Google Gemini API base URL (`…/v1beta`), as the app's editor and the TUI take one |
 | `models`    | model ids to expose, comma separated                               |
 | `catalog`   | models.dev provider id, for model names and reasoning levels       |
 | `website`, `keys` | the vendor's site and its API-key page (https)               |

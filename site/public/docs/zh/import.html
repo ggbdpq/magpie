@@ -124,6 +124,7 @@
       <tr><td><code>chat</code></td><td>OpenAI Chat Completions 的 base URL，以 <code>/v1</code> 结尾（magpie 会自动拼上 <code>/chat/completions</code>）。</td></tr>
       <tr><td><code>responses</code></td><td>OpenAI Responses 的 base URL，以 <code>/v1</code> 结尾。Codex 只支持这个 API；你不支持时，magpie 会替它转换。</td></tr>
       <tr><td><code>anthropic</code></td><td>Anthropic Messages 的 base URL：根地址，不带 <code>/v1</code>。</td></tr>
+      <tr><td><code>gemini</code></td><td>Google Gemini API 的 base URL，以 <code>/v1beta</code> 结尾，和应用内编辑器、TUI 里填的是同一个。</td></tr>
       <tr><td><code>key</code></td><td>用户的 API 密钥。不填的话，用户在对话框里自己粘贴。</td></tr>
       <tr><td><code>models</code></td><td>提供给 Agent 的模型 id，用逗号分隔。不填时，magpie 会列出你的 <code>/v1/models</code> 返回的模型。</td></tr>
       <tr><td><code>id</code></td><td>Agent 在 <code>id/model</code> 里用的 id。默认取名称的小写加连字符形式（<code>Acme Relay</code> → <code>acme-relay</code>）。</td></tr>

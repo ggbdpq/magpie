@@ -124,6 +124,7 @@
       <tr><td><code>chat</code></td><td>OpenAI Chat Completions base URL, ending in <code>/v1</code> (magpie appends <code>/chat/completions</code>).</td></tr>
       <tr><td><code>responses</code></td><td>OpenAI Responses base URL, ending in <code>/v1</code>. Codex speaks only this API; magpie translates for it when you don’t.</td></tr>
       <tr><td><code>anthropic</code></td><td>Anthropic Messages base URL: the root, without <code>/v1</code>.</td></tr>
+      <tr><td><code>gemini</code></td><td>Google Gemini API base URL, ending in <code>/v1beta</code>, as the app’s editor and the TUI take one.</td></tr>
       <tr><td><code>key</code></td><td>The user’s API key. Leave it out and the user pastes one in the dialog.</td></tr>
       <tr><td><code>models</code></td><td>Model ids to offer the agents, comma separated. Without it, magpie lists the models your <code>/v1/models</code> returns.</td></tr>
       <tr><td><code>id</code></td><td>The id agents use in <code>id/model</code>. Defaults to the name, lowercased with dashes (<code>Acme Relay</code> → <code>acme-relay</code>).</td></tr>

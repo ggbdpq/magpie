@@ -107,6 +107,30 @@ func TestParseImportRegion(t *testing.T) {
 	}
 }
 
+// A Gemini-compatible relay is added in the app, the TUI and
+// `magpie provider set` with a Gemini URL alone (#1346, #2201); a link
+// naming one was refused as giving no base URL, and a gemini= beside
+// chat= was dropped without a word.
+func TestParseImportGemini(t *testing.T) {
+	p, err := ParseImport("magpie://import?name=Gemini%20Relay&gemini=https://relay.example/v1beta&key=sk-g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Gemini != "https://relay.example/v1beta" || p.Chat != "" || p.Responses != "" || p.Anthropic != "" {
+		t.Fatalf("gemini only: got %+v", p)
+	}
+	p, err = ParseImport("magpie://import?name=X&chat=https://relay.example/v1/&gemini=https://relay.example/v1beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Chat != "https://relay.example/v1" || p.Gemini != "https://relay.example/v1beta" {
+		t.Fatalf("chat and gemini: got %+v", p)
+	}
+	if _, err := ParseImport("magpie://import?name=X&gemini=not-a-url"); err == nil {
+		t.Fatal("a bad gemini= was accepted")
+	}
+}
+
 func TestParseImportRejects(t *testing.T) {
 	for _, link := range []string{
 		"https://usemagpie.ai/import?preset=deepseek",

@@ -23,7 +23,8 @@ func stubPlatform(t *testing.T, goos, goarch string, musl bool) {
 
 // A musl Linux (Alpine) gets Bun's musl build: a glibc one names a loader
 // Alpine doesn't have and can't start there (#1877). x64 keeps the
-// baseline build, arm64 has none; musl changes nothing off Linux.
+// baseline build, arm64 has none; musl changes nothing off Linux. Windows
+// ARM64 gets Bun's native aarch64 build (#2183).
 func TestBunTargetForMusl(t *testing.T) {
 	for _, c := range []struct {
 		goos, goarch string
@@ -36,15 +37,29 @@ func TestBunTargetForMusl(t *testing.T) {
 		{"linux", "arm64", false, "bun-linux-aarch64"},
 		{"darwin", "arm64", true, "bun-darwin-aarch64"},
 		{"windows", "amd64", true, "bun-windows-x64-baseline"},
+		{"windows", "arm64", true, "bun-windows-aarch64"},
 		{"android", "arm64", true, "bun-linux-aarch64-android"},
 	} {
 		got, err := bunTargetFor(c.goos, c.goarch, c.musl)
 		if err != nil || got != c.want {
 			t.Errorf("bunTargetFor(%s, %s, musl %v) = %q, %v; want %q", c.goos, c.goarch, c.musl, got, err, c.want)
 		}
-		if c.goos == "linux" && bunChecksum(BunVersion, got) == "" {
+		// every target the selection can return is downloadable through a
+		// mirror, so the floor version pins its checksum too
+		if bunChecksum(BunVersion, got) == "" {
 			t.Errorf("no checksum for %s", got)
 		}
+	}
+}
+
+// The Windows ARM64 checksum is the SHASUMS256.txt line of the floor
+// version's bun-windows-aarch64.zip (#2183), pinned here so a mistyped
+// entry can't pass the "has one" check above and fail every ARM64
+// download at the checksum step instead.
+func TestWindowsArm64BunChecksum(t *testing.T) {
+	want := "a7a16b876a305fd1029c66dbd27007b4f6112ae896532f675878731a21e50cfd"
+	if got := bunChecksum(BunVersion, "bun-windows-aarch64"); got != want {
+		t.Errorf("bunChecksum(%s, bun-windows-aarch64) = %q; want %q", BunVersion, got, want)
 	}
 }
 

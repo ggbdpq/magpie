@@ -254,9 +254,11 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 	}
 	// a new turn: the classifier is asked only when a rule that could be
 	// the first to match waits on its intent, or it picks the effort of a
-	// turn the agent asked to reason in
+	// turn the agent asked to reason in — one that turned reasoning off
+	// (effort "none", or Anthropic thinking disabled) has nothing for the
+	// pick to change, so it isn't asked for one, and none is logged (#2247)
 	intents := provider.Intents(g.Rules, q)
-	effort := g.Effort == provider.EffortAuto && hit.Effort != ""
+	effort := g.Effort == provider.EffortAuto && hit.Effort != "" && !req.ThinkOff
 	if len(intents) > 0 || effort {
 		c := &Classified{By: g.Classifier, Intents: intents}
 		if had && slices.Contains(intents, tr.intent) {

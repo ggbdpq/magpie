@@ -1124,26 +1124,47 @@ func wslLastSeen(name, key string) string {
 	return ""
 }
 
-// wslClaudeStandIn is StandIn for a Claude Code in a WSL distro routed
-// through magpie: the first, of the distros running now, whose
-// settings.json has a stand-in. Only magpie's memory of them and which run
-// (wslRunningLocked) are asked — nothing is probed, and a stopped distro
-// is never opened.
-func wslClaudeStandIn(model string) string {
+// wslReady are the distros running now that the probe found kind in, each
+// with its mirrored networking settled, ready for a read of its files.
+// Only magpie's memory of them and which run (wslRunningLocked) are
+// asked — nothing is probed, and a stopped distro is never opened.
+func wslReady(kind string) []distro {
 	wsl.Lock()
 	wslRunningLocked()
 	var ds []distro
 	for _, n := range wsl.names {
-		if d := wsl.seen[n]; d != nil && wsl.running[n] && wslKindOf("claude").found(*d) {
+		if d := wsl.seen[n]; d != nil && wsl.running[n] && wslKindOf(kind).found(*d) {
 			ds = append(ds, *d)
 		}
 	}
 	wsl.Unlock()
 	cfg := wslConfig()
-	for _, d := range ds {
-		d.mirror(cfg)
+	for i := range ds {
+		ds[i].mirror(cfg)
+	}
+	return ds
+}
+
+// wslClaudeStandIn is StandIn for a Claude Code in a WSL distro routed
+// through magpie: the first, of the distros running now, whose
+// settings.json has a stand-in.
+func wslClaudeStandIn(model string) string {
+	for _, d := range wslReady("claude") {
 		path := filepath.Join(d.local(d.Home), ".claude", "settings.json")
 		if m := claudeStandInAt(path, model, d.base()); m != "" {
+			return m
+		}
+	}
+	return ""
+}
+
+// wslCodexStandIn is StandIn for a Codex in a WSL distro routed through
+// magpie: the first, of the distros running now, whose config.toml has
+// magpie as its provider, as this machine's codexStandIn reads it.
+func wslCodexStandIn() string {
+	for _, d := range wslReady("codex") {
+		path := filepath.Join(d.local(d.Home), ".codex", "config.toml")
+		if m := codexStandIn(path); m != "" {
 			return m
 		}
 	}

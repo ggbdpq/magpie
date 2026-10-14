@@ -42,8 +42,10 @@
   const FOLDER = "M14.7 12.7a1.3 1.3 0 0 1-1.3 1.3H2.6a1.3 1.3 0 0 1-1.3-1.3V3.3A1.3 1.3 0 0 1 2.6 2h3.3l1.3 2h6.2a1.3 1.3 0 0 1 1.3 1.3z";
 
   const name = (spec) => { const i = spec.lastIndexOf("@"); return i > 0 && !spec.startsWith(".") && !spec.includes("/", i) ? spec.slice(0, i) : spec; };
-  // a plugin added from a folder is a folder's path, not a package name
-  const isPath = (p) => /^file:\/\//.test(p) || /^\./.test(p) || /^\//.test(p) || /^[A-Za-z]:[\\/]/.test(p);
+  // a plugin added from a folder is a folder's path, not a package name.
+  // a leading \ is one on every system, as plugin.IsPath (#2229): a UNC
+  // share (\\server\share\plugin) and a leading-backslash path
+  const isPath = (p) => /^file:\/\//.test(p) || /^\./.test(p) || /^[/\\]/.test(p) || /^[A-Za-z]:[\\/]/.test(p);
   // ...and is known by the folder's name, not its whole path
   const label = (spec) => { const n = name(spec); return isPath(n) ? n.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || n : n; };
   // one added from a git repository (github:owner/repo, git+https://…), as

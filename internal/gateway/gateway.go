@@ -4512,6 +4512,16 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 		if err != nil {
 			return nil, to, err
 		}
+		if to == provider.Responses {
+			// an exchange a client left broken is mended on the way into
+			// Responses as it is into Chat (pairToolMessages, #554) and
+			// Messages (pairToolBlocks) and as the Responses relay mends
+			// its own (#1341): an upstream that checks the exchange (the
+			// OpenAI Responses API among them) refuses a call no result
+			// answers, and one answered twice, and the refusals went back
+			// to the client as they came
+			body = pairToolItems(body)
+		}
 		noteWireEffort(ctx, to, sent)
 		if to == provider.Chat && (p.IsBedrock() || p.IsAzure()) {
 			body = asCompletionTokens(body)

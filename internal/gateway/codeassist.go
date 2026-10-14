@@ -433,13 +433,15 @@ const interruptedToolNote = "[The result of this tool call is unavailable: the t
 // answers nowhere — an interrupted turn leaves its call pending, and
 // Google turns every later turn of the conversation away with 400 over
 // the one — is answered with the synthetic result the chat build gives
-// such a call (pairToolMessages, #1275). The answer goes in the turn that
-// follows the calls when that turn already holds answers, and otherwise
-// in a turn of its own before it: a user turn mixing a functionResponse
-// with text is turned away too (#1533). A Claude model on Antigravity
-// (agClaude) keeps the answer and what the user said in one turn, the
-// tool_result turn Anthropic reads them as. A call with no id counts as
-// answered by a response of its name with no id.
+// such a call (pairToolMessages, #1275). A second answer to the same call
+// is dropped, the first stands, the same rule the chat and messages builds
+// use: two responses for one call miss that count too. The answer goes in
+// the turn that follows the calls when that turn already holds answers,
+// and otherwise in a turn of its own before it: a user turn mixing a
+// functionResponse with text is turned away too (#1533). A Claude model on
+// Antigravity (agClaude) keeps the answer and what the user said in one
+// turn, the tool_result turn Anthropic reads them as. A call with no id
+// counts as answered by a response of its name with no id.
 func pairFunctionTurns(contents []map[string]any, ag, agClaude bool) []map[string]any {
 	if len(contents) == 0 {
 		return contents
@@ -448,6 +450,44 @@ func pairFunctionTurns(contents []map[string]any, ag, agClaude bool) []map[strin
 		ps, _ := c["parts"].([]map[string]any)
 		return ps
 	}
+	// A second answer to the same call is dropped: the first stands, as
+	// pairToolMessages and pairToolBlocks do. Google turns a call turn
+	// whose functionResponse count differs from its functionCall count
+	// away with 400.
+	seen := map[string]bool{}
+	seenName := map[string]bool{}
+	keptTurns := make([]map[string]any, 0, len(contents))
+	for _, c := range contents {
+		ps := partsOf(c)
+		kept := make([]map[string]any, 0, len(ps))
+		for _, p := range ps {
+			fr, ok := p["functionResponse"].(map[string]any)
+			if !ok {
+				kept = append(kept, p)
+				continue
+			}
+			id, _ := fr["id"].(string)
+			if id != "" {
+				if seen[id] {
+					continue
+				}
+				seen[id] = true
+			} else {
+				name, _ := fr["name"].(string)
+				if seenName[name] {
+					continue
+				}
+				seenName[name] = true
+			}
+			kept = append(kept, p)
+		}
+		if len(kept) == 0 {
+			continue
+		}
+		c["parts"] = kept
+		keptTurns = append(keptTurns, c)
+	}
+	contents = keptTurns
 	answered := map[string]bool{}
 	answeredName := map[string]bool{}
 	for _, c := range contents {

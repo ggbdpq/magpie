@@ -335,3 +335,116 @@ func TestPairFunctionTurnsShapes(t *testing.T) {
 		})
 	}
 }
+
+// geminiEqualCountUpstream answers like Google when a function-call turn is
+// followed by a different number of functionResponse parts, and with SSE
+// when the counts match.
+func geminiEqualCountUpstream(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var bodies []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if !strings.HasSuffix(r.URL.Path, ":streamGenerateContent") {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		bodies = append(bodies, string(b))
+		mu.Unlock()
+		if !geminiCallTurnCountsMatch(b) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"error":{"code":400,"message":"Please ensure that the number of function response parts is equal to the number of function call parts of the function call turn.","status":"INVALID_ARGUMENT"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse(
+			`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"kept-"}]}}],"modelVersion":"gm"}`,
+			`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"up"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3,"totalTokenCount":10}}`,
+		))
+	}))
+	t.Cleanup(up.Close)
+	return up, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), bodies...)
+	}
+}
+
+// geminiCallTurnCountsMatch reports whether the turn right after every
+// function-call turn holds exactly as many functionResponse parts as that
+// turn holds functionCall parts.
+func geminiCallTurnCountsMatch(body []byte) bool {
+	var q struct {
+		Contents []struct {
+			Parts []struct {
+				FunctionCall     *struct{} `json:"functionCall"`
+				FunctionResponse *struct{} `json:"functionResponse"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	if json.Unmarshal(body, &q) != nil {
+		return false
+	}
+	pending := 0
+	for _, c := range q.Contents {
+		nCall, nResp := 0, 0
+		for _, p := range c.Parts {
+			if p.FunctionCall != nil {
+				nCall++
+			}
+			if p.FunctionResponse != nil {
+				nResp++
+			}
+		}
+		if pending > 0 {
+			if nResp != pending {
+				return false
+			}
+			pending = 0
+		}
+		if nCall > 0 {
+			pending = nCall
+		}
+	}
+	return pending == 0
+}
+
+// A Chat client that answers one call twice is turned into Gemini with both
+// functionResponse parts. Google refuses that history: the response count
+// has to equal the call count. Chat and Messages builds drop the second
+// answer; the Gemini build keeps it.
+func TestGeminiDropsASecondAnswer(t *testing.T) {
+	up, bodies := geminiEqualCountUpstream(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	if err := provider.Save(provider.Provider{ID: "gem", Name: "Gem", Key: "AIza-test", Gemini: up.URL + "/v1beta", Models: []string{"gemini-2.5-pro"}}); err != nil {
+		t.Fatal(err)
+	}
+	gw := httptest.NewServer(New().Handler())
+	defer gw.Close()
+	res, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(
+		`{"model":"gem/gemini-2.5-pro","stream":true,"messages":[
+			{"role":"user","content":"look into it"},
+			{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"Bash","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"alpha-result"},
+			{"role":"tool","tool_call_id":"call_1","content":"beta-result"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	bs := bodies()
+	upBody := ""
+	if len(bs) > 0 {
+		upBody = bs[0]
+	}
+	if res.StatusCode != 200 || !strings.Contains(string(b), "kept-") {
+		t.Fatalf("status %d: %s\nupstream: %s", res.StatusCode, b, upBody)
+	}
+	raw := gjson.Get(upBody, "contents").Raw
+	if strings.Count(raw, "alpha-result") != 1 || strings.Contains(raw, "beta-result") {
+		t.Fatalf("second answer forwarded: %s", raw)
+	}
+}

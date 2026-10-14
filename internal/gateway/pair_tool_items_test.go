@@ -108,3 +108,97 @@ func TestResponsesRelayAnswersALoneCall(t *testing.T) {
 		t.Fatalf("the lone call went unanswered: %s", f.got)
 	}
 }
+
+// A second answer to a call the input already answers is dropped, the
+// first standing, as pairToolMessages and pairToolBlocks leave it: OpenAI's
+// Responses API refuses the duplicate with 400 "Duplicate item found with
+// id fc_… Remove duplicate items from your input and try again" (a client
+// replaying a history that holds a call's approval and its output twice
+// sends both; the Chat and Messages builds mend the same shape).
+func TestPairToolItemsDropsASecondAnswer(t *testing.T) {
+	// the first answer stands, the second goes
+	in := inputOf(t, pairToolItems([]byte(`{"model":"m","input":[`+
+		`{"type":"function_call","call_id":"c1","name":"echo","arguments":"{}"},`+
+		`{"type":"function_call_output","call_id":"c1","output":"first"},`+
+		`{"type":"function_call_output","call_id":"c1","output":"second"}]}`)))
+	if len(in) != 2 || in[1]["output"] != "first" {
+		t.Fatalf("the second answer stood: %v", in)
+	}
+
+	// three answers: one stands
+	in = inputOf(t, pairToolItems([]byte(`{"model":"m","input":[`+
+		`{"type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":"x"},`+
+		`{"type":"custom_tool_call_output","call_id":"c1","output":"first"},`+
+		`{"type":"custom_tool_call_output","call_id":"c1","output":"second"},`+
+		`{"type":"custom_tool_call_output","call_id":"c1","output":"third"}]}`)))
+	if len(in) != 2 || in[1]["output"] != "first" {
+		t.Fatalf("the second and third custom answers stood: %v", in)
+	}
+
+	// a call two inputs answer, its answers apart, keeps the first
+	in = inputOf(t, pairToolItems([]byte(`{"model":"m","input":[`+
+		`{"type":"function_call","call_id":"c1","name":"echo","arguments":"{}"},`+
+		`{"type":"function_call_output","call_id":"c1","output":"first"},`+
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"mid"}]},`+
+		`{"type":"function_call_output","call_id":"c1","output":"second"}]}`)))
+	if len(in) != 3 || in[1]["output"] != "first" {
+		t.Fatalf("the later answer stood: %v", in)
+	}
+
+	// answers of their own calls beside a duplicated one stay
+	in = inputOf(t, pairToolItems([]byte(`{"model":"m","input":[`+
+		`{"type":"function_call","call_id":"c1","name":"echo","arguments":"{}"},`+
+		`{"type":"function_call","call_id":"c2","name":"echo","arguments":"{}"},`+
+		`{"type":"function_call_output","call_id":"c2","output":"ok"},`+
+		`{"type":"function_call_output","call_id":"c2","output":"again"},`+
+		`{"type":"function_call_output","call_id":"c1","output":"ok"}]}`)))
+	if len(in) != 4 || in[2]["call_id"] != "c2" || in[3]["call_id"] != "c1" {
+		t.Fatalf("answers of their own calls were touched: %v", in)
+	}
+
+	// a lone call between answers of another call still gets its synthetic
+	// result, after the run's results
+	in = inputOf(t, pairToolItems([]byte(`{"model":"m","input":[`+
+		`{"type":"function_call","call_id":"c1","name":"echo","arguments":"{}"},`+
+		`{"type":"function_call","call_id":"c2","name":"echo","arguments":"{}"},`+
+		`{"type":"function_call_output","call_id":"c2","output":"second"},`+
+		`{"type":"function_call_output","call_id":"c2","output":"second, again"}]}`)))
+	var order []string
+	for _, it := range in {
+		order = append(order, it["type"].(string)+":"+func() string { s, _ := it["call_id"].(string); return s }())
+	}
+	want := []string{"function_call:c1", "function_call:c2", "function_call_output:c2", "function_call_output:c1"}
+	if len(order) != len(want) {
+		t.Fatalf("items %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("items %v, want %v", order, want)
+		}
+	}
+}
+
+// The relay drops a duplicated answer through the whole gateway.
+func TestResponsesRelayDropsASecondAnswer(t *testing.T) {
+	f := &fake{t: t, reply: sse(`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}`)}
+	setup(t, provider.Responses, f)
+	body := `{"model":"fake/m1","stream":true,"input":[` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"run it"}]},` +
+		`{"type":"function_call","call_id":"call_a","name":"echo","arguments":"{}"},` +
+		`{"type":"function_call_output","call_id":"call_a","output":"first result"},` +
+		`{"type":"function_call_output","call_id":"call_a","output":"second result"},` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"go on"}]}]}`
+	if code, out := post(t, "/v1/responses", body); code != 200 {
+		t.Fatalf("status %d: %s", code, out)
+	}
+	in := inputOf(t, f.got)
+	n := 0
+	for _, it := range in {
+		if it["type"] == "function_call_output" && it["call_id"] == "call_a" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d answers for call_a reached the upstream: %s", n, f.got)
+	}
+}

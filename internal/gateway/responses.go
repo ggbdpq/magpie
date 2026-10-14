@@ -723,9 +723,11 @@ func orphanedToolOutputs(body []byte) []byte {
 // messages responding to each 'tool_call_id'" (#1341), and OpenAI's own
 // Responses API "No tool output found for function call". The result goes
 // at the end of the run of calls and results the call is in, where a chat
-// form has its tool messages. A result with no call is left to
-// orphanedToolOutputs, and one naming a call another request carried
-// (previous_response_id) stays as it is.
+// form has its tool messages. A second answer to a call is dropped, the
+// first standing, as pairToolMessages and pairToolBlocks leave it —
+// OpenAI's own API refuses the duplicate item. A result with no call is
+// left to orphanedToolOutputs, and one naming a call another request
+// carried (previous_response_id) stays as it is.
 func pairToolItems(body []byte) []byte {
 	if !bytes.Contains(body, []byte(`_call"`)) {
 		return body
@@ -757,9 +759,26 @@ func pairToolItems(body []byte) []byte {
 	}
 	out := make([]json.RawMessage, 0, len(input)+1)
 	var synthetic []json.RawMessage // results owed by the run in progress
+	seen := map[string]bool{}       // calls an answer ahead in the input gave
+	changed := false
 	for i, raw := range input {
-		out = append(out, raw)
 		it := items[i]
+		// a second answer to a call one answered already is dropped: the
+		// first stands, as pairToolMessages and pairToolBlocks leave it.
+		// OpenAI's Responses API refuses the duplicate: 400 "Duplicate
+		// item found with id fc_… Remove duplicate items from your input
+		// and try again" — a client replaying a history that holds an
+		// approval's call and its output twice sends both (vercel/ai
+		// #13307), and the relay passed the refusal on.
+		dup := toolResultItem(it.Type) && it.CallID != "" && seen[it.CallID]
+		if dup {
+			changed = true
+		} else {
+			out = append(out, raw)
+			if toolResultItem(it.Type) && it.CallID != "" {
+				seen[it.CallID] = true
+			}
+		}
 		if (it.Type == "function_call" || it.Type == "custom_tool_call") && it.CallID != "" && !answered[it.CallID] {
 			kind := "function_call_output"
 			if it.Type == "custom_tool_call" {
@@ -773,9 +792,10 @@ func pairToolItems(body []byte) []byte {
 		if len(synthetic) > 0 && exchange(it.Type) && (i+1 == len(input) || !exchange(items[i+1].Type)) {
 			out = append(out, synthetic...)
 			synthetic = nil
+			changed = true
 		}
 	}
-	if len(out) == len(input) {
+	if !changed {
 		return body
 	}
 	q["input"], _ = marshalPlain(out)

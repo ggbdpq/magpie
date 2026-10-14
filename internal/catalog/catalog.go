@@ -1280,10 +1280,12 @@ func draws(m mdModel) bool {
 }
 
 // DrawsID is whether a model's id names one that makes images, for a model
-// the catalog doesn't know (one typed in, or a vendor's own list's).
+// the catalog doesn't know (one typed in, or a vendor's own list's). Banana
+// is the Nano Banana the Gemini image models are called on a relay, whatever
+// its spelling there (#2071).
 func DrawsID(id string) bool {
 	id = strings.ToLower(id)
-	for _, w := range []string{"image", "imagen", "imagine", "dall-e", "flux", "seedream", "cogview", "stable-diffusion", "sdxl", "wanx", "kolors", "hidream"} {
+	for _, w := range []string{"image", "imagen", "imagine", "dall-e", "flux", "seedream", "cogview", "stable-diffusion", "sdxl", "wanx", "kolors", "hidream", "banana"} {
 		if strings.Contains(id, w) {
 			return true
 		}

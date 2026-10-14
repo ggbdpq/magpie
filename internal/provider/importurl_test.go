@@ -107,6 +107,40 @@ func TestParseImportRegion(t *testing.T) {
 	}
 }
 
+// Bailian's decision regions are different hosts. The CLI's region= and
+// plan= put the provider on that host; an import link that names the same
+// region kept the preset's Beijing workspace host, while the key page
+// followed the region.
+func TestParseImportBailianDecisionRegion(t *testing.T) {
+	sg, err := ParseImport("magpie://import?preset=bailian-decision&region=ap-southeast-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sg.Decide != "https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1" {
+		t.Fatalf("Singapore decide = %q", sg.Decide)
+	}
+	if sg.KeysURL != "https://modelstudio.console.alibabacloud.com/?tab=playground#/api-key" {
+		t.Fatalf("Singapore keys = %q", sg.KeysURL)
+	}
+	plan, err := ParseImport("magpie://import?preset=bailian-decision&region=token-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Decide != "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1" {
+		t.Fatalf("Token Plan decide = %q", plan.Decide)
+	}
+	if plan.KeysURL != "https://bailian.console.aliyun.com/cn-beijing/subscription/token-plan/personal" {
+		t.Fatalf("Token Plan keys = %q", plan.KeysURL)
+	}
+	bj, err := ParseImport("magpie://import?preset=bailian-decision&region=cn-beijing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bj.Decide != "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1" {
+		t.Fatalf("Beijing decide = %q", bj.Decide)
+	}
+}
+
 // A Gemini-compatible relay is added in the app, the TUI and
 // `magpie provider set` with a Gemini URL alone (#1346, #2201); a link
 // naming one was refused as giving no base URL, and a gemini= beside

@@ -383,6 +383,84 @@ func TestOpaqueOriginNeedsAKey(t *testing.T) {
 	}
 }
 
+// A page at a subdomain of localhost, other than the two Tauri and Wails
+// serve their webviews at on Windows, is not this computer's whenever the
+// browser cannot tell: Chrome and Firefox resolve *.localhost to loopback
+// by a rule of their own, but Safari and other WebKit views ask the
+// configured DNS for it (WebKit bug 160504, unfixed through macOS 15),
+// and a resolver that answers — a captive portal's, a network's, an
+// ISP's — serves the page from anywhere. Such a page then holds the
+// foreign-page power corsGuard exists against: the simple text/plain POST
+// at a loopback gateway that asks no key, the subscription spent unread.
+// Its Origin is held to an enabled gateway key, as "null" is. Tauri's and
+// Wails' stay keyless, and so do a page at localhost itself and every
+// scheme only an app or an extension can send.
+func TestLocalhostSubdomainNeedsAKey(t *testing.T) {
+	fresh(t)
+	var hits atomic.Int64
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`)
+	}))
+	defer up.Close()
+	if err := provider.Save(provider.Provider{ID: "plan", Name: "Plan", Key: "upstream-secret", Chat: up.URL + "/v1", Models: []string{"m1"}}); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := access.Update("add-key", access.Change{Name: "Local page"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	do := func(method, path, origin, key string) *httptest.ResponseRecorder {
+		t.Helper()
+		var body io.Reader
+		if method == "POST" {
+			body = strings.NewReader(chatReq)
+		}
+		r := httptest.NewRequest(method, path, body)
+		r.RemoteAddr = "127.0.0.1:50123"
+		r.Host = "127.0.0.1:3425"
+		r.Header.Set("Origin", origin)
+		r.Header.Set("Sec-Fetch-Site", "cross-site")
+		r.Header.Set("Sec-Fetch-Mode", "no-cors")
+		r.Header.Set("Content-Type", "text/plain;charset=UTF-8")
+		if key != "" {
+			r.Header.Set("Authorization", "Bearer "+key)
+		}
+		w := httptest.NewRecorder()
+		lanGuard(New().Handler()).ServeHTTP(w, r)
+		return w
+	}
+	// a page a resolver serves from anywhere, at any of the subdomains,
+	// spends nothing without a key
+	for _, o := range []string{"http://evil.localhost", "http://evil.localhost:8080", "https://free-gift.localhost"} {
+		for _, p := range []struct{ method, path string }{
+			{"POST", "/v1/chat/completions"},
+			{"POST", "/v1/messages"},
+			{"POST", "/v1/embeddings"},
+			{"GET", "/v1/models"},
+		} {
+			if w := do(p.method, p.path, o, ""); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "gateway key") || w.Header().Get("Access-Control-Allow-Origin") != "" {
+				t.Errorf("%s %s from %s with no key: %d %v %s", p.method, p.path, o, w.Code, w.Header(), w.Body)
+			}
+		}
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("a localhost subdomain with no key reached the vendor %d times", hits.Load())
+	}
+	// with an enabled key it is answered, as a local page holding the
+	// origin honestly is
+	if w := do("POST", "/v1/chat/completions", "http://evil.localhost", secret); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "ok") || hits.Load() != 1 {
+		t.Errorf("with its key: %d %s", w.Code, w.Body)
+	}
+	// answered as before: the two webviews, a page at localhost itself
+	for _, o := range []string{"http://tauri.localhost", "http://wails.localhost", "http://localhost:5173"} {
+		if w := do("POST", "/v1/chat/completions", o, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "ok") {
+			t.Errorf("%s as before: %d %s", o, w.Code, w.Body)
+		}
+	}
+}
+
 // A browser extension the user listed by its origin (#1051, SkyAerope on
 // Discord: an extension such as Sider, without host permissions, is held
 // to CORS like a page) is treated as a listed web page is, no more: its

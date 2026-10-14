@@ -20,6 +20,10 @@ func TestAgentsSkillsFolders(t *testing.T) {
 		".hermes/config.yaml", ".grok/config.toml", ".qoder/settings.json", ".workbuddy/models.json", ".fx/settings.json", ".config/devin/config.json"} {
 		write(t, filepath.Join(h, f), "")
 	}
+	// hermes and Cline installed: the CLI beside the folder (the folder
+	// alone is gone, #2177, and no target — TestTargetsLeaveGoneAgentsOut)
+	holdCLI(t, h, "hermes")
+	holdCLI(t, h, "cline")
 	want := map[string]string{
 		"kimi":        ".agents/skills",
 		"goose":       ".agents/skills",
@@ -133,7 +137,11 @@ func TestSharedSkillsWrittenOnce(t *testing.T) {
 // a word of its "own skill by that name".
 func TestImportSharedSkillForKimi(t *testing.T) {
 	h := sandbox(t)
+	// goose off: its folder and, since the sandbox puts the agents' CLIs
+	// beside them (#2177), its CLI too
 	os.RemoveAll(filepath.Join(h, ".config/goose"))
+	os.Remove(filepath.Join(h, "bin/goose"))
+	os.Remove(filepath.Join(h, "bin/goose.exe"))
 	write(t, filepath.Join(h, ".kimi/config.toml"), "")
 	shared := filepath.Join(h, ".agents/skills/orca")
 	skill(t, shared, "orca", "Orca")
@@ -290,6 +298,7 @@ func TestSiblingInstructionsMore(t *testing.T) {
 	write(t, filepath.Join(h, ".qoder", "settings.json"), "{}")
 	write(t, filepath.Join(h, ".commandcode", "settings.json"), "{}")
 	write(t, filepath.Join(h, ".codebuddy", "settings.json"), "{}")
+	holdCLI(t, h, "codebuddy") // the folder alone is gone (#2177)
 	write(t, filepath.Join(h, ".codebuddy", "CODEBUDDY.mdc"), "# Mine\n")
 	want := map[string]string{
 		"qoder":       filepath.Join(h, ".qoder", "AGENTS.md"),
@@ -375,6 +384,7 @@ func TestPiInstructionsFirstThere(t *testing.T) {
 	pi := filepath.Join(h, ".pi", "agent")
 	omo := filepath.Join(h, ".omo", "agent")
 	write(t, filepath.Join(omo, "settings.json"), "{}")
+	holdCLI(t, h, "omo") // the folder alone is gone (#2177)
 	for _, d := range []string{pi, omo} {
 		if tg := targetByID(map[string]string{pi: "pi", omo: "omo"}[d]); tg == nil ||
 			tg.Instructions != filepath.Join(d, "AGENTS.md") || tg.Override != filepath.Join(d, "AGENTS.override.md") {

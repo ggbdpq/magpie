@@ -35,6 +35,18 @@ func sandbox(t *testing.T) string {
 	bin := filepath.Join(h, "bin")
 	testenv.Program(t, filepath.Join(bin, "gemini"), "#!/bin/sh\n")
 	write(t, filepath.Join(bin, "gemini.exe"), "")
+	// the other fixture agents' CLIs beside their folders, as on a machine
+	// where they are really installed: with the folder alone each would be
+	// gone (CLIMissing, #2177) and no target of the library's. Only these:
+	// a stand-in for an agent no folder here keeps would have it detected
+	// by its binary alone in every test.
+	for _, name := range []string{
+		"claude", "codex", "opencode", "mimo", "deveco", "pi", "goose",
+		"cursor-agent", "copilot", "crush", "dsh",
+	} {
+		testenv.Program(t, filepath.Join(bin, name), "#!/bin/sh\n")
+		write(t, filepath.Join(bin, name+".exe"), "")
+	}
 	t.Setenv("PATH", bin)
 	// never the machine's global node_modules
 	roots := piGlobalRoots
@@ -71,6 +83,19 @@ func write(t *testing.T, p, s string) {
 	if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// holdCLI puts a CLI of the given name in the sandbox's bin, beside the
+// agent folder the test wrote: the folder alone is an uninstall that left
+// it behind (#2177), and no target of the library's. An empty name is
+// nothing, for an agent with no install command, which is never gone.
+func holdCLI(t *testing.T, h, bin string) {
+	t.Helper()
+	if bin == "" {
+		return
+	}
+	testenv.Program(t, filepath.Join(h, "bin", bin), "#!/bin/sh\n")
+	write(t, filepath.Join(h, "bin", bin+".exe"), "")
 }
 
 func read(t *testing.T, p string) string {

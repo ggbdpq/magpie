@@ -13,6 +13,7 @@ import (
 	"github.com/yetone/magpie/internal/agentenv"
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 // home is a sandbox: a home of its own with Claude Code and Codex in it,
@@ -24,7 +25,6 @@ func home(t *testing.T) string {
 	t.Setenv("USERPROFILE", h)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
-	t.Setenv("PATH", "")
 	t.Setenv("XDG_DATA_HOME", filepath.Join(h, ".local", "share"))
 	for _, k := range agentenv.Vars {
 		t.Setenv(k, "")
@@ -35,6 +35,15 @@ func home(t *testing.T) string {
 	for _, f := range []string{".claude/settings.json", ".codex/config.toml"} {
 		write(t, filepath.Join(h, f), "")
 	}
+	// their CLIs beside the folders, as on a machine where they are really
+	// installed: the folder alone is an uninstall that left it behind
+	// (#2177), gone for the agents page and no target of the library's
+	bin := filepath.Join(h, "bin")
+	for _, name := range []string{"claude", "codex"} {
+		testenv.Program(t, filepath.Join(bin, name), "#!/bin/sh\n")
+		write(t, filepath.Join(bin, name+".exe"), "")
+	}
+	t.Setenv("PATH", bin)
 	for _, p := range []provider.Provider{
 		{ID: "a", Name: "A", Key: "ka", Models: []string{"m", "claude-opus-5-5"}, Chat: "http://127.0.0.1:1/v1"},
 		{ID: "b", Name: "B", Key: "kb", Models: []string{"gpt-5.5"}, Chat: "http://127.0.0.1:1/v1"},

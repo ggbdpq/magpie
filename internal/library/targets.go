@@ -662,6 +662,12 @@ func Targets() []*Target {
 		if own[a.ID] {
 			continue
 		}
+		// an uninstall that left the folder behind (#2177, #2173): the
+		// Agents page calls the agent gone and offers none of its settings,
+		// since nothing reads them; the library gives nothing to it either
+		if a.CLIMissing() {
+			continue
+		}
 		if t := targetOf(a); t != nil && t.open() {
 			out = append(out, t)
 		}

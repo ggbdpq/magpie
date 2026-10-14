@@ -101,3 +101,75 @@ func TestGroupFirstTokenFailsOver(t *testing.T) {
 		t.Fatalf("in time: %d %s (b %d)", code, body, b.n)
 	}
 }
+
+// A member reached through a group in the group is waited for by that
+// group's first-token time, not the one the agent asked for: "how long
+// this group's members may take to start" is what the field on the group
+// says, and the seat belongs to the group it is spelled through (#2246).
+// A group in the group that names none leaves it to the outer one.
+func TestNestedGroupFirstToken(t *testing.T) {
+	// slow past the outer's time, within its own group's: waited for
+	fresh(t)
+	a := &slowStart{wait: 2500 * time.Millisecond}
+	b := &scripted{replies: []reply{{200, "text/event-stream", chatStreamOK}}}
+	slowOn(t, "a", a)
+	scriptedOn(t, "b", provider.Chat, b)
+	if err := provider.SaveGroup(provider.Group{Name: "S", Members: []string{"a/m"}, Routing: provider.Ordered, FirstToken: 4}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"group/s", "b/m"}, Routing: provider.Ordered, FirstToken: 1}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	began := time.Now()
+	code, body := postAs(t, s, "", `{"model":"group/g","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if took := time.Since(began); took > 3500*time.Millisecond {
+		t.Fatalf("took %s", took)
+	}
+	if code != 200 || !strings.Contains(body, "slow answer") || strings.Contains(body, "from b") || b.n != 0 {
+		t.Fatalf("%d %s (a %d, b %d)", code, body, a.n, b.n)
+	}
+
+	// the group in the group naming none, the outer's time cuts
+	fresh(t)
+	a = &slowStart{wait: 10 * time.Second}
+	b = &scripted{replies: []reply{{200, "text/event-stream", chatStreamOK}}}
+	slowOn(t, "a", a)
+	scriptedOn(t, "b", provider.Chat, b)
+	provider.SaveGroup(provider.Group{Name: "S", Members: []string{"a/m"}, Routing: provider.Ordered})
+	provider.SaveGroup(provider.Group{Name: "G", Members: []string{"group/s", "b/m"}, Routing: provider.Ordered, FirstToken: 1})
+	s = New()
+	if code, body := postAs(t, s, "", `{"model":"group/g","stream":true,"messages":[{"role":"user","content":"hi"}]}`); code != 200 || !strings.Contains(body, "from b") || a.n != 1 {
+		t.Fatalf("inner unset: %d %s (a %d)", code, body, a.n)
+	}
+
+	// and the seconds the seat is given up at are its own group's
+	fresh(t)
+	a = &slowStart{wait: 10 * time.Second}
+	b = &scripted{replies: []reply{{200, "text/event-stream", chatStreamOK}}}
+	slowOn(t, "a", a)
+	scriptedOn(t, "b", provider.Chat, b)
+	provider.SaveGroup(provider.Group{Name: "S", Members: []string{"a/m"}, Routing: provider.Ordered, FirstToken: 1})
+	provider.SaveGroup(provider.Group{Name: "G", Members: []string{"group/s", "b/m"}, Routing: provider.Ordered, FirstToken: 2})
+	s = New()
+	postAs(t, s, "", `{"model":"group/g","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if r := lastRoute(s); len(r.Tries) == 0 || !strings.Contains(r.Tries[0].Error, "no first token in 1s") {
+		t.Fatalf("cut: tries[0] %+v", r.Tries[0])
+	}
+
+	// a group in the way naming one, a group below it naming none: the
+	// nearest one above the seat that named it holds
+	fresh(t)
+	a = &slowStart{wait: 10 * time.Second}
+	b = &scripted{replies: []reply{{200, "text/event-stream", chatStreamOK}}}
+	slowOn(t, "a", a)
+	scriptedOn(t, "b", provider.Chat, b)
+	provider.SaveGroup(provider.Group{Name: "T", Members: []string{"a/m"}, Routing: provider.Ordered})
+	provider.SaveGroup(provider.Group{Name: "S", Members: []string{"group/t"}, Routing: provider.Ordered, FirstToken: 1})
+	provider.SaveGroup(provider.Group{Name: "G", Members: []string{"group/s", "b/m"}, Routing: provider.Ordered, FirstToken: 2})
+	s = New()
+	postAs(t, s, "", `{"model":"group/g","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if r := lastRoute(s); len(r.Tries) == 0 || !strings.Contains(r.Tries[0].Error, "no first token in 1s") {
+		t.Fatalf("inherited: tries[0] %+v", r.Tries[0])
+	}
+}

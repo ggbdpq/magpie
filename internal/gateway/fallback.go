@@ -45,6 +45,10 @@ type candidate struct {
 	// fast is set on a member the group sends in its vendor's fast mode
 	// (Group.Fast)
 	fast bool
+	// firstToken is the Group.FirstToken of the deepest group the member
+	// is spelled through, whose seat it is; 0 when that group names none,
+	// the group the agent asked for deciding then (#2246)
+	firstToken int
 	// rank is its place in its provider's own list of accounts or keys,
 	// the order the provider's page shows and a drag sets (#217)
 	rank int
@@ -376,7 +380,7 @@ func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider
 	var pl planned
 	var asides []candidate
 	var wAsides []Weighed
-	out := planLevel(g, ms, 0, from, &pl, &asides, &wAsides)
+	out := planLevel(g, ms, 0, from, &pl, &asides, &wAsides, 0)
 	if sinks(g.Sink, g.Routing) {
 		out, pl.order = sinkPlanned(out, pl.order)
 	}
@@ -389,8 +393,10 @@ func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider
 
 // planLevel orders the models ms of g, a group depth groups down from the
 // one asked for, adding to pl's order as it goes: those set aside and
-// those unlisted it gathers for planGroup to put last.
-func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.Protocol, pl *planned, asides *[]candidate, wAsides *[]Weighed) []candidate {
+// those unlisted it gathers for planGroup to put last. hold is the
+// first-token time inherited from the groups on the way down, which a
+// group naming none of its own keeps (#2246).
+func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.Protocol, pl *planned, asides *[]candidate, wAsides *[]Weighed, hold int) []candidate {
 	keys := func(m provider.Member) []candidate {
 		cs, aside, left, barred := perKeyBarred(m.Provider, m.Model, from)
 		// the effort the member is fixed at goes with each of its keys:
@@ -398,6 +404,9 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 		for _, l := range [][]candidate{cs, aside, left, barred} {
 			for i := range l {
 				l[i].effort, l[i].fast = m.Effort, m.Fast
+				// and how long its own group waits for its first token:
+				// this one's, or the nearest one above that named it
+				l[i].firstToken = cmp.Or(g.FirstToken, hold)
 			}
 		}
 		pl.left = append(pl.left, barredOf(barred, m.Provider, false, from, m.Groups())...)
@@ -443,7 +452,7 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 					j++
 				}
 				var sub planned
-				cs := planLevel(m.Via[depth], ms[i:j], depth+1, from, &sub, asides, wAsides)
+				cs := planLevel(m.Via[depth], ms[i:j], depth+1, from, &sub, asides, wAsides, cmp.Or(g.FirstToken, hold))
 				pl.left = append(pl.left, sub.left...)
 				pl.capped = append(pl.capped, sub.capped...)
 				if len(cs) > 0 {
@@ -530,7 +539,7 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 			for j < len(ms) && len(ms[j].Path) > depth+1 && ms[j].Path[depth] == m.Path[depth] {
 				j++
 			}
-			out = append(out, planLevel(m.Via[depth], ms[i:j], depth+1, from, pl, asides, wAsides)...)
+			out = append(out, planLevel(m.Via[depth], ms[i:j], depth+1, from, pl, asides, wAsides, cmp.Or(g.FirstToken, hold))...)
 			i = j
 			continue
 		}

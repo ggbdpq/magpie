@@ -2140,9 +2140,16 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// (#1359)
 			hw.loop = &loopGuard{}
 		}
-		if isGroup && g.FirstToken > 0 && !last && streams {
+		// how long this try may take to its first token: the group the
+		// member is spelled through's, whose seat it is, else the group
+		// the agent asked for (#2246)
+		fw := c.firstToken
+		if fw == 0 {
+			fw = g.FirstToken
+		}
+		if isGroup && fw > 0 && !last && streams {
 			// slow to start, the next member is asked (Group.FirstToken)
-			hw.firstWait = time.Duration(g.FirstToken) * time.Second
+			hw.firstWait = time.Duration(fw) * time.Second
 		}
 		call.Provider, call.To, call.Usage = c.p.ID, "", Usage{}
 		model = c.model
@@ -2530,10 +2537,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			break
 		}
 		if hw.slow {
-			// no first content in the group's FirstToken, and nothing of
-			// it sent: the next member is asked, and this one doesn't
-			// rest, a long prompt being slow to start anywhere
-			call.Status, call.Error = http.StatusGatewayTimeout, fmt.Sprintf("%s: no first token in %ds", c.p.Name, g.FirstToken)
+			// no first content within the try's first-token time, and
+			// nothing of it sent: the next member is asked, and this one
+			// doesn't rest, a long prompt being slow to start anywhere
+			call.Status, call.Error = http.StatusGatewayTimeout, fmt.Sprintf("%s: no first token in %ds", c.p.Name, fw)
 			try.Status, try.Error, try.Fail = call.Status, call.Error, failSlow
 			call.TTFT, call.FirstText, call.Flow, call.FirstReasoning = 0, 0, 0, 0
 			telemetry.attempt(call, try, c.p.ID, sent, hw, capture)

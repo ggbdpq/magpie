@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -45,9 +46,35 @@ func appliedLoad() map[string]applied {
 }
 
 func appliedSave(m map[string]applied) {
+	if err := keepUnreadApplied(); err != nil {
+		log.Printf("applied.json wasn't written over: %v", err)
+		return
+	}
 	b, _ := json.MarshalIndent(m, "", "  ")
 	os.MkdirAll(filepath.Dir(appliedPath()), 0o755)
 	os.WriteFile(appliedPath(), b, 0o600)
+}
+
+// keepUnreadApplied copies an applied.json that doesn't parse aside before
+// it is written over: it holds what magpie set on every agent, and a read
+// that came back empty is unknown, not nothing. A copy that can't be made
+// stops the write.
+func keepUnreadApplied() error {
+	p := appliedPath()
+	b, err := os.ReadFile(p)
+	if err != nil || len(b) == 0 {
+		return nil
+	}
+	var parsed map[string]applied
+	if json.Unmarshal(b, &parsed) == nil {
+		return nil
+	}
+	bad := p + ".bad-" + time.Now().Format("20060102-150405.000000000")
+	if err := os.WriteFile(bad, b, 0o600); err != nil {
+		return fmt.Errorf("applied.json doesn't parse and couldn't be kept aside: %w", err)
+	}
+	log.Printf("applied.json didn't parse; it is kept as %s", filepath.Base(bad))
+	return nil
 }
 
 func appliedOf(id string) applied {

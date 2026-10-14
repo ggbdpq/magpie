@@ -3,6 +3,8 @@ package sessions
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -243,7 +245,9 @@ func wslList(gen uint64, done chan struct{}) {
 	}
 	if b != nil && !bytes.Equal(b, wslSess.kept) {
 		p := wslListPath()
-		if os.MkdirAll(filepath.Dir(p), 0o755) == nil {
+		if err := keepUnreadWSLList(p); err != nil {
+			log.Printf("sessions-wsl.json wasn't written over: %v", err)
+		} else if os.MkdirAll(filepath.Dir(p), 0o755) == nil {
 			tmp := p + ".tmp"
 			if os.WriteFile(tmp, b, 0o644) == nil && os.Rename(tmp, p) == nil {
 				wslSess.kept = b
@@ -252,6 +256,27 @@ func wslList(gen uint64, done chan struct{}) {
 			}
 		}
 	}
+}
+
+// keepUnreadWSLList copies a sessions-wsl.json that doesn't parse aside
+// before it is written over: it holds the listing of a stopped distro's
+// sessions, and a read that came back empty is unknown, not nothing. A
+// copy that can't be made stops the write.
+func keepUnreadWSLList(p string) error {
+	b, err := os.ReadFile(p)
+	if err != nil || len(b) == 0 {
+		return nil
+	}
+	var parsed map[string]*wslListing
+	if json.Unmarshal(b, &parsed) == nil {
+		return nil
+	}
+	bad := p + ".bad-" + time.Now().Format("20060102-150405.000000000")
+	if err := os.WriteFile(bad, b, 0o600); err != nil {
+		return fmt.Errorf("sessions-wsl.json doesn't parse and couldn't be kept aside: %w", err)
+	}
+	log.Printf("sessions-wsl.json didn't parse; it is kept as %s", filepath.Base(bad))
+	return nil
 }
 
 // wslCold reports whether path is in a WSL distro's home that isn't

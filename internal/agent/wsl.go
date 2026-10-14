@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -1068,11 +1069,38 @@ func wslSave() {
 }
 
 func wslSaveLocked() {
-	if wsl.dirty {
-		if b, err := json.MarshalIndent(wsl.seen, "", "  "); err == nil && edit.WriteAtomic(wslStatePath(), b) == nil {
-			wsl.dirty = false
-		}
+	if !wsl.dirty {
+		return
 	}
+	if err := keepUnreadWSL(); err != nil {
+		log.Printf("wsl.json wasn't written over: %v", err)
+		return
+	}
+	if b, err := json.MarshalIndent(wsl.seen, "", "  "); err == nil && edit.WriteAtomic(wslStatePath(), b) == nil {
+		wsl.dirty = false
+	}
+}
+
+// keepUnreadWSL copies a wsl.json that doesn't parse aside before it is
+// written over: it holds every distro's last probe, and a read that came
+// back empty is unknown, not nothing. A copy that can't be made stops the
+// write. The caller holds wsl's lock.
+func keepUnreadWSL() error {
+	p := wslStatePath()
+	b, err := os.ReadFile(p)
+	if err != nil || len(b) == 0 {
+		return nil
+	}
+	var parsed map[string]*distro
+	if json.Unmarshal(b, &parsed) == nil {
+		return nil
+	}
+	bad := p + ".bad-" + time.Now().Format("20060102-150405.000000000")
+	if err := os.WriteFile(bad, b, 0o600); err != nil {
+		return fmt.Errorf("wsl.json doesn't parse and couldn't be kept aside: %w", err)
+	}
+	log.Printf("wsl.json didn't parse; it is kept as %s", filepath.Base(bad))
+	return nil
 }
 
 // wslRemember keeps what a distro's field reads, for while it is stopped.

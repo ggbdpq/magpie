@@ -684,7 +684,14 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		d, r.By, r.Failures = s.rateRest(c, header, body, sharedPool, now)
 		// rate limited with quota left: to the back, where the order sinks
 		if c.full(now).IsZero() && !(c.isOpenRouterFree() && sharedPool) {
-			sink(c.restKey(), now)
+			// a remote magpie's model sinks by its own rest key, the one
+			// its rest takes: sinking the remote's key would send its
+			// other models, never limited, behind the others too
+			key := c.restKey()
+			if remoteModelRest(c, failRate) {
+				key = c.restID()
+			}
+			sink(key, now)
 		}
 	case failRestricted:
 		// out until the vendor lifts it: an appeal, not a wait (#1849)

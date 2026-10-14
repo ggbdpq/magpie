@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/yetone/magpie/internal/provider"
@@ -74,6 +75,61 @@ func TestRemoteMagpieQuotaRestsTheModel(t *testing.T) {
 		t.Errorf("glm/glm-5 doesn't rest as rate limited: %+v %v", r, rests())
 	}
 	asked = nil
+	code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 || !strings.Contains(body, "from kimi/kimi-k3") || len(other.tried) != 0 {
+		t.Fatalf("the group: %d %s; the remote was asked %v, other %v", code, body, asked, other.tried)
+	}
+}
+
+// One of a remote magpie's models rate limited with quota left sinks only
+// its own rest (restID, as its rest is keyed): sinking the remote's whole
+// key sends its other models, which were never limited, behind the next
+// provider too, the same mistake resting the whole remote was.
+func TestRemoteMagpieRateLimitSinksTheModel(t *testing.T) {
+	fresh(t)
+	forgetSinks(t)
+	var mu sync.Mutex
+	var asked []string
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model string `json:"model"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		asked = append(asked, req.Model)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if req.Model == "glm/glm-5" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			io.WriteString(w, `{"error":{"message":"rate limit exceeded, slow down"}}`)
+			return
+		}
+		io.WriteString(w, `{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"from `+req.Model+`"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(remote.Close)
+	if err := provider.Save(provider.Provider{ID: "office", Name: "Office", Preset: provider.RemoteMagpiePreset, Key: "k",
+		Chat: remote.URL + "/v1", Models: []string{"glm/glm-5", "kimi/kimi-k3"}}); err != nil {
+		t.Fatal(err)
+	}
+	other := &keyed{}
+	serveOn(t, "other", "ko", []string{"m"}, other)
+	// glm's rate limit, with quota left, sinks it (the group's Sink puts
+	// what sank behind the others)
+	if err := provider.SaveGroup(provider.Group{Name: "R", Members: []string{"office/glm/glm-5", "office/kimi/kimi-k3"}, Routing: provider.Ordered, Sink: true}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	if code, body := postAs(t, s, "", `{"model":"group/r","messages":[{"role":"user","content":"hi"}]}`); code != 200 || !strings.Contains(body, "from kimi/kimi-k3") {
+		t.Fatalf("glm on the remote: %d %s", code, body)
+	}
+	// the watched group: the remote's kimi, never limited, keeps its place
+	// ahead of a provider that never served this conversation
+	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"office/kimi/kimi-k3", "other/m"}, Routing: provider.Ordered, Sink: true}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	asked = nil
+	mu.Unlock()
 	code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`)
 	if code != 200 || !strings.Contains(body, "from kimi/kimi-k3") || len(other.tried) != 0 {
 		t.Fatalf("the group: %d %s; the remote was asked %v, other %v", code, body, asked, other.tried)

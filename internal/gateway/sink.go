@@ -45,11 +45,17 @@ func sink(key string, now time.Time) {
 	sunk.Unlock()
 }
 
-// sunkAt is when a candidate sank, if it did.
+// sunkAt is when a candidate sank, if it did. A remote magpie's model
+// sank by its own rest key, the one its rest takes (remoteModelRest):
+// one model's rate limit says nothing of the remote's others.
 func sunkAt(c candidate) (sinking, bool) {
+	key := c.restKey()
+	if c.p.IsRemoteMagpie() {
+		key = c.restID()
+	}
 	sunk.Lock()
 	defer sunk.Unlock()
-	s, ok := sunk.m[c.restKey()]
+	s, ok := sunk.m[key]
 	return s, ok
 }
 

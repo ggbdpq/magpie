@@ -217,6 +217,67 @@ func TestClaudeDesktopClassifierKeepsItsModel(t *testing.T) {
 	}
 }
 
+// The same on a remote magpie (#2187, SuInk): its catalog entries are
+// nested, the remote's own provider inside the model id — office's entry
+// for the remote's claude/claude-sonnet-5 is office/claude/claude-sonnet-5
+// — so the bare claude-sonnet-5 Claude Code's classifiers ask for matched
+// neither the entry's ID nor its Model, was taken for unserved, and the
+// background request went to the session's model: 9 classifier calls in 98
+// seconds read 517K cache tokens and wrote 480K of 1h cache writes on the
+// session's Opus. Desktop's title still follows the session, and a model
+// the remote doesn't serve still goes there.
+func TestClaudeDesktopClassifierKeepsItsModelOnARemoteMagpie(t *testing.T) {
+	f := &fake{reply: sse(
+		`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"m1","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`,
+		`event: message_stop`+"\n"+`data: {"type":"message_stop"}`)}
+	up := setup(t, provider.Anthropic, f)
+	if err := provider.Save(provider.Provider{ID: "office", Name: "Office", Key: "k", Anthropic: up.URL,
+		Models: []string{"claude/claude-opus-5-5", "claude/claude-sonnet-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	desktopPicked.Lock()
+	desktopPicked.model, desktopPicked.from = "", ""
+	desktopPicked.Unlock()
+	const cli = "claude-cli/2.1.296 (external, claude-desktop)"
+	const electron = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/1.6608.0 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36"
+	send := func(ua, body string) string {
+		t.Helper()
+		f.got = nil
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+		req.Header.Set("x-api-key", Token+"-claude-desktop")
+		req.Header.Set("User-Agent", ua)
+		rec := httptest.NewRecorder()
+		New().Handler().ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("%d %s", rec.Code, rec.Body)
+		}
+		return modelOf(f.got)
+	}
+	// the session is on the remote's opus, by the catalog id Desktop's menu
+	// lists it by
+	if got := send(cli, `{"model":"office/claude/claude-opus-5-5","max_tokens":64000,"stream":true,"tools":[{"name":"Bash","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"}]}`); got != "claude/claude-opus-5-5" {
+		t.Fatalf("turn: sent %q", got)
+	}
+	// Claude Code's own background requests name Anthropic's claude-sonnet-5
+	for _, body := range []string{
+		`{"model":"claude-sonnet-5","max_tokens":1024,"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.296.523; cc_entrypoint=claude-desktop;"},{"type":"text","text":"A user kicked off a Claude Code agent to do a coding task and walked away."}],"messages":[{"role":"user","content":"…"}]}`,
+		`{"model":"claude-sonnet-5","max_tokens":64,"stream":true,"system":[{"type":"text","text":"You are a security monitor for autonomous AI coding agents."}],"messages":[{"role":"user","content":"<transcript>…</transcript>"}]}`,
+	} {
+		if got := send(cli, body); got != "claude/claude-sonnet-5" {
+			t.Fatalf("classifier: bare claude-sonnet-5 was sent as %q, want the remote's claude/claude-sonnet-5", got)
+		}
+	}
+	// Desktop's title still goes to the session's model
+	title := `{"model":"claude-sonnet-5","max_tokens":200,"stream":true,"system":"You write short session titles. Reply with only the tagged fields the prompt asks for.","messages":[{"role":"user","content":"hi"}]}`
+	if got := send(electron, title); got != "claude/claude-opus-5-5" {
+		t.Fatalf("Desktop's title: sent %q, want the session's claude/claude-opus-5-5", got)
+	}
+	// a model the remote doesn't serve still goes to the session's model
+	if got := send(cli, `{"model":"claude-haiku-4-5-20251001","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}`); got != "claude/claude-opus-5-5" {
+		t.Fatalf("unserved haiku: sent %q", got)
+	}
+}
+
 func TestDesktopTitle(t *testing.T) {
 	for body, want := range map[string]bool{
 		`{"system":"You write short session titles. Reply…"}`:                                               true,

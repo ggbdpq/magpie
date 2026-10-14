@@ -393,6 +393,36 @@ var desktopPicked struct {
 
 func desktopPickedPath() string { return filepath.Join(settings.Dir(), "claude-desktop.model") }
 
+// nestedClaude is the catalog id of the entry that is the Claude model a
+// request names by its bare id, when no entry serves the bare id itself: a
+// remote magpie's claude/claude-sonnet-5 is listed as
+// office/claude/claude-sonnet-5, the entry's Model keeping the remote's own
+// provider in it, so unserved took Claude Code's own claude-sonnet-5 for
+// unserved and the turn went to the session's model (#2187). The first
+// entry in the catalog's order is taken, as a bare id is resolved. "" when
+// the bare id is served as it is, or no entry is that Claude model.
+func nestedClaude(asked string) string {
+	id := strings.TrimSuffix(asked, "[1m]")
+	if id == "" || strings.Contains(id, "/") {
+		return ""
+	}
+	for _, e := range provider.Catalog() {
+		if e.ID == id || e.Model == id {
+			return "" // served by the bare id as it is
+		}
+	}
+	want := claudeModel(provider.Entry{Model: id})
+	if want == "" {
+		return ""
+	}
+	for _, e := range provider.Catalog() {
+		if claudeModel(e) == want {
+			return e.ID
+		}
+	}
+	return ""
+}
+
 // desktopTurn is the model a Claude Desktop request for asked is served by.
 // byClaudeCode is a request Claude Code sent (its claude-cli/ User-Agent)
 // rather than Desktop's own client. bySubagent is a subagent's request
@@ -414,6 +444,11 @@ func desktopPickedPath() string { return filepath.Join(settings.Dir(), "claude-d
 func desktopTurn(asked string, body []byte, byClaudeCode, bySubagent bool) string {
 	if asked == "" {
 		return asked
+	}
+	// a bare Claude model id only a nested entry serves is that entry, so
+	// what follows runs as it does on a provider that serves the id itself
+	if m := nestedClaude(asked); m != "" {
+		asked = m
 	}
 	if m := desktopTierTurn(asked); m != "" {
 		return m

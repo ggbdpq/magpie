@@ -548,9 +548,25 @@ func (m model) viewLibrary() string {
 	}
 	// the rows around the cursor, as many as fit
 	visible := max(4, m.h-6)
-	start := 0
-	if m.lrow >= visible-2 {
-		start = m.lrow - visible + 3
+	// where the window starts is counted in the lines it draws — counted in
+	// rows alone, a list of several sections drew heads the budget never
+	// paid for, and the row picked fell off the bottom of the page
+	spend := func(from int) int {
+		lines := 0
+		for i := from; i <= m.lrow && lines <= visible; i++ {
+			lines++
+			if i == from || m.lib[i].kind != m.lib[i-1].kind {
+				lines += 2 // the head, and the blank before it
+				if i == 0 {
+					lines-- // the list's first section has no blank above it
+				}
+			}
+		}
+		return lines
+	}
+	start := m.lrow
+	for start > 0 && spend(start-1) <= visible {
+		start--
 	}
 	last, lines := "", 0
 	for i := start; i < len(m.lib) && lines < visible; i++ {

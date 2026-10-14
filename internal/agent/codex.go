@@ -733,7 +733,10 @@ func codexIn(at place) *Agent {
 		if p != "" && p != "openai" && !mirror {
 			return nil
 		}
-		on := !disconnected() && codexFailover()
+		// a Codex that reaches the gateway from another machine is never
+		// pointed at the Codex path: the gateway takes a named key there,
+		// so the turn failover handed it came back a 401 (#2145)
+		on := !disconnected() && codexFailover() && !onAnotherMachine(at.gw())
 		// failover is magpie's own idea, not the user's: never handed
 		// Codex's requests while a proxy they'd go through doesn't pass
 		// them on to magpie, which would have every turn fail with 502

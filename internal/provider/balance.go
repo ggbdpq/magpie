@@ -206,7 +206,25 @@ func errKeyUsageWithToken(raw string) error {
 	if u, err := url.Parse(strings.TrimSpace(raw)); err == nil && u.Host != "" {
 		self = u.Scheme + "://" + u.Host + newAPIUserSelf
 	}
-	return fmt.Errorf("the Balance URL %s takes the API key, not the access token: set it to %s (Balance field %s) for the account's balance, or remove the token for the key's own", raw, self, newAPIQuotaPath)
+	return errKeyQueryWithToken(raw, self, newAPIQuotaPath, "access token")
+}
+
+// errSub2APIKeyUsageWithToken is a login token beside sub2api's query for a
+// key, which takes the key alone as new-api's does: the panel's query for
+// the account is named in its place.
+func errSub2APIKeyUsageWithToken(raw string) error {
+	profile := sub2APIProfile
+	if u, err := url.Parse(strings.TrimSpace(raw)); err == nil && u.Host != "" {
+		profile = u.Scheme + "://" + u.Host + sub2APIProfile
+	}
+	return errKeyQueryWithToken(raw, profile, "$data.balance", "login token")
+}
+
+// errKeyQueryWithToken is a balance token beside a panel's query for a key
+// (new-api's /api/usage/token, sub2api's /v1/usage), which never takes it:
+// what to name in its place is said.
+func errKeyQueryWithToken(raw, accountURL, accountField, token string) error {
+	return fmt.Errorf("the Balance URL %s takes the API key, not the %s: set it to %s (Balance field %s) for the account's balance, or remove the token for the key's own", raw, token, accountURL, accountField)
 }
 
 // balanceRefusal is what a reply of {"success":false,"message":…} says, a
@@ -1132,8 +1150,13 @@ func balanceRead(ctx context.Context, p Provider) (amount string, parts []Balanc
 	if !ok || p.Account != nil || p.Key == "" {
 		return "", nil, nil, false, nil
 	}
-	if src.token != "" && p.BalanceURL != "" && balanceURLPath(p.BalanceURL) == newAPIKeyUsage {
-		return "", nil, nil, true, errKeyUsageWithToken(p.BalanceURL)
+	if src.token != "" && p.BalanceURL != "" {
+		switch balanceURLPath(p.BalanceURL) {
+		case newAPIKeyUsage:
+			return "", nil, nil, true, errKeyUsageWithToken(p.BalanceURL)
+		case sub2APIKeyUsage:
+			return "", nil, nil, true, errSub2APIKeyUsageWithToken(p.BalanceURL)
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, withBalanceKey(src.url, p.Key, true), nil)
 	if err != nil {

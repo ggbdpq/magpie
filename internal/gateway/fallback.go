@@ -371,7 +371,9 @@ func (s *Server) plan(p provider.Provider, model string, from provider.Protocol)
 // alone, whatever the group's (#576): in order, in its place; else as
 // one, weighed with the rest by the one it would try first, and tried
 // whole where that one goes — the group's routing picks between its
-// groups, never within them. A member's fallbacks are not the group's.
+// groups, never within them. Its own Sink orders its own keys and accounts
+// there the same way, before the group's orders the whole. A member's
+// fallbacks are not the group's.
 func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider.Protocol) ([]candidate, planned) {
 	var pl planned
 	var asides []candidate
@@ -444,6 +446,12 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 				}
 				var sub planned
 				cs := planLevel(m.Via[depth], ms[i:j], depth+1, from, &sub, asides, wAsides)
+				// the tier's own Sink orders its own keys and accounts,
+				// as its routing orders them (#576): the group's still
+				// orders the whole after
+				if sinks(m.Via[depth].Sink, m.Via[depth].Routing) {
+					cs, sub.order = sinkPlanned(cs, sub.order)
+				}
 				pl.left = append(pl.left, sub.left...)
 				pl.capped = append(pl.capped, sub.capped...)
 				if len(cs) > 0 {
@@ -525,12 +533,20 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 	for i := 0; i < len(ms); {
 		m := ms[i]
 		if len(m.Path) > depth+1 {
-			// a group in g: its models, planned by its routing
+			// a group in g: its models, planned by its routing, its own
+			// Sink ordering its own keys
 			j := i + 1
 			for j < len(ms) && len(ms[j].Path) > depth+1 && ms[j].Path[depth] == m.Path[depth] {
 				j++
 			}
-			out = append(out, planLevel(m.Via[depth], ms[i:j], depth+1, from, pl, asides, wAsides)...)
+			sub := planLevel(m.Via[depth], ms[i:j], depth+1, from, pl, asides, wAsides)
+			if sinks(m.Via[depth].Sink, m.Via[depth].Routing) {
+				at := len(pl.order) - len(sub)
+				var ordered []Weighed
+				sub, ordered = sinkPlanned(sub, pl.order[at:])
+				copy(pl.order[at:], ordered)
+			}
+			out = append(out, sub...)
 			i = j
 			continue
 		}

@@ -133,6 +133,52 @@ func TestRateLimitedSinksToTheBack(t *testing.T) {
 	want(p, "c@x.com", "a@x.com", "b@x.com")
 }
 
+// A group in the group with its own Sink: its rate-limited-with-quota-left
+// key goes to the back of the tier's own order, as it would were the tier
+// the group the agent named — a nested group plans by its own routing
+// (#576), rules and Sink alike, at any depth.
+func TestNestedGroupSinksItsOwnTier(t *testing.T) {
+	forgetSinks(t)
+	s := &Server{}
+	tier := func(sink bool) provider.Group {
+		return provider.Group{ID: "inner", Routing: provider.Ordered, Sink: sink}
+	}
+	mem := func(tier provider.Group, id string) provider.Member {
+		return provider.Member{ID: "group/inner", Path: []string{"group/inner", id + "/m"}, Via: []provider.Group{tier}, Provider: provider.Provider{ID: id, Chat: "http://127.0.0.1:1/v1", Key: "k-" + id}, Model: "m"}
+	}
+	ids := func(cs []candidate) []string {
+		var out []string
+		for _, c := range cs {
+			out = append(out, c.p.ID)
+		}
+		return out
+	}
+	rate := []byte(`{"error":{"message":"Too many requests"}}`)
+	on := tier(true)
+	for _, routing := range []string{provider.Ordered, ""} {
+		forgetSinks(t) // each routing starts with nothing sunk
+		outer := provider.Group{ID: "outer", Members: []string{"group/inner"}, Routing: routing}
+		cs, _ := s.planGroup(outer, []provider.Member{mem(on, "a"), mem(on, "b")}, provider.Chat)
+		s.restAfter(cs[0], 429, http.Header{}, rate) // a: rate limited with quota left, it sank
+		rested(cs[0].restKey())                      // its minute is up
+		out, pl := s.planGroup(outer, []provider.Member{mem(on, "a"), mem(on, "b")}, provider.Chat)
+		if got := ids(out); !slices.Equal(got, []string{"b", "a"}) {
+			t.Fatalf("%q: the tier's own Sink: order %v, want [b a]", routing, got)
+		}
+		if pl.order[0].Sunk != nil || pl.order[1].Sunk == nil {
+			t.Fatalf("%q: trace %+v", routing, pl.order)
+		}
+	}
+	off := tier(false)
+	if out, _ := s.planGroup(provider.Group{ID: "outer"}, []provider.Member{mem(off, "a"), mem(off, "b")}, provider.Chat); ids(out)[0] != "a" {
+		t.Fatalf("Sink off: order %v, want a first", ids(out))
+	}
+	// the group's own Sink still orders the whole, tier members included
+	if out, _ := s.planGroup(provider.Group{ID: "outer", Sink: true}, []provider.Member{mem(off, "a"), mem(off, "b")}, provider.Chat); ids(out)[0] != "b" {
+		t.Fatalf("the group's Sink: order %v, want b first", ids(out))
+	}
+}
+
 // A routing group with Sink: a member's key rate limited with quota left
 // goes behind the other members, in order or not, and the trace's order
 // follows it.

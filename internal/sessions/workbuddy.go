@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/proc"
 )
 
 // WorkBuddy (Tencent's desktop agent) keeps its sessions much as Claude
@@ -44,7 +45,15 @@ func workbuddyFiles() []file { return buddyFiles("workbuddy", WorkBuddyDir()) }
 // or CodeBuddy Code's, which keeps them the same way.
 func buddyFiles(agent, dir string) []file {
 	var out []file
-	filepath.WalkDir(filepath.Join(dir, "projects"), func(p string, d os.DirEntry, err error) error {
+	// A projects folder that is a link — how a WorkBuddy folder on another
+	// drive is reached on Windows (#2233) — is walked where it really is:
+	// WalkDir lstats its root, a link is not a directory to it, and every
+	// session behind it would be missed.
+	root := filepath.Join(dir, "projects")
+	if real, err := proc.RealPath(root); err == nil {
+		root = real
+	}
+	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
 			return nil
 		}

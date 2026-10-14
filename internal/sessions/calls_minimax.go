@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/proc"
 )
 
 // MiniMax Code's calls (#1605, LukeZ1988: MiniMax Code was missing from
@@ -52,7 +53,13 @@ const mcodeGateway = "custom_provider:magpie"
 // its message_id, and Calls counts an id once.
 func minimaxCallFiles() []file {
 	var out []file
-	filepath.WalkDir(minimaxSessions(), func(p string, d os.DirEntry, err error) error {
+	// walked where it really is when the sessions folder is a link (#2233),
+	// as buddyFiles walks its projects folder
+	root := minimaxSessions()
+	if real, err := proc.RealPath(root); err == nil {
+		root = real
+	}
+	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}

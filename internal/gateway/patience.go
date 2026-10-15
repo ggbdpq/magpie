@@ -4,10 +4,17 @@ import (
 	"context"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/yetone/magpie/internal/provider"
 )
+
+// didNotStream is in the error for an upstream that answered a stream
+// request with a whole reply: no ask of it will read as a stream, however
+// often it goes out, so it is no failure a moment may mend — the same-one
+// retries (passing) and a group's patience (busy) both leave it alone.
+const didNotStream = "did not stream"
 
 // A group's patience (#1418): when every member has failed in a way that
 // passes — overloaded, busy, rate limited for a moment — and nothing of a
@@ -45,11 +52,14 @@ type busyTry struct {
 // busy says whether a failure is one a member may be over in a moment:
 // overloaded, unavailable, timed out, or a rate limit that isn't the
 // plan's or the money's. A proxy that refused the connection, a quota used
-// up or response protection's 502 isn't.
+// up, response protection's 502, or an upstream that answered a stream
+// request with a whole reply (didNotStream) isn't: each fails the same
+// however often it is asked.
 func busy(status int, body []byte) bool {
 	switch status {
 	case 408, 500, 502, 503, 504, 529:
-		return failure(status, body) == failOther && !protectionRefused(status, body)
+		return failure(status, body) == failOther && !protectionRefused(status, body) &&
+			!strings.Contains(string(body), didNotStream)
 	case 429:
 		return failure(status, body) == failRate && !creditWords.Match(wordsOf(body))
 	}

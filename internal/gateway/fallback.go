@@ -1312,6 +1312,8 @@ var retryPause = time.Second
 
 // passing says whether a failure is one that may be gone a moment later,
 // and how long to wait before trying the same one again, the again'th time.
+// An upstream that answered a stream request with a whole reply
+// (didNotStream) isn't one: it fails the same every time it is asked.
 func passing(status int, header http.Header, body []byte, again int) (time.Duration, bool) {
 	wait := retryPause << again
 	if d := retryAfter(header, time.Now()); d > 0 {
@@ -1321,6 +1323,9 @@ func passing(status int, header http.Header, body []byte, again int) (time.Durat
 	case wait > longestPause:
 		return 0, false
 	case status == 408, status == 500, status == 502, status == 503, status == 504, status == 529:
+		if strings.Contains(string(body), didNotStream) {
+			return 0, false
+		}
 		return wait, again < lastRetries
 	case status == 429:
 		// a relay's 429 often says nothing of when (#503: "负载已饱和，请稍
@@ -2230,7 +2235,7 @@ func (h *holdWriter) settle() {
 		// stream's headers: it can't go as that stream, so it failed, as
 		// a translated reply that didn't stream does, for the next to
 		// answer
-		h.failure, h.failMsg = http.StatusBadGateway, "did not stream: "+provider.APIError(h.held.Bytes(), "unexpected reply")
+		h.failure, h.failMsg = http.StatusBadGateway, didNotStream+": "+provider.APIError(h.held.Bytes(), "unexpected reply")
 	}
 }
 

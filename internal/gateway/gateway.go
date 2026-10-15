@@ -5561,7 +5561,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		// the provider ignored stream:true; read the whole reply as one
 		// event stream would be wrong, so give up cleanly
 		b, _ := io.ReadAll(io.LimitReader(rd, 1<<20))
-		msg := p.Name + " did not stream: " + provider.APIError(b, "unexpected reply")
+		msg := p.Name + " " + didNotStream + ": " + provider.APIError(b, "unexpected reply")
 		return writeError(w, from, 502, msg), msg
 	}
 	// a Gemini reply that says nothing is a failure, not a turn's end

@@ -42,7 +42,35 @@ func (p Provider) Available() []catalog.Model {
 			}
 		}
 	}
-	return ms
+	return p.withUserKinds(ms)
+}
+
+// withUserKinds applies what the user said a model makes (settings'
+// ModelKinds, SetModelKind) to the list's flags: said video reads as Films
+// (never offered to talk to), said image as Draws (Settings → Images
+// only). The user's word beats the vendor's; a model they said nothing of
+// keeps the vendor's. #2071: a relay's omni_flash-10s kept its "Video
+// model" label and still sat in the chat list, because only the videos
+// path read the kind, not the list.
+func (p Provider) withUserKinds(ms []catalog.Model) []catalog.Model {
+	if len(ms) == 0 {
+		return ms
+	}
+	kinds := heldSettings().ModelKinds
+	if len(kinds) == 0 {
+		return ms
+	}
+	prefix := p.ID + "/"
+	out := slices.Clone(ms)
+	for i := range out {
+		switch kinds[prefix+out[i].ID] {
+		case KindVideo:
+			out[i].Films, out[i].Draws = true, false
+		case KindImage:
+			out[i].Draws, out[i].Films = true, false
+		}
+	}
+	return out
 }
 
 func (p Provider) available() []catalog.Model {

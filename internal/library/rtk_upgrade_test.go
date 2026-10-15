@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -304,5 +305,19 @@ func TestRTKChannelVersion(t *testing.T) {
 		if got != c.want || (err == nil) != (c.want != "") {
 			t.Errorf("%s %q: %q, %v", c.tool, c.out, got, err)
 		}
+	}
+}
+
+// RTK 1.0's repository carries two binaries, rtk and rtk-proxy, so cargo
+// install --git refuses to choose and fails with "multiple packages with
+// binaries found" until the package is named (#2092, #2328).
+func TestRTKUpgraderCargoNamesThePackage(t *testing.T) {
+	h := sandbox(t)
+	testenv.Program(t, filepath.Join(h, "bin", "cargo"), "#!/bin/sh\n")
+	write(t, filepath.Join(h, "bin", "cargo.exe"), "")
+	c := rtkUpgrader(filepath.Join(home(), ".cargo", "bin", "rtk"))
+	want := []string{"cargo", "install", "--git", "https://github.com/rtk-ai/rtk", "rtk", "--force"}
+	if !slices.Equal(c, want) {
+		t.Fatalf("the cargo upgrader: %q; want %q", c, want)
 	}
 }

@@ -150,13 +150,20 @@ func copilotCLILoginIn(dir string, secret func(string) string) (copilotApp, bool
 
 var copilotSecrets struct {
 	sync.Mutex
-	at  map[string]time.Time
-	tok map[string]string
+	at      map[string]time.Time
+	tok     map[string]string
+	stopped map[string]bool
 }
 
 // copilotCLISecret reads the CLI's token from the keychain, once in a
-// while: each read may ask the user to allow it.
-var copilotCLISecret = func(account string) string {
+// while: each read may ask the user to allow it. A read the user watched
+// fail — the access prompt denied — is not asked again until magpie
+// restarts (#2408).
+var copilotCLISecret = copilotCLISecretReal
+
+// copilotCLISecretReal is the read copilotCLISecret stands for; a named
+// function so tests can put their own in its place and put it back.
+func copilotCLISecretReal(account string) string {
 	if settings.AccountDiscoveryOff() {
 		return ""
 	}
@@ -165,25 +172,51 @@ var copilotCLISecret = func(account string) string {
 	defer c.Unlock()
 	if c.at == nil {
 		c.at, c.tok = map[string]time.Time{}, map[string]string{}
+		c.stopped = map[string]bool{}
+	}
+	if c.stopped[account] {
+		return ""
 	}
 	ttl := time.Hour
 	if c.tok[account] == "" {
-		ttl = 10 * time.Minute // denied or absent; don't ask again at once
+		ttl = 10 * time.Minute // absent; don't ask again at once
 	}
 	if at, ok := c.at[account]; ok && time.Since(at) < ttl {
 		return c.tok[account]
 	}
 	var out []byte
+	var err error
 	switch runtime.GOOS {
 	case "darwin":
-		out, _ = proc.Command("security", "find-generic-password", "-s", "copilot-cli", "-a", account, "-w").Output()
+		out, err = proc.Command("security", "find-generic-password", "-s", "copilot-cli", "-a", account, "-w").Output()
 	case "linux":
-		if p, err := exec.LookPath("secret-tool"); err == nil {
+		if p, lookErr := exec.LookPath("secret-tool"); lookErr == nil {
 			out = []byte(copilotSecretTool(p, account))
 		}
 	}
 	c.at[account], c.tok[account] = time.Now(), string(bytes.TrimSpace(out))
+	if keychainRefused(err) {
+		c.stopped[account] = true
+	}
 	return c.tok[account]
+}
+
+// keychainRefused says a failed keychain read ended in something the user
+// was shown. On macOS, `security` exits 44 when the item isn't in the
+// keychain at all, which puts nothing on screen (measured), so its short
+// retry stays; any other failure is an access prompt the user denied or a
+// keychain that won't answer on its own, and reading that account again
+// would put the prompt back in front of a sign-in they already said no to
+// (#2408). With no `security` to run there is nothing to retry either.
+func keychainRefused(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode() != 44
+	}
+	return true
 }
 
 // copilotSecretWait bounds one secret-tool lookup: a keyring that waits on

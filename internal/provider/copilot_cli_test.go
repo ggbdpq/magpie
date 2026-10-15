@@ -78,6 +78,90 @@ func TestCopilotCLILogin(t *testing.T) {
 	}
 }
 
+// copilotSecretAsks is how many lines the keychain fake has been handed,
+// one per run of it.
+func copilotSecretAsks(t *testing.T, log string) int {
+	t.Helper()
+	b, err := os.ReadFile(log)
+	if err != nil {
+		return 0
+	}
+	return strings.Count(strings.TrimSpace(string(b)), "\n") + 1
+}
+
+// A keychain read the user watched fail — the access prompt denied — is
+// not asked again this run (#2408): asking again at the next account
+// listing is what brought the dialog back every ten minutes. An item that
+// isn't there (exit 44, nothing on screen) is still retried after the
+// short wait, so a sign-in made later in the CLI is found.
+func TestCopilotCLISecretDeniedNotAskedAgain(t *testing.T) {
+	oldSecret := copilotCLISecret
+	copilotCLISecret = copilotCLISecretReal
+	defer func() { copilotCLISecret = oldSecret }()
+
+	bin := filepath.Join(t.TempDir(), "bin")
+	os.MkdirAll(bin, 0o755)
+	asked := filepath.Join(t.TempDir(), "asked.log")
+	testenv.Program(t, filepath.Join(bin, "security"), `#!/bin/sh
+echo "$@" >> '`+asked+`'
+echo "security: SecKeychainItemCopyContent: User interaction is not allowed." >&2
+exit 51
+`)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	const acc = "https://github.com:octocat"
+	if tok := copilotCLISecret(acc); tok != "" {
+		t.Fatalf("a denied read answered %q", tok)
+	}
+	if n := copilotSecretAsks(t, asked); n != 1 {
+		t.Fatalf("security ran %d times, want 1", n)
+	}
+
+	// the next account listing, after the ten-minute wait is over
+	copilotSecrets.Lock()
+	copilotSecrets.at[acc] = time.Now().Add(-11 * time.Minute)
+	copilotSecrets.Unlock()
+	if tok := copilotCLISecret(acc); tok != "" {
+		t.Fatalf("read again after a denial answered %q", tok)
+	}
+	if n := copilotSecretAsks(t, asked); n != 1 {
+		t.Fatalf("security ran %d times after a denial, want still 1", n)
+	}
+}
+
+// The item not being there shows the user nothing, so its read is still
+// retried once the short wait is over. Another login than the denial
+// test's, so the two stand on their own whichever order they run in.
+func TestCopilotCLISecretAbsentRetriedAfterTheWait(t *testing.T) {
+	oldSecret := copilotCLISecret
+	copilotCLISecret = copilotCLISecretReal
+	defer func() { copilotCLISecret = oldSecret }()
+
+	bin := filepath.Join(t.TempDir(), "bin")
+	os.MkdirAll(bin, 0o755)
+	asked := filepath.Join(t.TempDir(), "asked.log")
+	testenv.Program(t, filepath.Join(bin, "security"), `#!/bin/sh
+echo "$@" >> '`+asked+`'
+echo "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain." >&2
+exit 44
+`)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	const acc = "https://github.com:hubot"
+	if tok := copilotCLISecret(acc); tok != "" {
+		t.Fatalf("an absent item answered %q", tok)
+	}
+	copilotSecrets.Lock()
+	copilotSecrets.at[acc] = time.Now().Add(-11 * time.Minute)
+	copilotSecrets.Unlock()
+	if tok := copilotCLISecret(acc); tok != "" {
+		t.Fatalf("an absent item answered %q the second time", tok)
+	}
+	if n := copilotSecretAsks(t, asked); n != 2 {
+		t.Fatalf("security ran %d times, want 2 (retried once the wait was over)", n)
+	}
+}
+
 // On Linux the CLI 1.0's keyring store keys its token by service and
 // username, not keytar's account (#723); a keyring that never answers
 // doesn't hold the caller.

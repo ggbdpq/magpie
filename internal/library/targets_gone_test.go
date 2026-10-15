@@ -8,8 +8,21 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/testenv"
 )
+
+// codexHere is the codex agent as this machine's agent table holds it.
+func codexHere(t *testing.T) *agent.Agent {
+	t.Helper()
+	for _, a := range agent.All() {
+		if a.ID == "codex" {
+			return a
+		}
+	}
+	t.Fatal("no codex agent")
+	return nil
+}
 
 // An agent uninstalled outside magpie leaves its folder behind (#2177,
 // #2173): the Agents page calls it gone (CLIMissing) and offers none of
@@ -20,8 +33,20 @@ func TestTargetsLeaveGoneAgentsOut(t *testing.T) {
 	h := sandbox(t)
 	// Hermes by its config.yaml alone (the reporter's 37 bytes): its
 	// folder is kept by nothing here — no hermes on the sandbox's PATH,
-	// no hermes-agent checkout beside the config
-	write(t, filepath.Join(h, ".hermes", "config.yaml"), "custom_providers: []\nmcp_servers: {}\n")
+	// no hermes-agent checkout beside the config. Written where this
+	// machine's hermes reads it (%LOCALAPPDATA%\hermes on Windows,
+	// ~/.hermes elsewhere), not where a Unix path guesses.
+	var hermesPath string
+	for _, a := range agent.All() {
+		if a.ID == "hermes" {
+			hermesPath = a.Path
+		}
+	}
+	if hermesPath == "" {
+		t.Fatal("no hermes agent")
+	}
+	write(t, hermesPath, "custom_providers: []\nmcp_servers: {}\n")
+	_ = h
 	if got := ids(Targets()); slices.Contains(got, "hermes") {
 		t.Fatalf("hermes is a target with its CLI gone: %v", got)
 	}
@@ -49,6 +74,12 @@ func TestGoneAgentKeepsWhatItHas(t *testing.T) {
 		if err := os.Remove(filepath.Join(h, "bin", f)); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// the stand-ins testenv put first on PATH hold a codex too; without a
+	// PATH of this test's own, cliHeld finds that one and codex never goes
+	t.Setenv("PATH", t.TempDir())
+	if codexHere(t).HasApp() {
+		t.Skip("this machine has the Codex desktop app, so codex is never gone here")
 	}
 	if slices.Contains(ids(Targets()), "codex") {
 		t.Fatal("codex is a target with its CLI gone")
@@ -78,6 +109,11 @@ func TestRTKLeavesGoneAgentsOut(t *testing.T) {
 		if err := os.Remove(filepath.Join(bin, f)); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// as above: the testenv stand-ins on PATH hold a codex of their own
+	t.Setenv("PATH", t.TempDir())
+	if codexHere(t).HasApp() {
+		t.Skip("this machine has the Codex desktop app, so codex is never gone here")
 	}
 	listed := func() bool {
 		return slices.ContainsFunc(ReadRTK().Agents, func(a RTKAgent) bool { return a.ID == "codex" })

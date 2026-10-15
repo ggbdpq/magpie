@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync/atomic"
 	"testing"
 )
@@ -76,5 +77,54 @@ func TestCommandCodeKeyCardHasCredits(t *testing.T) {
 	q.Key = "cmd-2451-new"
 	if plan, ws, _, err := planKeyWindows(context.Background(), q, src, q.Key); err != nil || plan != "" || len(ws) != 2 {
 		t.Errorf("plan never read: %v %q %+v", err, plan, ws)
+	}
+}
+
+// The Credits window #2451 added renews when the plan's period does: the
+// end is in the same billing/subscriptions reply the plan is read from,
+// and the card's other two windows each say when they start again. Both
+// cards are checked, the signed-in subscription's and the plan key's.
+func TestCommandCodeCreditsWindowRenewsAtPeriodEnd(t *testing.T) {
+	const end = int64(4102444800000) // 2100-01-01, in ms as cmdTime reads it
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Header.Get("X-Host") + r.URL.Path {
+		case "api.commandcode.ai/alpha/billing/credits":
+			w.Write([]byte(`{"credits":{"monthlyCredits":5.22,"purchasedCredits":0,"freeCredits":0},
+ "windowLimits":{"limited":true,
+   "fiveHour":{"used":1,"cap":14,"resetAt":4102444800000},
+   "weekly":{"used":2,"cap":35,"resetAt":4102444800000}}}`))
+		case "api.commandcode.ai/alpha/billing/subscriptions":
+			w.Write([]byte(`{"success":true,"data":{"planId":"individual-go-monthly","status":"active","currentPeriodEnd":` + strconv.FormatInt(end, 10) + `}}`))
+		default:
+			t.Errorf("asked %s%s", r.Header.Get("X-Host"), r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	old := http.DefaultClient.Transport
+	http.DefaultClient.Transport = rewrite{srv}
+	t.Cleanup(func() { http.DefaultClient.Transport = old })
+
+	// the plan key's card
+	p := Provider{ID: "commandcode", Key: "cmd-reset", Chat: "https://api.commandcode.ai/provider/v1"}
+	src, _ := planQuotaSourceOf(p)
+	_, ws, _, err := planKeyWindows(context.Background(), p, src, p.Key)
+	if err != nil || len(ws) != 3 {
+		t.Fatalf("%v %+v", err, ws)
+	}
+	if c := ws[2]; c.Name != "Credits" || c.ResetsAt == nil || c.ResetsAt.UnixMilli() != end {
+		t.Errorf("the key card's credits have no reset: %+v", c)
+	}
+
+	// the signed-in subscription's card, whose Until is the same end
+	q := cmdQuota(context.Background(), Login{User: "reset", Plan: "Go"}, cmdAuth{APIKey: "cmd-reset"})
+	if q.Error != "" || len(q.Windows) != 3 {
+		t.Fatalf("%q %+v", q.Error, q.Windows)
+	}
+	if q.Until == nil || q.Until.UnixMilli() != end {
+		t.Errorf("until: %+v", q.Until)
+	}
+	if c := q.Windows[2]; c.Name != "Credits" || c.ResetsAt == nil || c.ResetsAt.UnixMilli() != end {
+		t.Errorf("the subscription card's credits have no reset: %+v", c)
 	}
 }

@@ -76,7 +76,7 @@ func TestCommandCodeGoPlan(t *testing.T) {
 	}
 	// and asked again once it is old
 	cmdPlansSeen.Lock()
-	cmdPlansSeen.m["go-key"] = cmdSeen{"Go", time.Now().Add(-cmdPlanKeep)}
+	cmdPlansSeen.m["go-key"] = cmdSeen{plan: "Go", at: time.Now().Add(-cmdPlanKeep)}
 	cmdPlansSeen.Unlock()
 	if _, _, ok := CommandCodeGenerate(ctx, p); !ok || asked.Load() != 2 {
 		t.Fatalf("again: %v, asked %d", ok, asked.Load())

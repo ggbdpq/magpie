@@ -1045,7 +1045,12 @@ func piLikeKeyed(at place, id, name, dir string, key func() string) *Agent {
 						forget(gone)
 						return piScopeWithout(path)
 					}
-					if ref, ok := strings.CutPrefix(v, magpieID+"/"); ok && isMagpie(ref) {
+					// the prefix alone says the pick is magpie's: a ref the
+					// catalog doesn't resolve yet (a channel just signed in
+					// to, its models not fetched) must not skip the rewrite,
+					// or Pi starts on a model its magpie group doesn't
+					// list (#2373)
+					if _, ok := strings.CutPrefix(v, magpieID+"/"); ok {
 						if _, has := edit.GetJSON(modelsPath, "providers."+magpieID); !has {
 							if p, _ := get("defaultProvider"); p != magpieID {
 								before.take()

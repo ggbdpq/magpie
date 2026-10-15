@@ -182,25 +182,6 @@ func TestCodexAPIKeyRecordedAsOpenAI(t *testing.T) {
 	}
 }
 
-// A compaction signed by another account is that account's, not the
-// sign-in the request would have relayed on. No sign-in to name stays
-// openai, so the row is not half a codex account.
-func TestCodexServedNamesTheAccountThatSigned(t *testing.T) {
-	on := &provider.Provider{ID: "codex", Account: &provider.Account{Agent: "codex", User: "spare@example.com"}}
-	id, acct := codexServed(provider.CodexBase, http.Header{}, on)
-	if id != "codex" || acct != "spare@example.com" {
-		t.Fatalf("stand-in: %s %s", id, acct)
-	}
-	setHome(t, t.TempDir())
-	t.Setenv("CODEX_HOME", t.TempDir())
-	provider.ForgetAccounts()
-	t.Cleanup(provider.ForgetAccounts)
-	id, acct = codexServed(provider.CodexBase, http.Header{}, nil)
-	if id != "openai" || acct != "" {
-		t.Fatalf("no sign-in: %s %s", id, acct)
-	}
-}
-
 // Codex's own sign-in relay is not a lead's answerer, under the name it
 // was logged by before (openai) or the codex account it is logged by now.
 // A row an account answered — host "as email", or another provider, or

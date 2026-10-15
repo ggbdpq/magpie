@@ -478,3 +478,34 @@ func TestImportCCSwitchConfigWithBOM(t *testing.T) {
 		t.Fatalf("config.json with a BOM: %+v %v", items, err)
 	}
 }
+
+// A provider's Gemini URL (#1346) names its host like its other endpoints
+// do: the same key at that host is the provider already here, not another
+// one to add beside it.
+func TestGeminiURLIsItsHost(t *testing.T) {
+	isolate(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	// a Gemini-protocol relay added from the editor is known by its
+	// Gemini URL: the same key there again is the one already here
+	first := Provider{Name: "Gemini Relay", Key: "sk-g", Gemini: "https://g.example.com"}
+	if _, err := Add(first); err != nil {
+		t.Fatal(err)
+	}
+	if id, err := Add(Provider{Name: "Gemini Relay", Key: "sk-g", Gemini: "https://g.example.com"}); err == nil {
+		t.Fatalf("the same relay was added again as %q", id)
+	}
+
+	// an import entry at the relay over another protocol is the provider
+	// already here at its Gemini URL, the same key in hand
+	it := settle([]AppImport{{Ref: "r", Provider: Provider{
+		ID: "gr", Name: "Gemini Relay", Key: "sk-g", Chat: "https://g.example.com/v1",
+	}}}, All(), map[string]bool{})[0]
+	if it.Status != "same" || it.Existing != "Gemini Relay" {
+		t.Fatalf("the relay's import entry: %+v", it)
+	}
+}

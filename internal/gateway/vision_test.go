@@ -29,6 +29,7 @@ func noVision(t *testing.T) {
 type eyeUp struct {
 	mu     sync.Mutex
 	fail   bool
+	hold   chan struct{} // when set, the model that sees doesn't answer until it closes
 	bodies map[string][]string
 }
 
@@ -41,8 +42,16 @@ func (u *eyeUp) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	u.bodies[model] = append(u.bodies[model], string(body))
 	fail := u.fail
+	held := u.hold
 	u.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
+	if strings.HasSuffix(model, "eye") && held != nil {
+		select {
+		case <-held:
+		case <-r.Context().Done():
+			return
+		}
+	}
 	if strings.HasSuffix(model, "eye") && fail {
 		w.WriteHeader(500)
 		io.WriteString(w, `{"error":{"message":"eye is down"}}`)

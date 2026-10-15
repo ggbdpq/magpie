@@ -36,7 +36,12 @@ func init() {
 // VisionAgent is the User-Agent of the descriptions magpie asks for.
 const VisionAgent = "magpie-vision/1"
 
-const visionTimeout = 2 * time.Minute
+// visionTimeout is how long a description is given: its whole round trip
+// through the gateway — the queue, a backoff pause, a retry — and the
+// seer's own thinking, which a reasoning model spends past two minutes on
+// a screenshot (#2318). It is the budget a drawn image gets, and a test
+// may narrow it.
+var visionTimeout = 5 * time.Minute
 
 // visionParallel is how many images of a request are described at once.
 const visionParallel = 4

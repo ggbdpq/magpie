@@ -319,6 +319,11 @@ type Provider struct {
 	// BalanceURL (see TakesBalanceToken). It is asked with nothing else but
 	// the provider's headers, when the endpoint is one named.
 	BalanceToken string `json:"balanceToken,omitempty"`
+	// BalanceMethod, when set to POST, asks the balance URL with POST
+	// where a vendor answers only that (NanoGPT's /api/check-balance,
+	// #2368); empty, the GET every known endpoint takes. A body is never
+	// sent: the endpoints known to take POST take none.
+	BalanceMethod string `json:"balanceMethod,omitempty"`
 	// ZhipuTeam, for a Zhipu or Z.ai key on a team's GLM Coding Plan, is
 	// the team's organization and project, from the BigModel console: the
 	// team's windows are told to the key only with them (see

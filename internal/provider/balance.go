@@ -1158,7 +1158,16 @@ func balanceRead(ctx context.Context, p Provider) (amount string, parts []Balanc
 			return "", nil, nil, true, errSub2APIKeyUsageWithToken(p.BalanceURL)
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, withBalanceKey(src.url, p.Key, true), nil)
+	// a provider that named POST asks with it: an endpoint that answers
+	// only POST (#2368, NanoGPT's /api/check-balance) refuses a GET with
+	// 405 before its URL, key or field is ever wrong. Anything else, or
+	// nothing, asks with the GET every known endpoint takes, and no body
+	// goes: the endpoints known to take POST take none.
+	method := strings.ToUpper(strings.TrimSpace(p.BalanceMethod))
+	if method != http.MethodPost {
+		method = http.MethodGet
+	}
+	req, err := http.NewRequestWithContext(ctx, method, withBalanceKey(src.url, p.Key, true), nil)
 	if err != nil {
 		return "", nil, nil, true, err
 	}

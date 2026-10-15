@@ -252,6 +252,40 @@ func TestKeyBalances(t *testing.T) {
 	}
 }
 
+// A balance endpoint that answers only POST (#2368, NanoGPT's
+// /api/check-balance): BalanceMethod asks it with the method it wants, and
+// a provider that names none is asked with GET as before.
+func TestBalanceMethod(t *testing.T) {
+	isolate(t)
+	var asked string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = r.Method
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Write([]byte(`{"usd_balance":"0.94"}`))
+	}))
+	defer srv.Close()
+	p := Provider{ID: "nano", Name: "NanoGPT", Chat: srv.URL + "/v1", Key: "sk-nano",
+		BalanceURL: srv.URL + "/api/check-balance", BalancePath: "$usd_balance", BalanceMethod: "POST"}
+	amount, ok, err := Balance(context.Background(), p)
+	if err != nil || !ok || amount != "$0.94" {
+		t.Fatalf("POST balance: %q %v %v", amount, ok, err)
+	}
+	if asked != http.MethodPost {
+		t.Fatalf("asked with %s, want POST", asked)
+	}
+	asked = ""
+	p.BalanceMethod = ""
+	if _, _, err := Balance(context.Background(), p); err == nil {
+		t.Fatal("a GET-only endpoint read without an error")
+	}
+	if asked != http.MethodGet {
+		t.Fatalf("without a method asked with %s, want GET", asked)
+	}
+}
+
 func TestReadAiHubMix(t *testing.T) {
 	if got, err := readAiHubMix([]byte(`{"object":"list","total_usage":12.5}`)); err != nil || got != "$12.50" {
 		t.Fatalf("got %q, %v", got, err)

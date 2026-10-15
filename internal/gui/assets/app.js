@@ -8449,7 +8449,7 @@ function drawEditor(p, presetID) {
     // address to open: only a host with a dot or a port makes a link
     // a region with docs of its own (Tencent Cloud's plan and TokenHub) has
     // its page here, following the region picked below
-    const site = regionAt(pr, draft)?.website || pr?.website || p?.website || (/[.:]/.test(p?.host || "") ? "https://" + p.host : "");
+    const site = regionAt(pr, draft)?.website || pr?.website || p?.website || originOf(p);
     if (site) {
       const b = el("button", "link site", hostOf(site) + " ↗");
       b.dataset.url = site;
@@ -14220,6 +14220,17 @@ function slug(s) { return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^
 // dots kept (gpt-6.1-sol, #968).
 function groupSlug(s) { return s.toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/\.{2,}/g, ".").replace(/^[-.]+|[-.]+$/g, ""); }
 function hostOf(u) { try { return new URL(u.includes("://") ? u : "https://" + u).host; } catch { return ""; } }
+
+// originOf is the provider's own address as a link opens it (#2377): the
+// scheme kept, from the base URL the provider serves on — p.host is the host
+// alone, and https:// added to it sent an http-only local server's link to
+// https. No base URL of its own (a preset's lives in the preset): https, as
+// before. plugin:// is skipped, so its editor still shows no link.
+function originOf(p) {
+  const u = [p?.chat, p?.responses, p?.anthropic, p?.gemini, p?.decide].find((x) => /^https?:\/\//i.test(x || ""));
+  if (u) { try { return new URL(u).origin; } catch { /* the host fallback answers */ } }
+  return /[.:]/.test(p?.host || "") ? "https://" + p.host : "";
+}
 
 // localAddress is a local server's address as typed, as provider.AtAddress
 // takes it: its origin, http when no scheme is given, any path dropped; ""

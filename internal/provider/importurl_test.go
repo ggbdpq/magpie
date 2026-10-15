@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestParseImportPreset(t *testing.T) {
@@ -245,5 +246,20 @@ func TestParseImportForms(t *testing.T) {
 		if _, err := ParseImport(link); err != nil {
 			t.Errorf("%s: %v", link, err)
 		}
+	}
+}
+
+// A name longer than 80 bytes is cut without cutting a character in half:
+// the site's link builder takes any name the user types, and a Chinese one
+// runs past 80 bytes at 27 characters (the cap is bytes, a name of them).
+// The name carries letters too, or the id has nothing to make itself from.
+func TestParseImportNameCutKeepsCharactersWhole(t *testing.T) {
+	name := strings.Repeat("鱼", 30) + "-relay" // 96 bytes
+	p, err := ParseImport("magpie://import?name=" + url.QueryEscape(name) + "&chat=https://x.example/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.ValidString(p.Name) || len(p.Name) > 80 {
+		t.Fatalf("name cut badly: %d bytes, valid %v", len(p.Name), utf8.ValidString(p.Name))
 	}
 }

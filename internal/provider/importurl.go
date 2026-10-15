@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 )
 
 // Import links let a vendor or a relay hand its users a ready-made provider:
@@ -131,7 +132,14 @@ func ParseImport(link string) (Provider, error) {
 		p.ID = freeID(p.ID)
 	}
 	if len(p.Name) > 80 {
-		p.Name = p.Name[:80]
+		// cut at 80 bytes without cutting a character in half: the cap is
+		// bytes, a name of them, and a half character would read back
+		// ruined (U+FFFD) everywhere the name shows
+		cut := 80
+		for !utf8.RuneStart(p.Name[cut]) {
+			cut--
+		}
+		p.Name = p.Name[:cut]
 	}
 
 	p.Key = get("key")

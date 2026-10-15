@@ -339,7 +339,11 @@ type loggedAnswer struct {
 // remembered (#1367). A call refused or failed answered nothing, a title
 // isn't the conversation's own turn, and Codex's own sign-in (the ChatGPT
 // backend, relayed as it came) is no provider here: a lead it answered is
-// told of as one sealed by the ChatGPT backend.
+// told of as one sealed by the ChatGPT backend. That relay is a row whose
+// provider is openai (one written before it named the account, or a call
+// sent with an API key) or codex with the API host alone. A row an account
+// answered names that account in Host ("host as email", provider.Where)
+// and still counts.
 func loggedAnswers(convs ...string) []loggedAnswer {
 	convs = slices.DeleteFunc(slices.Clone(convs), func(c string) bool { return strings.TrimSpace(c) == "" })
 	if len(convs) == 0 {
@@ -350,7 +354,10 @@ func loggedAnswers(convs ...string) []loggedAnswer {
 		if r.Provider == "" || r.Provider == "magpie" || r.IsRejected() || r.IsReported() || r.Status <= 0 || r.Status >= 400 || r.Computer != "" || isTitleKind(r.Kind) {
 			return
 		}
-		if r.Provider == "openai" && strings.HasPrefix(r.Endpoint, CodexPath) {
+		// ponytail: host " as " is provider.Where. A relay that starts
+		// writing Host that way would be counted as a lead's answerer.
+		ownRelay := r.Provider == "openai" || (r.Provider == "codex" && !strings.Contains(r.Host, " as "))
+		if ownRelay && strings.HasPrefix(r.Endpoint, CodexPath) {
 			return // Codex's own sign-in
 		}
 		if !slices.Contains(convs, r.NativeSession) && !slices.Contains(convs, r.Session) {
@@ -977,7 +984,9 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	}
 	end(call.Status, call.Error, uu.Input+uu.Output+uu.CacheRead+uu.CacheWrite, uu.Output)
 	s.record(call)
-	rec := usage.Record{RouteID: tr.ID, Time: start, Agent: call.Agent, Provider: call.Provider, Host: provider.HostOf(base), Model: call.Model,
+	servedProvider, servedAccount := codexServed(base, r.Header, on)
+	rec := usage.Record{RouteID: tr.ID, Time: start, Agent: call.Agent,
+		Provider: servedProvider, Host: provider.HostOf(base), ProviderAccount: servedAccount, Model: call.Model,
 		Requested: call.Model, Served: served,
 		Input: uu.Input, Output: uu.Output, CacheRead: uu.CacheRead, CacheWrite: uu.CacheWrite,
 		Reasoning: uu.Reasoning, Effort: effort, Millis: call.Millis,
@@ -986,6 +995,27 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		RequestID: requestID(res.Header), ResponseID: uu.ResponseID, Endpoint: r.URL.Path}
 	failedWith(&rec, call.Status, call.Error, errType)
 	appendUsage(r, rec)
+}
+
+// codexServed is who a relay through codexUpstreamOn is recorded as.
+// Codex's own ChatGPT sign-in is the codex account, and a compaction
+// signed by another of its accounts (compactOn) is that account, so the
+// account card's window counts the call. A call sent to OpenAI's API
+// with Codex's key stays openai with no account. With no sign-in to
+// name, it stays openai too, rather than a codex row that names nobody.
+// Rows already written are not rewritten.
+func codexServed(base string, h http.Header, on *provider.Provider) (id, account string) {
+	if base != provider.CodexBase || apiKey(h) {
+		return "openai", ""
+	}
+	if on != nil && on.Account != nil && on.Account.User != "" {
+		return on.ID, on.Account.User
+	}
+	p, err := provider.Find("codex")
+	if err != nil || p.Account == nil || p.Account.User == "" {
+		return "openai", ""
+	}
+	return p.ID, p.Account.User
 }
 
 // unreadableItem is the item OpenAI's refusal names: sealed content it

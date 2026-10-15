@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -80,6 +81,75 @@ func TestNativeCompactionPassesTheTrigger(t *testing.T) {
 	code, body = codexPost(t, `{"model":"fake/m1","stream":true,"tools":[{"type":"web_search"}],"input":[{"type":"compaction","encrypted_content":"gAAAAB-sealed-by-relay"},{"type":"message","role":"user","content":[{"type":"input_text","text":"go on"}]}]}`)
 	if code != 200 || !strings.Contains(string(f.got), `"encrypted_content":"gAAAAB-sealed-by-relay"`) {
 		t.Errorf("next turn: %d %s\nrelay got %s", code, body, f.got)
+	}
+}
+
+// Codex 26.1007 marks a compaction turn as the backend's own remote
+// compaction: "compaction":{"implementation":"responses_compaction_v2"}
+// in client_metadata's x-codex-turn-metadata and the X-Codex-Turn-Metadata
+// header, and a compaction_trigger in the input (#2352). When magpie
+// summarises itself (native compaction off), the trigger is gone but the
+// claim of a remote compaction went on as it was — a request Codex itself
+// never sends, which a relay taking only Codex's own refuses 400 "invalid
+// codex request". Magpie's summary then says "responses", as Codex does
+// when it compacts locally, the rest of the metadata as Codex sent it; a
+// provider compacting natively is asked Codex's request as it is.
+func TestNativeCompactionTurnMetadataSaysItsOwn(t *testing.T) {
+	const meta = `{"session_id":"s1","turn_id":"t1","compaction":{"implementation":"responses_compaction_v2","turn_started_at_unix_ms":1791677416208}}`
+	f := &fake{t: t}
+	setup(t, provider.Responses, f)
+	chatgpt(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(400) })
+	ask := func(t *testing.T, reply string) (int, string) {
+		t.Helper()
+		f.reply = reply
+		body := `{"model":"fake/m1","stream":true,"client_metadata":{"x-codex-turn-metadata":"` + strings.ReplaceAll(meta, `"`, `\"`) + `"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the bug"}]},{"type":"compaction_trigger"}]}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(body))
+		req.Header.Set("User-Agent", "codex_cli_rs/26.1007.71326")
+		req.Header.Set("originator", "codex_cli_rs")
+		req.Header.Set("X-Codex-Turn-Metadata", meta)
+		New().Handler().ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+
+	code, body := ask(t, sse(
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"SUMMARY"}]}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_s","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`))
+	if code != 200 || !strings.Contains(body, magpieCompaction) {
+		t.Fatalf("off: %d %s", code, body)
+	}
+	if strings.Contains(string(f.got), "responses_compaction_v2") || strings.Contains(string(f.got), "compaction_trigger") {
+		t.Errorf("the relay was told a remote compaction: %s", f.got)
+	}
+	said := func(got []byte, h string) string {
+		t.Helper()
+		var q struct {
+			ClientMetadata struct {
+				Meta string `json:"x-codex-turn-metadata"`
+			} `json:"client_metadata"`
+		}
+		if err := json.Unmarshal(got, &q); err != nil {
+			t.Fatalf("the relay was asked %s", got)
+		}
+		if h != "" {
+			q.ClientMetadata.Meta = h
+		}
+		return q.ClientMetadata.Meta
+	}
+	if got := said(f.got, f.head.Get("X-Codex-Turn-Metadata")); strings.Contains(got, "responses_compaction_v2") || !strings.Contains(got, `"implementation":"responses"`) || !strings.Contains(got, "turn_started_at_unix_ms") {
+		t.Errorf("the summary said a remote compaction: %s", got)
+	}
+
+	nativeOn(t, "fake")
+	code, body = ask(t, nativeSealedReply("gAAAAB-sealed-by-relay"))
+	if code != 200 || !strings.Contains(body, "gAAAAB-sealed-by-relay") {
+		t.Fatalf("on: %d %s", code, body)
+	}
+	if !strings.Contains(string(f.got), `"compaction_trigger"`) || !strings.Contains(string(f.got), "responses_compaction_v2") {
+		t.Errorf("a native compaction wasn't asked as Codex sent it: %s", f.got)
+	}
+	if got := said(f.got, f.head.Get("X-Codex-Turn-Metadata")); !strings.Contains(got, "responses_compaction_v2") {
+		t.Errorf("a native compaction's metadata wasn't Codex's own: %s", got)
 	}
 }
 

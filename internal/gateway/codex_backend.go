@@ -1871,7 +1871,75 @@ func userMessage(text string) map[string]any {
 // and as plain text was summarised — and one it breaks off with that
 // refusal after the reply began, HTTP 200 and an error event (#1270). Any
 // other failure (401, 429, 500) goes back to Codex as it came.
+// localCompaction turns a turn's claim of the backend's own remote
+// compaction — Codex 26.1007 writes "compaction":{"implementation":
+// "responses_compaction_v2"} in client_metadata's x-codex-turn-metadata
+// and in the X-Codex-Turn-Metadata header (#2352) — to the local one,
+// "responses", as Codex itself says when it summarises a conversation
+// itself. Magpie is summarising here, so the request said remote while
+// carrying no compaction_trigger: a mix Codex never sends, and a relay
+// taking only Codex's own requests refuses ("invalid codex request").
+// The rest of the metadata goes as Codex sent it.
+func localCompaction(body []byte, h http.Header) []byte {
+	fix := func(v string) string {
+		var m map[string]any
+		if json.Unmarshal([]byte(v), &m) != nil {
+			return v
+		}
+		c, ok := m["compaction"].(map[string]any)
+		if !ok || c["implementation"] != "responses_compaction_v2" {
+			return v
+		}
+		c["implementation"] = "responses"
+		b, err := json.Marshal(m)
+		if err != nil {
+			return v
+		}
+		return string(b)
+	}
+	if v := h.Get("X-Codex-Turn-Metadata"); v != "" {
+		if fixed := fix(v); fixed != v {
+			h.Set("X-Codex-Turn-Metadata", fixed)
+		}
+	}
+	var q map[string]json.RawMessage
+	if json.Unmarshal(body, &q) != nil {
+		return body
+	}
+	var cm map[string]json.RawMessage
+	if json.Unmarshal(q["client_metadata"], &cm) != nil {
+		return body
+	}
+	v, ok := cm["x-codex-turn-metadata"]
+	if !ok {
+		return body
+	}
+	var changed bool
+	if s := string(v); strings.HasPrefix(s, `"`) {
+		var meta string
+		if json.Unmarshal(v, &meta) == nil {
+			if fixed := fix(meta); fixed != meta {
+				cm["x-codex-turn-metadata"], _ = json.Marshal(fixed)
+				changed = true
+			}
+		}
+	} else if fixed := fix(s); fixed != s {
+		cm["x-codex-turn-metadata"] = json.RawMessage(fixed)
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	q["client_metadata"], _ = json.Marshal(cm)
+	nb, err := json.Marshal(q)
+	if err != nil {
+		return body
+	}
+	return nb
+}
+
 func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byte) {
+	body = localCompaction(body, r.Header)
 	ask := func(b []byte) (*recorder, compactResult, error) {
 		rec := &recorder{header: http.Header{}, status: 200}
 		s.serve(rec, r, provider.Responses, b)

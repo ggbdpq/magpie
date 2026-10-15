@@ -269,6 +269,11 @@ const (
 	KSealed
 	// KTextSig: Text is Gemini's thoughtSignature on the text before it
 	KTextSig
+	// KAlive: the provider of the reply is alive while none of it has come
+	// — a keepalive, or a no-content event of a queued reply (#2316). The
+	// client is kept alive with it, as its protocol keeps one alive; no
+	// part of the reply it is.
+	KAlive
 )
 
 // Event is one thing a streaming reply said.
@@ -531,7 +536,7 @@ func (c *collector) add(ev Event) {
 		c.res.Parts = append(c.res.Parts, Part{Kind: Image, MediaType: ev.Name, Data: ev.Text})
 	}
 	switch ev.Kind {
-	case KStart, KUsage, KError:
+	case KStart, KUsage, KError, KAlive:
 	default:
 		// what began has had its first content, or something else came
 		c.fresh = false

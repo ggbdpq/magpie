@@ -3990,7 +3990,20 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name 
 		// an error before any of the answer — out of quota, rate limited —
 		// is a status, not a stream, so another account can take over
 		var head []Event
+		began := time.Now()
 		for ev := range events {
+			if ev.Kind == KAlive {
+				if time.Since(began) < keepHeldAfter {
+					// a queue this short can still fail as a status for
+					// another account: the sign of life is dropped, none
+					// of the reply having begun (#2316)
+					continue
+				}
+				// the queue has gone on: the reply begins, and the client
+				// is kept alive with this sign of it (#2316)
+				head = append(head, ev)
+				break
+			}
 			head = append(head, ev)
 			if ev.Kind != KStart && ev.Kind != KUsage {
 				break
@@ -4026,6 +4039,13 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name 
 				said += ev.Text
 			case KStop:
 				stop = ev.Stop
+			case KAlive:
+				// the provider is alive while none of the answer has come:
+				// the client hears it as its own protocol's keepalive, an
+				// event its idle timeout counts, no comment (#2316) — and
+				// no part of a reply that would end it
+				enc.keepalive()
+				return
 			}
 			enc.event(ev)
 		}

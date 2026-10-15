@@ -1084,7 +1084,8 @@ func (s *Server) askTranslated(p provider.Provider, to provider.Protocol, model 
 				}
 			}
 			var failed error
-			err := readSSE(rd, func(_, data string) error {
+			var alive time.Time
+			err := readSSEAlive(rd, func(_, data string) error {
 				if err := dec(data, func(ev Event) {
 					if failed == nil {
 						failed = send(ev)
@@ -1093,6 +1094,16 @@ func (s *Server) askTranslated(p provider.Provider, to provider.Protocol, model 
 					return err
 				}
 				return failed
+			}, func() {
+				// a comment, or an event with nothing of the answer in it:
+				// the provider is alive while it queues (#2316), so the
+				// sign goes on for the relay to keep the client alive in
+				// its own protocol, as a translated reply's does (#436)
+				if time.Since(alive) < keepaliveGap {
+					return
+				}
+				alive = time.Now()
+				send(Event{Kind: KAlive})
 			})
 			if err != nil && failed == nil && ctx.Err() == nil {
 				send(Event{Kind: KError, Text: p.Name + ": " + err.Error()})

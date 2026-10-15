@@ -284,7 +284,10 @@ func TestOpenCodeNoResellerLevelsForSwitchModel(t *testing.T) {
 		switch m.ID {
 		case "xiaomi/mimo-v2.6-flash", "relay/mimo-v2.6-flash":
 			seen++
-			if m.Reasoning || m.Levels != nil {
+			// no map: no levels invented for a thinking switch alone
+			// (#214); the gateway clamps its ask at request time. It says
+			// reasoning as the gateway's /v1/models does (#2380)
+			if m.Levels != nil {
 				t.Errorf("pi %s: reasoning %v, levels %v", m.ID, m.Reasoning, m.Levels)
 			}
 		case "relay/open-model":

@@ -1712,6 +1712,14 @@ func (h *holdWriter) cutLoop(b []byte, t loopTrip) (int, error) {
 	if h.alive != nil {
 		proto = h.alive.proto
 	}
+	// what is appended begins after a blank line, as in passthrough: the
+	// reply's last write may have stopped mid-line, and an event joined
+	// onto it is one the client can't parse (TestLoopCutMidLine)
+	if h.atLine {
+		io.WriteString(h.w, "\n")
+	} else {
+		io.WriteString(h.w, "\n\n")
+	}
 	streamError(h.w, proto, http.StatusBadGateway, msg)
 	h.looped, h.ended = msg, true
 	h.flush()

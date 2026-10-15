@@ -72,6 +72,11 @@ type candidate struct {
 	// members' busy failures, the group asked for only those that set none;
 	// 0 falls back to the asked group's Waits, PatienceOff skips replan
 	patience int
+	// affinity is the Affinity of the innermost group of those the member
+	// is in that sets one: a group in a group keeps its own conversations
+	// on the key or account that answered them, the group asked for only
+	// where none of theirs does
+	affinity string
 }
 
 // capHold is how an account is held at its usage cap: the cap of the
@@ -552,6 +557,18 @@ func innerPatience(m provider.Member) int {
 	return 0
 }
 
+// innerAffinity is the Affinity of the innermost group m is in (m.Via, the
+// outermost first) that sets one, "" for none: the group asked for's own
+// stands where none does, as affine has it.
+func innerAffinity(m provider.Member) string {
+	for i := len(m.Via) - 1; i >= 0; i-- {
+		if m.Via[i].Affinity != "" {
+			return m.Via[i].Affinity
+		}
+	}
+	return ""
+}
+
 // planLevel orders the models ms of g, a group depth groups down from the
 // one asked for, adding to pl's order as it goes: those set aside and
 // those unlisted it gathers for planGroup to put last.
@@ -565,6 +582,7 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 				l[i].effort, l[i].levels, l[i].fast = m.Effort, m.Levels, m.Fast
 				l[i].firstToken = innerFirstToken(m)
 				l[i].patience = innerPatience(m)
+				l[i].affinity = innerAffinity(m)
 			}
 		}
 		pl.left = append(pl.left, barredOf(barred, m.Provider, false, from, m.Groups())...)

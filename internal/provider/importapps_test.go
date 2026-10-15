@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -59,7 +60,7 @@ func TestImportCCSwitch(t *testing.T) {
 		`INSERT INTO providers VALUES ('relay','codex','Some Relay','{"auth":{"OPENAI_API_KEY":"sk-relay"},"config":"model_provider = \"relay\"\nmodel = \"gpt-5.5\"\n\n[model_providers.relay]\nname = \"relay\"\nbase_url = \"https://relay.example.com/v1\"\nwire_api = \"responses\"\n"}','','custom',3,0)`,
 		`INSERT INTO providers VALUES ('ds','claude','DeepSeek','{"env":{"ANTHROPIC_BASE_URL":"https://api.deepseek.com/anthropic","ANTHROPIC_AUTH_TOKEN":"sk-ds"}}','','cn_official',4,2)`,
 		`INSERT INTO providers VALUES ('dial','pi','dial','{"api":"openai-completions","apiKey":"magpie","baseUrl":"http://127.0.0.1:3425/v1"}','','custom',5,0)`,
-		`INSERT INTO providers VALUES ('g','gemini','Gemini relay','{"env":{"GOOGLE_GEMINI_BASE_URL":"https://g.example.com","GEMINI_API_KEY":"k"}}','','custom',6,0)`,
+		`INSERT INTO providers VALUES ('g','gemini','Gemini relay','{"env":{"GOOGLE_GEMINI_BASE_URL":"https://g.example.com","GEMINI_API_KEY":"k","GEMINI_MODEL":"gemini-3.8-flash"}}','','custom',6,0)`,
 	)
 	// DeepSeek is already here under its preset id, with another key
 	if err := Save(FromPresetKey(t, "deepseek", "sk-other")); err != nil {
@@ -73,8 +74,11 @@ func TestImportCCSwitch(t *testing.T) {
 	if it := items["pi/dial"]; it.Skip == "" {
 		t.Fatalf("magpie itself offered: %+v", it)
 	}
-	if it := items["gemini/g"]; it.Skip == "" {
-		t.Fatalf("gemini relay offered: %+v", it)
+	g := items["gemini/g"]
+	// a Gemini-protocol relay (#1346): the base goes to the provider's own
+	// Gemini endpoint, as the editor, the TUI and import links take one
+	if g.Skip != "" || g.Provider.Gemini != "https://g.example.com" || g.Provider.Key != "k" || !slices.Equal(g.Provider.Models, []string{"gemini-3.8-flash"}) {
+		t.Fatalf("gemini relay: %+v", g)
 	}
 	relay := items["claude/relay"]
 	if relay.Skip != "" || relay.Status != "new" || relay.Provider.Anthropic != "https://relay.example.com" || relay.Provider.Responses != "https://relay.example.com/v1" || relay.From != "Claude Code, Codex" {

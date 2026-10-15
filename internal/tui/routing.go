@@ -626,7 +626,28 @@ func (m model) viewGroup() string {
 	}
 	b.WriteString(pad + "  " + sMuted.Render(strings.Join(head, " · ")) + "\n\n")
 	b.WriteString(pad + "  " + sFaint.Render("models · the first that can take a request gets it") + "\n")
-	for i, id := range g.Members {
+	n, nr := len(g.Members), len(g.Rules)
+	// the rows around the one picked, as many as fit — a group with more
+	// members and rules than the terminal has rows would otherwise scroll
+	// the highlight off and freeze the page, as the library page did
+	// (#2220) and the agents page before it. What the terminal shows of a
+	// view taller than itself is its last lines: the top scrolls away.
+	rows := max(3, m.h-10) // the header, the head, the titles and the footer around them
+	memFrom, memTo := 0, n
+	ruleFrom, ruleTo := 0, nr
+	if n+nr > rows {
+		if m.gsel < n {
+			memFrom = max(0, m.gsel+1-rows)
+			memTo = min(n, memFrom+rows)
+			ruleTo = min(nr, max(0, rows-(memTo-memFrom)))
+		} else {
+			ruleTo = min(nr, m.gsel-n+1)
+			ruleFrom = max(0, ruleTo-rows)
+			memFrom = max(0, n-max(0, rows-(ruleTo-ruleFrom)))
+		}
+	}
+	for i := memFrom; i < memTo; i++ {
+		id := g.Members[i]
 		marker, name := "  ", sText.Render(id)
 		if i == m.gsel {
 			marker, name = sCursor.Render("▸ "), sNameOn.Render(id)
@@ -655,7 +676,8 @@ func (m model) viewGroup() string {
 	if len(g.Rules) == 0 {
 		b.WriteString(pad + "  " + sMuted.Render("none · n adds one") + "\n")
 	}
-	for i, r := range g.Rules {
+	for i := ruleFrom; i < ruleTo; i++ {
+		r := g.Rules[i]
 		marker, use := "  ", sText.Render(r.Use)
 		if len(g.Members)+i == m.gsel {
 			marker, use = sCursor.Render("▸ "), sNameOn.Render(r.Use)

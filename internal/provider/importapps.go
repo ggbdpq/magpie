@@ -528,7 +528,16 @@ func readClaudeSettings(path string) ([]AppImport, error) {
 			if b, err := os.ReadFile(filepath.Join(filepath.Dir(Path()), "stash.json")); err == nil {
 				json.Unmarshal(b, &st)
 			}
+			// what routing put aside is what stepping out would put back:
+			// the endpoint, token and main model, and with them the
+			// models of the user's own the tiers and subagents ran on
+			// (claude.env.<VAR>, internal/agent/claude.go)
 			env = map[string]any{"ANTHROPIC_BASE_URL": st["claude.base_url"], "ANTHROPIC_AUTH_TOKEN": st["claude.auth_token"], "ANTHROPIC_MODEL": st["claude.model"]}
+			for k, v := range st {
+				if name, ok := strings.CutPrefix(k, "claude.env."); ok && v != "" {
+					env[name] = v
+				}
+			}
 		}
 	}
 	base, _ := env["ANTHROPIC_BASE_URL"].(string)

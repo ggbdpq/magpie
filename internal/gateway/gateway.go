@@ -970,7 +970,7 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 	data := []map[string]any{}
 	shown := catalogFor(r)
 	if agent := agentOf(r); agent == "claude-desktop" {
-		data = desktopModels(shown)
+		data = desktopModels(shown, desktopKnowsMythos(r.Header.Get("User-Agent")))
 	} else if agent == ScienceID {
 		data = scienceModels(shown)
 	} else {

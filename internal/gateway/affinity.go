@@ -268,13 +268,18 @@ func turnIn(req *Request) (turn int, within bool) {
 // move either: held is it, for the request to be refused as held. Neither
 // for another mode, nor for a conversation nobody has answered yet.
 func strictKeep(scope, mode string, in http.Header, body []byte, cs []candidate, pl planned) ([]candidate, planned, []Weighed) {
-	if mode != provider.AffinityStrict {
-		return cs, pl, nil
-	}
 	sticks.Lock()
 	st, had := stickOf(scope + "|" + conversationID(in, body))
 	sticks.Unlock()
 	if !had || time.Since(st.at) > stickKeep || slices.ContainsFunc(cs, func(c candidate) bool { return c.who() == st.who }) {
+		return cs, pl, nil
+	}
+	// strict, as the group asked for says, or as an inner group of the
+	// account's does: its conversation goes on there past the cap
+	if mode != provider.AffinityStrict &&
+		!slices.ContainsFunc(append(slices.Clone(pl.capped), pl.held...), func(c candidate) bool {
+			return c.who() == st.who && c.affinity == provider.AffinityStrict
+		}) {
 		return cs, pl, nil
 	}
 	// the left's line for c, as it was left out
@@ -376,6 +381,14 @@ func affine(scope, mode string, rotate bool, in http.Header, from provider.Proto
 				at, a.Last = i, c.rest // as it goes by now
 			}
 		}
+	}
+	// the answerer's own group in the group keeps the conversation as it
+	// says (#…): a nested group's Affinity was read only where the group
+	// asked for set one, so an inner group's strict let its conversations
+	// drift
+	if at >= 0 && cs[at].affinity != "" {
+		mode = cs[at].affinity
+		a.Mode = mode
 	}
 	switch {
 	case mode == provider.AffinityOff:

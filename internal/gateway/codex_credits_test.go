@@ -1,8 +1,11 @@
 package gateway
 
 import (
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -92,6 +95,58 @@ func TestCodexNoCreditsEveryAccount(t *testing.T) {
 	}
 	if c := srv.Recent()[0]; c.Status != 429 || c.Error != "every account held: at its usage cap or set not to spend its credits" {
 		t.Errorf("recorded %d %q", c.Status, c.Error)
+	}
+}
+
+// Every account held as none may spend its credits: the wait the client is
+// told (Retry-After) is held to a short recheck, however far the windows'
+// renewals are — magpie reads what each account has left again about every
+// minute, so an agent asking sooner finds one that came back, where sleeping
+// to a renewal hours off sat a Codex session out for 80 minutes on one
+// local refusal (#2526). A window renewing within the bound is believed as
+// it says.
+func TestCodexNoCreditsRetryAfterBounded(t *testing.T) {
+	codexSignedIn(t, "spare@example.com")
+	b := newResetBackend(t)
+	capUsage(t, map[string]float64{"me@example.com": 100, "spare@example.com": 100})
+	for _, u := range []string{"me@example.com", "spare@example.com"} {
+		if err := provider.SetCodexCredits(u, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := New()
+	post := func() (int, string) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"ping"}`))
+		req.Header.Set("Authorization", "Bearer chatgpt-token")
+		req.Header.Set("chatgpt-account-id", "acct-1")
+		srv.Handler().ServeHTTP(rec, req)
+		return rec.Code, rec.Header().Get("Retry-After")
+	}
+	code, after := post()
+	if tried, _ := b.seen(); code != 429 || tried != "" {
+		t.Fatalf("%d tried %q", code, tried)
+	}
+	if secs, err := strconv.Atoi(after); err != nil || secs > int(cappedRecheck.Seconds())+1 {
+		t.Fatalf("Retry-After %q: the client sleeps till the windows renew", after)
+	}
+
+	// a window that renews within the bound is believed as it says
+	reset := time.Now().Add(15 * time.Second)
+	old := allowances
+	allowances = func(string) map[string]provider.Allowance {
+		return map[string]provider.Allowance{
+			"me@example.com":    {{Used: 100, Resets: reset, Span: 5 * time.Hour}},
+			"spare@example.com": {{Used: 100, Resets: reset, Span: 5 * time.Hour}},
+		}
+	}
+	t.Cleanup(func() { allowances = old })
+	code, after = post()
+	if code != 429 {
+		t.Fatalf("near renewal: %d", code)
+	}
+	if secs, err := strconv.Atoi(after); err != nil || secs < 13 || secs > 18 {
+		t.Fatalf("Retry-After %q: a window renewing within the bound is not believed", after)
 	}
 }
 

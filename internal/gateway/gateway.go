@@ -2023,16 +2023,24 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// compaction was a candidate, and it is held: the others
 			// weren't tried for that, not for being held too (#2517)
 			msg, back = checkpointCappedError(call.Model, *checkpoint, sealer, time.Now())
+			msg += ". asking again before then is not wasted: magpie reads what each account has left again about every minute"
 			record = checkpointCappedRecord(sealer)
 		} else {
 			msg, back = cappedError(call.Model, held, time.Now())
+			msg += ". asking again before then is not wasted: magpie reads what each account has left again about every minute"
 			if strictHeld != nil {
 				msg += ". The conversation stays strictly on that account (Stays: Strict), so magpie doesn't move it to another"
 			}
 			record = cappedRecord(held)
 		}
 		if d := time.Until(back); d > 0 {
-			w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())+1))
+			// magpie's own refusal is not held to the fullest window's
+			// renewal, hours off (#2526): the agent is told to ask again
+			// sooner, and one held account that came back under it is
+			// taken then; a window renewing within the bound is believed
+			// as it says. A refusal of the vendor's own keeps the
+			// vendor's Retry-After.
+			w.Header().Set("Retry-After", strconv.Itoa(int(min(d, cappedRecheck).Seconds())+1))
 		}
 		call.Status, call.Error = 429, record
 		writeError(w, from, 429, msg)

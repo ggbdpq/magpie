@@ -394,3 +394,55 @@ func TestGatewayKeyModelsHoldTheImageAndVideoLists(t *testing.T) {
 		t.Fatalf("a key held to one video model is told of image %v, video %v", image, video)
 	}
 }
+
+// A gateway key held to some accounts (#905) is told in the chat list only
+// of what an account or key it may use serves; its image and video lists
+// were told of every provider's, though the account the key may use is set
+// to serve none of the media models (#474), as a request through the
+// account fan-out would refuse them (gateway/fallback.go).
+func TestGatewayKeyAccountsHoldTheImageAndVideoLists(t *testing.T) {
+	grokSignedIn(t)
+	newGrokMedia(t)
+	keys, secrets := newCaller(t, "Held", "Free")
+	if _, err := access.Update("accounts-key", access.Change{Key: keys[0].ID, Accounts: []string{"grok/me@x.ai"}}); err != nil {
+		t.Fatal(err)
+	}
+	// grok's account is kept for a chat model alone (#474): the media
+	// models are not its, as the chat list says
+	if err := provider.SetAccountModels("grok", "me@x.ai", []string{"grok-4"}); err != nil {
+		t.Fatal(err)
+	}
+	h := New().Handler()
+	listed := func(secret string) (image, video []string) {
+		r := httptest.NewRequest("GET", "/v1/models", nil)
+		if secret != "" {
+			r.Header.Set("Authorization", "Bearer "+secret)
+		}
+		r.Header.Set(provider.DrawersHeader, "1")
+		r.Header.Set(provider.VideomakersHeader, "1")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		var l struct{ Data []struct{ ID, Kind string } }
+		if err := json.Unmarshal(w.Body.Bytes(), &l); err != nil {
+			t.Fatal(w.Body.String())
+		}
+		for _, m := range l.Data {
+			switch m.Kind {
+			case "image":
+				image = append(image, m.ID)
+			case "video":
+				video = append(video, m.ID)
+			}
+		}
+		return image, video
+	}
+	if image, video := listed(""); !slices.Contains(image, "grok/grok-imagine-image") || !slices.Contains(video, "grok/grok-imagine-video") {
+		t.Fatalf("this computer is told of image %v, video %v", image, video)
+	}
+	if image, video := listed(secrets[1]); !slices.Contains(image, "grok/grok-imagine-image") || !slices.Contains(video, "grok/grok-imagine-video") {
+		t.Fatalf("a key held to no account is told of image %v, video %v", image, video)
+	}
+	if image, video := listed(secrets[0]); len(image) != 0 || len(video) != 0 {
+		t.Fatalf("a key whose account serves the media models not is told of image %v, video %v", image, video)
+	}
+}

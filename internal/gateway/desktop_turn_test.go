@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // Claude Desktop's session titles (and Claude Code's small tasks in its
@@ -134,7 +135,7 @@ func TestClaudeDesktopDefault(t *testing.T) {
 	if got := desktopDefault("fake/m1"); got != "" {
 		t.Fatalf("default for the first model itself = %q", got)
 	}
-	if got := desktopTurn("claude-haiku-4-5", title, false, false); got != "fake/m1" {
+	if got := desktopTurn("claude-haiku-4-5", title, false); got != "fake/m1" {
 		t.Fatalf("title = %q", got)
 	}
 	StandIn = func(agent, model string) string {
@@ -144,11 +145,11 @@ func TestClaudeDesktopDefault(t *testing.T) {
 		return ""
 	}
 	t.Cleanup(func() { StandIn = nil })
-	if got := desktopTurn("claude-haiku-4-5", title, false, false); got != "fake/claude-opus-4-8" {
+	if got := desktopTurn("claude-haiku-4-5", title, false); got != "fake/claude-opus-4-8" {
 		t.Fatalf("title with a stand-in = %q", got)
 	}
 	// a session on a real Claude model magpie serves keeps it
-	if got := desktopTurn("fake/claude-opus-4-8", turn, false, false); got != "fake/claude-opus-4-8" {
+	if got := desktopTurn("fake/claude-opus-4-8", turn, false); got != "fake/claude-opus-4-8" {
 		t.Fatalf("turn = %q", got)
 	}
 }
@@ -249,14 +250,14 @@ func TestDesktopSubagentTurnKeepsSessionPick(t *testing.T) {
 		{"fake/m2", true, "fake/m1"},
 		{"fake/m2", false, "fake/m2"},
 	} {
-		if got := desktopTurn(turn.model, body, true, turn.sub); got != turn.model {
+		if got := desktopTurn(turn.model, body, turn.sub); got != turn.model {
 			t.Fatalf("turn sent %q, want %q", got, turn.model)
 		}
 		if b, err := os.ReadFile(desktopPickedPath()); err != nil || strings.TrimSpace(string(b)) != turn.picked {
 			t.Fatalf("subagent %v: picked %q, want %q (%v)", turn.sub, b, turn.picked, err)
 		}
 	}
-	if got := desktopTurn("claude-haiku-unserved", body, true, true); got != "fake/m2" {
+	if got := desktopTurn("claude-haiku-unserved", body, true); got != "fake/m2" {
 		t.Fatalf("unserved subagent sent %q, want the session's model", got)
 	}
 }
@@ -301,5 +302,74 @@ func TestDesktopSubagentTurnLeavesTitleOnLead(t *testing.T) {
 	}
 	if got := send("claude-sonnet-5-thinking", "", false); got != "m1" {
 		t.Fatalf("title after a subagent's turn: sent %q, want the lead's m1", got)
+	}
+}
+
+// Desktop's own client probes the gateway it is given with a one-token
+// request with no tools and a model from /v1/models (its Credentials
+// test). That probe is not a session title and keeps the model it names:
+// max_tokens alone said "title", so it went to the session's pick, and a
+// pick left by an earlier session's provider — since switched off — came
+// back as a 404 naming that provider (#2473, EchoTint).
+func TestDesktopProbeKeepsItsModel(t *testing.T) {
+	f := &fake{reply: sse(
+		`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`,
+		`event: message_stop`+"\n"+`data: {"type":"message_stop"}`)}
+	up := setup(t, provider.Anthropic, f)
+	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Anthropic: up.URL,
+		Models: []string{"claude-sonnet-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	desktopPicked.Lock()
+	desktopPicked.model, desktopPicked.from = "", ""
+	desktopPicked.Unlock()
+	// a session that ran on the provider "any" left its model there; the
+	// provider has since been switched off
+	if err := provider.Save(provider.Provider{ID: "any", Name: "Any", Key: "k", Anthropic: "http://127.0.0.1:1",
+		Models: []string{"claude-fable-5-1-reversed"}, Off: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(settings.Dir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(desktopPickedPath(), []byte("any/claude-fable-5-1-reversed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const electron = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/1.6608.0 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36"
+	f.got = nil
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"fake/claude-sonnet-5","max_tokens":1,"stream":true,"messages":[{"role":"user","content":"."}]}`))
+	req.Header.Set("x-api-key", Token+"-claude-desktop")
+	req.Header.Set("User-Agent", electron)
+	rec := httptest.NewRecorder()
+	New().Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("probe: %d %.200s", rec.Code, rec.Body)
+	}
+	if got := modelOf(f.got); got != "claude-sonnet-5" {
+		t.Fatalf("probe sent %q, want claude-sonnet-5", got)
+	}
+	// a probe is no session: the pick stands
+	if b, err := os.ReadFile(desktopPickedPath()); err != nil || strings.TrimSpace(string(b)) != "any/claude-fable-5-1-reversed" {
+		t.Fatalf("pick %q, want the stale one kept (%v)", b, err)
+	}
+	// and a title, known by its prompt, still follows the session's pick:
+	// here a session the fake serves
+	if err := os.WriteFile(desktopPickedPath(), []byte("fake/claude-sonnet-5\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	desktopPicked.Lock()
+	desktopPicked.model, desktopPicked.from = "", ""
+	desktopPicked.Unlock()
+	f.got = nil
+	title := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","max_tokens":200,"stream":true,"system":"You write short session titles. Reply with only the tagged fields the prompt asks for.","messages":[{"role":"user","content":"hi"}]}`))
+	title.Header.Set("x-api-key", Token+"-claude-desktop")
+	title.Header.Set("User-Agent", electron)
+	rec = httptest.NewRecorder()
+	New().Handler().ServeHTTP(rec, title)
+	if rec.Code != 200 {
+		t.Fatalf("title: %d %.200s", rec.Code, rec.Body)
+	}
+	if got := modelOf(f.got); got != "claude-sonnet-5" {
+		t.Fatalf("title sent %q, want the session's pick", got)
 	}
 }

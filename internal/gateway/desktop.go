@@ -437,24 +437,23 @@ var desktopPicked struct {
 func desktopPickedPath() string { return filepath.Join(settings.Dir(), "claude-desktop.model") }
 
 // desktopTurn is the model a Claude Desktop request for asked is served by.
-// byClaudeCode is a request Claude Code sent (its claude-cli/ User-Agent)
-// rather than Desktop's own client. bySubagent is a subagent's request
-// (x-claude-code-agent-id): its turns carry tools too, but its model is
-// the one its tier or definition asked for, not the user's pick, so it is
-// never kept as the session's model. Before, a subagent on the opus tier's
-// model took the session's place until the lead's next turn, and the
-// titles asked for meanwhile went to it.
+// bySubagent is a subagent's request (x-claude-code-agent-id): its turns
+// carry tools too, but its model is the one its tier or definition asked
+// for, not the user's pick, so it is never kept as the session's model.
+// Before, a subagent on the opus tier's model took the session's place
+// until the lead's next turn, and the titles asked for meanwhile went to it.
 //
-// Claude Code names the model of each of its own background requests on
-// purpose: its auto mode's safety classifier asks for its sonnet with no
-// tools and a max_tokens of 64 or 256, its notification classifier with
-// 1024 (#1539, tete1030). So a tool-less request from it goes to the
-// session's model only when it is Desktop's title, which Desktop asks
-// Claude Code for when its own request fails (`claude -p --model <its
-// pick> --system-prompt "You write short session titles…" --tools ""`,
-// sent with max_tokens 64000); one for a model magpie doesn't serve still
-// goes there whoever sent it.
-func desktopTurn(asked string, body []byte, byClaudeCode, bySubagent bool) string {
+// A title goes to the session's model, and is known by its prompt
+// ("You write short session titles…"), whoever sent it: Desktop's own
+// client, or Claude Code, which Desktop asks it for when its own request
+// fails (`claude -p --model <its pick> --system-prompt "You write short
+// session titles…" --tools ""`, sent with max_tokens 64000). Every other
+// tool-less request keeps the model it names — Claude Code's background
+// classifiers ask for their own sonnet with a max_tokens of 64, 256 or
+// 1024 (#1539, tete1030), and Desktop's own client probes the gateway
+// with one token and a model from /v1/models (#2473, EchoTint). A request
+// for a model magpie doesn't serve still goes to the session's model.
+func desktopTurn(asked string, body []byte, bySubagent bool) string {
 	if asked == "" {
 		return asked
 	}
@@ -472,11 +471,7 @@ func desktopTurn(asked string, body []byte, byClaudeCode, bySubagent bool) strin
 	if asked == picked {
 		return asked
 	}
-	aside := small(body)
-	if byClaudeCode {
-		aside = desktopTitle(body)
-	}
-	title := !tools && aside && desktopAccepts(asked)
+	title := !tools && desktopTitle(body) && desktopAccepts(asked)
 	gone := unserved(asked)
 	if gone && !title {
 		if m := servedBeside(asked, picked); m != "" {

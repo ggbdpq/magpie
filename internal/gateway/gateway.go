@@ -1598,7 +1598,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	asked = call.Model
 	if agent == "claude-desktop" {
 		sub, _ := subagentOf(r.Header)
-		asked = desktopTurn(asked, body, fromClaudeCode(r.Header), sub != "")
+		asked = desktopTurn(asked, body, sub != "")
 	} else if agent == ScienceID {
 		asked = scienceTurn(asked, body)
 	}

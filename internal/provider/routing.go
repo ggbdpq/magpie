@@ -597,6 +597,32 @@ func tellRenewed(agent, user string) {
 	}
 }
 
+// OnCreditBack has f told when a reading of a key — its balance card, or
+// its plan's windows — went through: the vendor answered it, so a refusal
+// of no balance it gave before may be stale (the account was topped up),
+// and what sat out for it can be asked again. fingerprint is the read
+// key's own (KeyID).
+func OnCreditBack(f func(providerID, fingerprint string)) {
+	creditBackHooks.Lock()
+	creditBackHooks.fs = append(creditBackHooks.fs, f)
+	creditBackHooks.Unlock()
+}
+
+var creditBackHooks struct {
+	sync.Mutex
+	fs []func(providerID, fingerprint string)
+}
+
+// tellCreditBack tells those OnCreditBack asked.
+func tellCreditBack(providerID, fingerprint string) {
+	creditBackHooks.Lock()
+	fs := creditBackHooks.fs
+	creditBackHooks.Unlock()
+	for _, f := range fs {
+		f(providerID, fingerprint)
+	}
+}
+
 // AwaitAllowance has agent's accounts read again unless a reading is out,
 // and waits, till ctx ends, for one that knows user: after a reset is
 // spent, routing then counts the account's windows started again, rather

@@ -146,6 +146,9 @@ func readKeyAllowance(p Provider, id string, gen int) {
 	if err == nil {
 		r.at, r.seq = now, seq
 		e.read = r
+		// the vendor answered a read of this key: a refusal of no balance
+		// it gave before may be stale (#2587)
+		tellCreditBack(p.ID, KeyID(p.Key))
 	}
 	if e.stale {
 		e.stale, e.loading, e.at = false, true, time.Time{}
@@ -215,6 +218,12 @@ func lastKeyAllowance(p Provider) Allowance {
 // noteKeyAllowance keeps the windows the key's card just read, for
 // routing to go by at once.
 func noteKeyAllowance(p Provider, ws []QuotaWindow, now time.Time) {
+	// the card read went through, so a refusal of no balance the vendor
+	// gave this key may be stale: topped up, perhaps (#2587). Plain
+	// balance keys have no windows to keep, and are told all the same.
+	if p.Key != "" {
+		tellCreditBack(p.ID, KeyID(p.Key))
+	}
 	if !readsKeyWindows(p) {
 		return
 	}

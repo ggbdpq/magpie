@@ -439,7 +439,46 @@ func renewed(agent, user string) {
 	}
 }
 
-func init() { provider.OnRenewed(renewed) }
+// creditBack lifts what rests out of credit of a key whose balance or
+// windows a reading just asked for fine (KeyBalances, a plan's, the key's
+// own behind routing): out of credit was why it sat out, and the vendor
+// answering a read says its refusal may be stale — topped up, perhaps —
+// so the next request asks it again, instead of the refusal it gave being
+// answered for it till the rest runs out (#2587). One that still refuses
+// rests as before: a refused request per reading, at most. Quota rests
+// are renewed's, and a restriction or a verification isn't touched.
+func creditBack(providerID, fingerprint string) {
+	restingUntil.Lock()
+	defer restingUntil.Unlock()
+	roots := []string{providerID}
+	if fingerprint != "" {
+		roots = append(roots, providerID+"#"+fingerprint)
+	}
+	for k, r := range restingUntil.note {
+		if r.Why != failCredit || !restsBy(k, roots) {
+			continue
+		}
+		delete(restingUntil.m, k)
+		delete(restingUntil.note, k)
+	}
+}
+
+// restsBy is whether k is one of the roots, or one model of one (restID):
+// a key rests by its provider's id while it is the one key on, else by
+// the id and the key's fingerprint.
+func restsBy(k string, roots []string) bool {
+	for _, root := range roots {
+		if k == root || strings.HasPrefix(k, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func init() {
+	provider.OnRenewed(renewed)
+	provider.OnCreditBack(creditBack)
+}
 
 // staleAllowance is provider.StaleAllowance, swapped in tests.
 var staleAllowance = provider.StaleAllowance

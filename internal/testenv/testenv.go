@@ -1,9 +1,10 @@
 // Package testenv gives a package's tests a home of their own, on every OS:
 // HOME, USERPROFILE (Windows' home), the XDG folders and Windows' APPDATA
 // and LOCALAPPDATA all point into one new temporary folder, the agents' own
-// variables (agentenv.Vars) are cleared, and the keychain tools and agent
-// CLIs on PATH are failing stand-ins, so that no test reads or writes the
-// files of the user running it. Setting HOME alone isn't that: on Windows
+// variables (agentenv.Vars) are cleared, and the keychain, system-proxy
+// and agent CLIs on PATH are failing stand-ins, so that no test reads or
+// writes the files of the user running it. Setting HOME alone isn't that:
+// on Windows
 // Go reads the home from USERPROFILE, and a test then meets the real
 // ~/.claude. A package uses it from its TestMain:
 //
@@ -187,8 +188,11 @@ func SetHome(t testing.TB, dir string) {
 
 // tools are the programs a test must never reach for real: the system
 // keychains (macOS' security, Linux's secret-tool), which hold the user's
-// sign-ins outside any home, and the agents' CLIs.
-var tools = []string{"security", "secret-tool", "claude", "codex", "cursor-agent", "devin", "grok", "kiro-cli"}
+// sign-ins outside any home, macOS' scutil, whose --proxy says the
+// machine's own proxy wherever the home points — a host with one answered
+// netproxy.For's fallback after NO_PROXY had bypassed the environment's
+// (#2562) — and the agents' CLIs.
+var tools = []string{"security", "secret-tool", "scutil", "claude", "codex", "cursor-agent", "devin", "grok", "kiro-cli"}
 
 // inertTools puts a failing stand-in for each of tools first on PATH, in
 // home/bin. Tests can still put their own fakes before it.

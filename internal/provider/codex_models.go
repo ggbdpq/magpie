@@ -543,10 +543,19 @@ func codexListTag(kind string) string {
 //
 // A provider switched off picks nothing, as it serves no agent anything
 // (Provider.Off): its picks are kept for when it is switched on again and
-// are not a narrowing now.
+// are not a narrowing now. Usage only (noModels with nothing picked) is a
+// narrowing, to none of them: the account serves no agent anything, as
+// Exposed keeps its models out of the general catalog (#2530), and the
+// hidden ones stay for Codex's jobs of its own (codexModels).
 func CodexNativePicked() (map[string]bool, bool) {
 	p, ok := find(All(), "codex")
-	if !ok || p.Off || len(p.Models) == 0 {
+	if !ok || p.Off {
+		return nil, false
+	}
+	if p.ServesNone() {
+		return map[string]bool{}, true
+	}
+	if len(p.Models) == 0 {
 		return nil, false
 	}
 	keep := make(map[string]bool, len(p.Models))

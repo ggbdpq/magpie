@@ -610,6 +610,44 @@ func TestCodexModelListPicksKeepHidden(t *testing.T) {
 	}
 }
 
+// Usage only (Select none with nothing picked) narrows the backend's own
+// list to its hidden entries alone (#2530): the account serves no agent
+// anything, so its visible models leave Codex's picker as they have left
+// the general catalog, and magpie's own stay.
+func TestCodexModelListNarrowedByUsageOnly(t *testing.T) {
+	codexSignedIn(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"models":[{"slug":"gpt-6-sol","priority":1,"visibility":"list"},{"slug":"gpt-5.5","priority":2,"visibility":"list"},{"slug":"codex-auto-review","priority":3,"visibility":"hide"}]}`)
+	}))
+	defer up.Close()
+	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Models: []string{"m1"}, Chat: up.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Save(provider.Provider{ID: "codex", NoModels: true}); err != nil {
+		t.Fatal(err)
+	}
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	defer func() { provider.CodexBase = was }()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", CodexPath+"/models", nil)
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	New().Handler().ServeHTTP(rec, req)
+	var list struct {
+		Models []map[string]any `json:"models"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &list)
+	got := map[string]bool{}
+	for _, m := range list.Models {
+		slug, _ := m["slug"].(string)
+		got[slug] = true
+	}
+	if rec.Code != 200 || got["gpt-6-sol"] || got["gpt-5.5"] || !got["codex-auto-review"] || !got["fake/m1"] {
+		t.Errorf("under usage only: %v (want codex-auto-review and magpie's own, the account's visible models gone); code %d", got, rec.Code)
+	}
+}
+
 // A native model taken out of Codex's list on the Agents page is dropped
 // from the backend's list too, and the ETag changes so Codex asks again.
 func TestCodexModelListHidesOnAgentsPage(t *testing.T) {

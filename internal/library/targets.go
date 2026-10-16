@@ -292,8 +292,15 @@ func targetOf(a *agent.Agent) *Target {
 	case "hermes":
 		// Hermes Agent reads mcp_servers from $HERMES_HOME/config.yaml, the
 		// file magpie sets its model in too (tools/mcp_tool.py), and skills
-		// from $HERMES_HOME/skills
+		// from $HERMES_HOME/skills. Each of its bots is a profile with its
+		// own config.yaml, which reads no other home's (agent.HermesProfiles):
+		// the library's servers go into every profile's too (#2540)
 		t.MCP = &mcpFile{Path: a.Path, Format: fmtHermes}
+		for _, p := range agent.HermesProfiles(a.Dir) {
+			if p != a.Path {
+				t.MCP.Also = append(t.MCP.Also, p)
+			}
+		}
 		t.Skills = filepath.Join(a.Dir, "skills")
 	case "minimax-code":
 		// MiniMax Code loads the skills in its data folder ($MINIMAX_DATA_DIR,

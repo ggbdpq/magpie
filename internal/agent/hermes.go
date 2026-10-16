@@ -194,17 +194,38 @@ var hermesProfileID = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 // (%LOCALAPPDATA%\hermes on Windows, ~/.hermes elsewhere), which a
 // HERMES_HOME under it is a profile of; a HERMES_HOME elsewhere is the root itself, or, as
 // <root>/profiles/<name>, a profile of <root> (get_default_hermes_root).
-// A profile with no config.yaml yet is left out: magpie doesn't make one.
 func hermesProfiles(at place) []string {
 	root := at.hermesDefault()
 	if env := at.getenv("HERMES_HOME"); env != "" {
 		if rel, err := filepath.Rel(root, env); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			root = env
-			if filepath.Base(filepath.Dir(env)) == "profiles" {
-				root = filepath.Dir(filepath.Dir(env))
-			}
+			root = hermesRoot(env)
 		}
 	}
+	return hermesProfileConfigs(root)
+}
+
+// HermesProfiles is the config.yaml of each of the profiles (its bots) of
+// the Hermes whose folder is dir, as Hermes lists them (hermesProfileConfigs):
+// the resource library gives each of them the library's MCP servers, which
+// a profile reads from its own config.yaml alone (#2540). A profile with no
+// config.yaml yet is left out: magpie doesn't make one.
+func HermesProfiles(dir string) []string { return hermesProfileConfigs(hermesRoot(dir)) }
+
+// hermesRoot is the root of Hermes's profiles: dir itself, or, as
+// <root>/profiles/<name>, the root it is a profile of.
+func hermesRoot(dir string) string {
+	if filepath.Base(filepath.Dir(dir)) == "profiles" {
+		return filepath.Dir(filepath.Dir(dir))
+	}
+	return dir
+}
+
+// hermesProfileConfigs is every profile's config.yaml under root: the
+// root's own, and <root>/profiles/<name>'s for each name Hermes allows that
+// holds a file only a profile has and isn't deleted (a tombstone at
+// profiles/.deleted/<name>). A profile with no config.yaml yet is left
+// out: magpie doesn't make one.
+func hermesProfileConfigs(root string) []string {
 	paths := []string{filepath.Join(root, "config.yaml")}
 	ps := filepath.Join(root, "profiles")
 	es, _ := os.ReadDir(ps)

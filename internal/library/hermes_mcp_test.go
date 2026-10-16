@@ -129,6 +129,59 @@ func TestHermesMCP(t *testing.T) {
 	}
 }
 
+// sryimnoob123 (#2540): every bot is a profile with its own config.yaml,
+// which reads no other home's (hermes.go hermesProfiles), so the library's
+// servers go into each profile's config as well — a profile's own settings
+// stay as its user set them, and only magpie's come out again.
+func TestHermesProfilesGetMCP(t *testing.T) {
+	h := sandbox(t)
+	dir := filepath.Join(h, "hermes-home")
+	t.Setenv("HERMES_HOME", dir)
+	p := filepath.Join(dir, "config.yaml")
+	write(t, p, hermesConfig)
+	holdCLI(t, h, "hermes") // the config alone is gone (#2173, #2177)
+
+	// one bot profile beside the default home, and another
+	alpha := filepath.Join(dir, "profiles", "alpha", "config.yaml")
+	beta := filepath.Join(dir, "profiles", "beta", "config.yaml")
+	write(t, alpha, "# alpha's own\nmodel:\n  default: mine/other\n")
+	write(t, beta, "# beta's own\nmodel:\n  default: mine/else\n")
+
+	agents := []string{"hermes"}
+	ok(t)(SaveServer("", Server{Name: "web", Transport: "http", URL: "https://example.com/mcp", Agents: agents}))
+
+	for _, c := range []struct{ name, model string }{{"alpha", "mine/other"}, {"beta", "mine/else"}} {
+		got := read(t, filepath.Join(dir, "profiles", c.name, "config.yaml"))
+		if !strings.Contains(got, "web") || !strings.Contains(got, "https://example.com/mcp") {
+			t.Errorf("%s's config.yaml got nothing:\n%s", c.name, got)
+		}
+		if !strings.Contains(got, c.model) {
+			t.Errorf("%s lost its own model:\n%s", c.name, got)
+		}
+	}
+	if got := read(t, p); !strings.Contains(got, "web") {
+		t.Errorf("the main home's config.yaml lost it:\n%s", got)
+	}
+
+	// a profile that is as the library has it isn't written again
+	before := read(t, alpha)
+	ok(t)(Sync())
+	if read(t, alpha) != before {
+		t.Errorf("a sync rewrote a profile that is as the library has it:\n%s", read(t, alpha))
+	}
+
+	ok(t)(RemoveServer("web"))
+	for _, c := range []struct{ name, model string }{{"alpha", "mine/other"}, {"beta", "mine/else"}} {
+		got := read(t, filepath.Join(dir, "profiles", c.name, "config.yaml"))
+		if strings.Contains(got, "web") {
+			t.Errorf("%s's config.yaml still has it:\n%s", c.name, got)
+		}
+		if !strings.Contains(got, c.model) {
+			t.Errorf("%s lost its own model:\n%s", c.name, got)
+		}
+	}
+}
+
 // A server Hermes has that the library doesn't is found, to bring in.
 func TestHermesMCPFound(t *testing.T) {
 	h := sandbox(t)

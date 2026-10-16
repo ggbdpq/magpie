@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/agentenv"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/desktopdir"
@@ -1479,9 +1480,19 @@ func claudeIn(at place) *Agent {
 			}
 		}
 		gw := gwAt()
+		tok := wiredKey()
+		// a caller key of the gateway's own where magpie's token goes goes
+		// through magpie all the same: theirs stays, as a sync keeps one
+		// (mergeKept, keyHolds); only a value the gateway would refuse is
+		// wired over (#2545). The sharing key magpie made is magpie's own,
+		// however much Authenticate takes it, so it never counts as theirs
+		// (Default): sharing going off brings gateway.Token back
+		if v, _ := edit.GetJSON(path, "env.ANTHROPIC_AUTH_TOKEN"); v != tok && keyHolds(v, tok) && !access.Default(v) {
+			tok = v
+		}
 		kvs := []edit.KV{
 			{Path: "env.ANTHROPIC_BASE_URL", Value: gw},
-			{Path: "env.ANTHROPIC_AUTH_TOKEN", Value: wiredKey()},
+			{Path: "env.ANTHROPIC_AUTH_TOKEN", Value: tok},
 			{Path: "env.ANTHROPIC_SMALL_FAST_MODEL", Value: spell(tiers["haiku"])},
 			{Path: "model", Value: spell(main)},
 		}

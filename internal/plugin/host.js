@@ -1638,6 +1638,9 @@ function kinds(c) {
 }
 
 // fromModelsDev is a models.dev model as OpenCode's provider list has it.
+// temperature is what models.dev itself said of it, left out where it said
+// nothing: capabilities.temperature is OpenCode's own, and its false is
+// what OpenCode reads a model.dev silence as, not a refusal said.
 function fromModelsDev(p, m) {
   return {
     id: m.id,
@@ -1650,6 +1653,7 @@ function fromModelsDev(p, m) {
     options: {},
     cost: cost(m.cost),
     limit: { context: m.limit?.context ?? 0, input: m.limit?.input, output: m.limit?.output ?? 0 },
+    ...(m.temperature !== undefined ? { temperature: m.temperature } : {}),
     capabilities: {
       temperature: m.temperature ?? false,
       reasoning: m.reasoning ?? false,
@@ -1713,6 +1717,9 @@ async function info(id, key, strict) {
         ...(m.modalities?.output ? { output: modalities(m.modalities.output) } : {}),
       },
       variants: m.variants ?? was?.variants ?? {},
+      // what the config itself says of the model's sampling, as Factory's
+      // config models say temperature of their OpenAI route (plugins#154)
+      ...(m.temperature !== undefined ? { temperature: m.temperature } : {}),
       // magpie's own mark: a decision model, answering System One
       ...(typeof m.decides === "boolean" ? { decides: m.decides } : was?.decides !== undefined ? { decides: was.decides } : {}),
       // and one that searches the web by itself, asked in plain words
@@ -1962,6 +1969,10 @@ async function providers({ proxies } = {}) {
           // every kind it takes and gives, not image alone (#1595)
           inputs: kinds(m.capabilities?.input),
           outputs: kinds(m.capabilities?.output),
+          // whether the model takes temperature and top_p, where something
+          // said so (models.dev, the config, the models hook); unsaid goes
+          // to magpie as nothing, which keeps them (#2492)
+          ...(typeof m.temperature === "boolean" ? { temperature: m.temperature } : {}),
           released: m.release_date ?? "",
           cost: m.cost,
           variants: Object.keys(m.variants ?? {}),

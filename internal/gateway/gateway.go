@@ -3050,6 +3050,20 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			matesLast(cands[i+1:], c)
 			continue
 		}
+		if !last && hw.failed() && strings.Contains(call.Error, finishFailed) {
+			// a 200 stream the vendor ended with finish_reason "error"
+			// (#2471): the turn failed, as the word says, but the account
+			// is at fault no more than one whose reply said nothing
+			// (#1221) or was cut short by its output limit (#2274): the
+			// next is asked, and nobody rests
+			if other == nil {
+				other = &Try{Status: call.Status, Error: call.Error}
+			}
+			try.Fail = failOther
+			s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
+			skipped = append(skipped, c.label()+": "+call.Error)
+			continue
+		}
 		if !last && hw.failed() {
 			if f := failure(hw.code(), hw.errBody()); other == nil && f != failQuota && f != failCredit {
 				other = &Try{Status: call.Status, Error: call.Error}

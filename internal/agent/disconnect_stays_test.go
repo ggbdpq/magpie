@@ -208,3 +208,46 @@ func TestCodexAPIDisconnectStays(t *testing.T) {
 		t.Fatalf("connected again:\n%s", cfg)
 	}
 }
+
+// #2545: Codex was found disconnected, and nothing on disk said when it
+// happened — only config.toml's mtime, gone after the next write. The
+// stash keeps when Disconnect ran, and keeps it past the reconnect, so the
+// next one has a clock.
+func TestDisconnectStampsWhenItRan(t *testing.T) {
+	home, read := codexHome(t, `{"tokens":{"access_token":"x","id_token":"x.e30.x"}}`, "model = \"gpt-a\"\n")
+	os.WriteFile(filepath.Join(home, ".codex", "models_cache.json"), []byte(`{"models":[{"slug":"gpt-a","display_name":"A","priority":1}]}`), 0o644)
+	cx := codex(home)
+	if err := cx.Field("login").Set("api"); err != nil {
+		t.Fatal(err)
+	}
+	if !cx.Wired() {
+		t.Fatalf("magpie API not wired:\n%s", read())
+	}
+	if err := cx.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	// read through stashLoad, not unstash: a read there is a consume
+	stash := stashLoad()
+	if stash["codex.disconnected"] != "1" {
+		t.Fatalf("no disconnected marker:\n%s", read())
+	}
+	at, err := time.Parse(time.RFC3339, stash["codex.disconnected_at"])
+	if err != nil {
+		t.Fatalf("no time of the disconnect in the stash: %v", err)
+	}
+	if d := time.Since(at); d > time.Minute || d < -time.Minute {
+		t.Fatalf("disconnected_at says %s, not just now: %v", at, d)
+	}
+	// the stamp outlives the reconnect: the marker is the state, the stamp
+	// is the record of the last one
+	if _, err := cx.ConnectHow(); err != nil {
+		t.Fatal(err)
+	}
+	stash = stashLoad()
+	if stash["codex.disconnected"] != "" {
+		t.Fatal("connected again, the marker stayed")
+	}
+	if _, err := time.Parse(time.RFC3339, stash["codex.disconnected_at"]); err != nil {
+		t.Fatalf("the reconnect took the stamp away: %v", err)
+	}
+}

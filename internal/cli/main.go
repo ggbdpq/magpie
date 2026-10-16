@@ -553,6 +553,7 @@ func showField(a *agent.Agent, f *agent.Field) error {
 // leaves the agent as installed (__jingling on X: magpie claude default
 // took the model they had set away with magpie's)
 func disconnect(a *agent.Agent) error {
+	appdir.Event("cli " + a.ID + " default")
 	before := a.Values()
 	if err := a.Disconnect(); err != nil {
 		return err

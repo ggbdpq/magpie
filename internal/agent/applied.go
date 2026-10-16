@@ -730,7 +730,11 @@ func (a *Agent) Disconnect() error {
 	// the user's say, kept till they connect it again: nothing magpie does
 	// by itself (a start's Sync, Codex's account failover) puts magpie back
 	// in, this Disconnect's own writes included (paynezhuang on Discord)
-	stash(map[string]string{a.ID + disconnectedKey: "1"})
+	// The stamp of when it happened goes with the marker and stays when
+	// connecting clears the marker, so a disconnect nobody saw can still be
+	// placed in time (#2545: Codex was found disconnected, and only
+	// config.toml's mtime said when).
+	stash(map[string]string{a.ID + disconnectedKey: "1", a.ID + ".disconnected_at": time.Now().Format(time.RFC3339)})
 	before, rec := a.Values(), appliedOf(a.ID)
 	if a.Unwire != nil {
 		if err := a.Unwire(); err != nil {

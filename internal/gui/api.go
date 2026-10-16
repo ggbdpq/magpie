@@ -31,6 +31,7 @@ import (
 
 	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/autostart"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/filememo"
@@ -1018,6 +1019,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, fmt.Errorf("Disconnect preview changed; preview it again"))
 			return
 		}
+		appdir.Event(fmt.Sprintf("api disconnect-offline %s from %s (%s)", a.ID, r.RemoteAddr, r.Header.Get("User-Agent")))
 		if err := a.Native.ExecuteOffline(plan); err != nil {
 			fail(rw, err)
 			return
@@ -1030,6 +1032,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		appdir.Event(fmt.Sprintf("api %s %s from %s (%s)", r.PathValue("action"), a.ID, r.RemoteAddr, r.Header.Get("User-Agent")))
 		var how *agent.Connection
 		switch r.PathValue("action") {
 		case "reapply":

@@ -2664,6 +2664,12 @@ var filterReasons = map[string]string{
 	"IMAGE_SAFETY":             "safety",
 }
 
+// finishFailed is what a 200 stream the vendor ends with finish_reason
+// "error" (#2471) says of itself, in the failure the hold keeps: the turn
+// failed, as the word says, and the group's next member answers it, while
+// taken for content it reached the agent and the try stood as a success.
+const finishFailed = `the reply ended with finish_reason "error"`
+
 // refusedNote is what a refusal is noted as: the vendor's own reason.
 func refusedNote(reason string) string {
 	return "safety filter: " + reason
@@ -2959,6 +2965,14 @@ func streamEvent(ev []byte) (kind, status int, msg string) {
 			if c.FinishReason != nil {
 				if r, ok := filterReasons[*c.FinishReason]; ok {
 					return refusal(r)
+				}
+				if *c.FinishReason == "error" {
+					// WorkBuddy's and a DeepSeek harness's word for a turn
+					// it failed, not finished (#2471): the failure an error
+					// event is, held for the group's next candidate, where
+					// taken for content it went to the agent and the try
+					// stood as a success
+					return eventError, streamStatus(finishFailed), finishFailed
 				}
 				return eventContent, 0, ""
 			}

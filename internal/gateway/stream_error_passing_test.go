@@ -99,3 +99,33 @@ func TestGroupLastFailureInStreamSaysItPasses(t *testing.T) {
 		t.Fatalf("the stream's error %q is one Pi doesn't ask again for: %q", said, body)
 	}
 }
+
+// A vendor byte cap that lands after the stream's headers have already
+// gone out (a keepalive while the vendor is still quiet) reaches the
+// agent as an error event. Pi compacts when that text says
+// request_too_large (overflow.ts), the same word a 413 JSON body carries
+// before the stream starts. "Request Entity Too Large" does not, so the
+// turn stops (@wilsonxuuuu, once the stream is already open).
+func TestStreamedByteCapSaysRequestTooLargeToPi(t *testing.T) {
+	quietFast(t)
+	fresh(t)
+	const nginx = "<html>\r\n<head><title>413 Request Entity Too Large</title></head>\r\n<body>\r\n<center><h1>413 Request Entity Too Large</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"
+	piOverflow := regexp.MustCompile(`(?i)request_too_large`)
+	hang := make(chan struct{})
+	scriptedOn(t, "a", provider.Chat, &scripted{hang: hang, replies: []reply{{413, "text/html", nginx}}})
+	heard := make(chan struct{})
+	go func() {
+		select {
+		case <-heard:
+		case <-time.After(5 * time.Second):
+		}
+		close(hang)
+	}()
+	code, body, _ := askChat(t, New(), "a/m", heard)
+	if !strings.Contains(body, ": keepalive") {
+		t.Fatalf("the stream's headers never went out ahead of the 413: %d %q", code, body)
+	}
+	if !piOverflow.MatchString(body) || strings.Contains(body, "context_length_exceeded") {
+		t.Fatalf("byte cap in a stream already begun: %d %s", code, body)
+	}
+}

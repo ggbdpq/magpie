@@ -6395,9 +6395,21 @@ func failTo(w http.ResponseWriter, a *keptAlive, proto provider.Protocol, status
 func streamError(w http.ResponseWriter, proto provider.Protocol, status int, msg string) {
 	sw := newSSEWriter(w)
 	sw.begun = true
-	ev := Event{Kind: KError, Text: saysPassing(status, msg), Status: status}
-	if tooLong(status, msg) {
+	text := saysPassing(status, msg)
+	ev := Event{Kind: KError, Text: text, Status: status}
+	overflow := tooLong(status, msg)
+	if overflow {
 		ev.Code = "context_length_exceeded"
+	}
+	// A 413 before the headers go out is typed request_too_large
+	// (writeErrorSaid). Once they have, Pi reads only this event's text
+	// (#2372) and does not compact on "Request Entity Too Large". Gemini
+	// keeps its own status shape.
+	byteCap := status == http.StatusRequestEntityTooLarge && !overflow
+	ownShape := proto == provider.Gemini
+	alreadySaid := strings.Contains(strings.ToLower(text), "request_too_large")
+	if byteCap && !ownShape && !alreadySaid {
+		ev.Text = text + " (request_too_large)"
 	}
 	makeEncoder(proto, sw, &Request{}).event(ev)
 }

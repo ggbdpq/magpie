@@ -186,7 +186,8 @@ the range, with that reading's percentage and bounds, the cached card's model
 scope, and only calls and readings before that reading. A card that is gated
 live (a balance, a remote, an error) is gated for past cycles too, and a
 window no longer on the cached card is left out. Past prices aren't kept, so
-the cost is at today's API list prices. See
+the cost is at today's API list prices. A call whose own id has no API price
+is costed as the model the reply named (Served), as the ledger is (#1498). See
 `TestWindowHoldsDryAgainAfterReset`, `TestWindowHoldsUsesObservedRefillStart`
 and `TestHistoricalWindowHoldsUsesEachWindowsOwnReading`.
 

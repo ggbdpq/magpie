@@ -249,6 +249,13 @@ func pluginCatalog(pp plugin.Provider) []catalog.Model {
 			c.InputModalities = m.Inputs
 		}
 		c.OutputModalities = m.Outputs
+		// whether it takes temperature, where the plugin said: a model said
+		// false refuses it and top_p, as one a catalog says false of does
+		// (#2492)
+		if m.TemperatureSaid {
+			takes := m.Temperature
+			c.Temperature = &takes
+		}
 		out = append(out, c)
 	}
 	return out

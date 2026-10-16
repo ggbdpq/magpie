@@ -84,6 +84,12 @@ type Model struct {
 	// ImageSaid is whether the plugin (or models.dev) said if it takes
 	// images: Image false without it is not known
 	ImageSaid bool `json:"imageSaid"`
+	// TemperatureSaid is whether the plugin (its config, models.dev or the
+	// models hook) said whether the model takes temperature: Temperature
+	// false refuses it and top_p, as a catalog's does (#2492). Said
+	// nothing, not known.
+	TemperatureSaid bool `json:"temperatureSaid"`
+	Temperature     bool `json:"temperature"`
 	// Inputs and Outputs are the kinds capabilities.input and .output say
 	// the model takes and gives (text, image, audio, video, pdf), in
 	// OpenCode's order: not image alone (#1595)

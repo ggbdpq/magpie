@@ -1502,6 +1502,7 @@ async function info(id, key, strict) {
       headers: { ...(was?.headers ?? {}), ...(m.headers ?? {}) },
       capabilities: {
         ...(was?.capabilities ?? { temperature: true, toolcall: true, input: { text: true }, output: { text: true } }),
+        ...(m.temperature !== undefined ? { temperature: m.temperature } : {}),
         ...(m.reasoning !== undefined ? { reasoning: m.reasoning } : {}),
         ...(m.attachment !== undefined ? { attachment: m.attachment } : {}),
         ...(m.tool_call !== undefined ? { toolcall: m.tool_call } : {}),
@@ -1729,6 +1730,10 @@ async function providers({ proxies } = {}) {
           reasoning: !!m.capabilities?.reasoning,
           image: !!m.capabilities?.input?.image,
           imageSaid: typeof m.capabilities?.input?.image === "boolean",
+          // whether the model takes temperature: a model said false refuses
+          // it and top_p, as a catalog's does (#2492); not said, not known
+          temperatureSaid: typeof m.capabilities?.temperature === "boolean",
+          temperature: m.capabilities?.temperature === true,
           // every kind it takes and gives, not image alone (#1595)
           inputs: kinds(m.capabilities?.input),
           outputs: kinds(m.capabilities?.output),

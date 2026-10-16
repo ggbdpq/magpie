@@ -112,6 +112,9 @@ export const FakePlugin = async ({ client }) => ({
     if (process.env.FAKE_ZEN) {
       cfg.provider[ID].models["muse-spark-1.3-contributor-free"] = {"id":"muse-spark-1.3-contributor-free","name":"Muse Spark 1.3 Free","provider":{"npm":"@ai-sdk/openai"},"limit":{"context":1048576,"output":131072},"reasoning":true,"tool_call":true,"attachment":true,"modalities":{"input":["text","image","audio","video","pdf"],"output":["text"]},"cost":{"input":0,"output":0},"variants":{"minimal":{"reasoningEffort":"minimal"},"low":{"reasoningEffort":"low"},"medium":{"reasoningEffort":"medium"},"high":{"reasoningEffort":"high"},"xhigh":{"reasoningEffort":"xhigh"}},"free":true}
     }
+    // $FAKE_NOTEMP: a model that refuses temperature and top_p, saying so
+    // in its config as Factory's 0.1.31 does (magpie-community/plugins#154)
+    if (process.env.FAKE_NOTEMP) cfg.provider[ID].models["fake-notemp"] = { name: "Fake No Temp", temperature: false, limit: { context: 1000, output: 100 } }
   },
   auth: {
     provider: ID,
@@ -263,6 +266,9 @@ export const FakePlugin = async ({ client }) => ({
         p.models["mimo-v2.6-flash-free"] = { ...p.models["fake-1"], id: "mimo-v2.6-flash-free", name: "MiMo V2.6 Flash Free", api: { ...p.models["fake-1"].api, id: "mimo-v2.6-flash-free" }, free: true, variants: {},
           capabilities: {"temperature":true,"reasoning":true,"attachment":true,"toolcall":true,"input":{"text":true,"image":true,"audio":true,"video":true,"pdf":false},"output":{"text":true,"image":false,"audio":false,"video":false,"pdf":false},"interleaved":{"field":"reasoning_content"}} }
       }
+      // $FAKE_NOTEMP: one more, saying so on its capabilities as a models
+      // hook does (OpenCode's shape)
+      if (process.env.FAKE_NOTEMP) p.models["fake-hooktemp"] = { ...p.models["fake-1"], id: "fake-hooktemp", name: "Fake Hook Temp", api: { ...p.models["fake-1"].api, id: "fake-hooktemp" }, capabilities: { ...p.models["fake-1"].capabilities, temperature: false } }
       // $FAKE_DECIDE: one more decision model, marked on the list the hook
       // gives, as a plugin that reads its vendor's list marks one
       if (process.env.FAKE_DECIDE) p.models["fake-judge"] = { ...p.models["fake-1"], id: "fake-judge", name: "Fake Judge", api: { ...p.models["fake-1"].api, id: "fake-judge" }, free: false, decides: true }

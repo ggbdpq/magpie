@@ -177,6 +177,20 @@ func claudeLooking(e provider.Entry) string {
 // Claude Code (claudeLooking).
 func DesktopID(e provider.Entry) string { return claudeLooking(e) }
 
+// DesktopNumber is the ten digits of the id Claude Desktop is shown e by
+// (claudeLooking) that magpie made for it: the fragment its menu brackets
+// a row with when it folds rows of one catalog name into one, so the
+// Providers page says it beside the model and a row of its menu can be
+// matched back to its provider (#2578). "" when Desktop is shown e's own
+// id, which carries none.
+func DesktopNumber(e provider.Entry) string {
+	n := aliasNumber(e.ID)
+	if !strings.Contains(claudeLooking(e), n) {
+		return "" // Desktop is shown the model's own id
+	}
+	return n
+}
+
 // desktopModels is /v1/models as Claude Desktop is shown it: every model
 // picked for it (provider.CatalogFor, the Agents page's model list) by an id
 // it keeps (claudeLooking), named as the agents' lists name models

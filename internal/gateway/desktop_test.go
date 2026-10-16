@@ -143,3 +143,33 @@ type desktopRow struct {
 	DisplayName string `json:"display_name"`
 	Description string `json:"description"`
 }
+
+// DesktopNumber is the number in the id Claude Desktop is shown a model by
+// (claudeLooking), and "" when it is shown the model's own id: the
+// Providers page says it beside the model, so a row of Desktop's menu can
+// be matched back to its provider (#2578)
+func TestDesktopNumber(t *testing.T) {
+	for _, c := range []struct {
+		e    provider.Entry
+		want func(id string) string
+	}{
+		// an effort Claude model: magpie-<n>.anthropic.claude-opus-5-5
+		{provider.Entry{ID: "a/claude-opus-5-5", Model: "claude-opus-5-5", Efforts: []string{"low"}}, aliasNumber},
+		// any other with levels: mythos-magpie-<n>
+		{provider.Entry{ID: "a/glm-5.3", Model: "glm-5.3", Efforts: []string{"low"}}, aliasNumber},
+		// no levels and no word Desktop keeps: anthropic/magpie-<n>
+		{provider.Entry{ID: "a/glm-5.3", Model: "glm-5.3"}, aliasNumber},
+	} {
+		if got := DesktopNumber(c.e); got == "" || got != c.want(c.e.ID) {
+			t.Errorf("%s: DesktopNumber = %q", c.e.ID, got)
+		}
+		if got := DesktopNumber(c.e); !strings.Contains(claudeLooking(c.e), got) {
+			t.Errorf("%s: %q is not in the id Desktop is shown (%s)", c.e.ID, got, claudeLooking(c.e))
+		}
+	}
+	// a Claude model without levels is shown by its own id, which carries
+	// no number
+	if got := DesktopNumber(provider.Entry{ID: "a/claude-opus-5-5", Model: "claude-opus-5-5"}); got != "" {
+		t.Errorf("a Claude model's own id: DesktopNumber = %q", got)
+	}
+}

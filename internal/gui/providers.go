@@ -54,6 +54,12 @@ type modelJSON struct {
 	Same       string   `json:"same,omitempty"`      // the model the user said it is the same as, for the groups magpie finds (#583)
 	Merge      string   `json:"merge,omitempty"`     // what those groups merge it by when the user says nothing
 	Kind       string   `json:"kind,omitempty"`      // what the user said it makes: image or video (#1399)
+	// Desktop is the number Claude Desktop brackets this model's menu row
+	// with when it folds rows of one name into one (#2578): the page says
+	// it on the model's row, so a row of that menu can be matched to its
+	// provider. "" when Desktop is shown the model's own id, and for a
+	// model it isn't served.
+	Desktop string `json:"desktop,omitempty"`
 	// what it costs, USD per million tokens (#819): the price the user set
 	// for it, and its list price, its vendor's else its maker's, before the
 	// provider's price rate
@@ -679,6 +685,12 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 	// was most of the Providers page's wait with many models (lml on
 	// Discord, Windows)
 	set := settings.Load()
+	// the models the gateway serves, by id: each says the number Claude
+	// Desktop brackets its menu row with (#2578)
+	desktop := map[string]provider.Entry{}
+	for _, e := range provider.Catalog() {
+		desktop[e.ID] = e
+	}
 	named := func(m catalog.Model, on bool) modelJSON {
 		images := m.Images || catalog.SeesImages(m.ID)
 		if m.ImageInput != nil {
@@ -712,6 +724,9 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 		j.Same = sames[p.ID+"/"+m.ID]
 		j.Kind = p.ModelKind(m.ID)
 		j.Merge = provider.MergeName(m.ID)
+		if e, ok := desktop[p.ID+"/"+m.ID]; ok {
+			j.Desktop = gateway.DesktopNumber(e)
+		}
 		if mp, ok := held.ModelPrices[p.ID+"/"+m.ID]; ok {
 			if pr, bad := mp.Price(); bad == "" {
 				j.Price = &pr

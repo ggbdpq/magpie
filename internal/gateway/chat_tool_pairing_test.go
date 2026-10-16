@@ -8,10 +8,19 @@ import (
 
 // chatTrace renders the message sequence of a Chat request built for an
 // upstream: roles with tool call ids, e.g.
-// "user assistant(A,B) tool(A) tool(B) user".
+// "user assistant(A,B) tool(A) tool(B) user". buildChatReq parameterizes
+// the model and host the next traces build against (the default is Kimi's).
+var traceModel, traceHost = "kimi-k3", "api.moonshot.cn"
+
+func buildChatReq(t *testing.T, r *Request, model, host string) *Request {
+	t.Helper()
+	traceModel, traceHost = model, host
+	return r
+}
+
 func chatTrace(t *testing.T, r *Request) (string, []map[string]any) {
 	t.Helper()
-	body := buildChat(r, "kimi-k3", "api.moonshot.cn", false)
+	body := buildChat(r, traceModel, traceHost, false)
 	var q struct {
 		Messages []map[string]any `json:"messages"`
 	}
@@ -272,19 +281,60 @@ func TestChatThinkingOnlyAssistantDroppedInsideExchange(t *testing.T) {
 	}
 }
 
-// Outside an exchange a thinking-only turn passes through, as on main:
-// dropping it would leave two user messages in a row, which some models'
-// chat templates refuse.
-func TestChatThinkingOnlyAssistantKeptOutsideExchange(t *testing.T) {
+// Outside an exchange a thinking-only turn is left out too (#2599): it has
+// no content and no calls, and DeepSeek, Kimi and the like refuse the
+// request over it ("content or tool_calls must be set") on every turn of
+// the conversation from the interruption on. The drop would leave two user
+// messages in a row, which some models' chat templates refuse, so the two
+// around it join into one, as toolAsUser's do.
+func TestChatThinkingOnlyAssistantLeftOutOutsideExchange(t *testing.T) {
 	r := &Request{Messages: []Message{
 		{Role: "user", Parts: []Part{{Kind: Text, Text: "hi"}}},
 		{Role: "assistant", Parts: []Part{{Kind: Thinking, Text: "hmm", Signature: "sig"}}},
 		{Role: "user", Parts: []Part{{Kind: Text, Text: "继续"}}},
 	}}
-	trace, _ := chatTrace(t, r)
-	want := "user assistant user"
+	trace, msgs := chatTrace(t, r)
+	want := "user"
 	if trace != want {
 		t.Fatalf("trace = %q, want %q", trace, want)
+	}
+	if c, _ := msgs[0]["content"].(string); c != "hi\n\n继续" {
+		t.Fatalf("joined content = %q", c)
+	}
+}
+
+// An empty assistant with no user message on one side of it is dropped
+// without anything joining: a turn of text keeps its place ahead of the
+// user's, and the exchange shape stays valid.
+func TestChatEmptyAssistantBetweenCallsAndUserDropped(t *testing.T) {
+	r := &Request{Messages: []Message{
+		{Role: "assistant", Parts: []Part{{Kind: Text, Text: "on it"}}},
+		{Role: "assistant", Parts: []Part{{Kind: Thinking, Text: "hmm", Signature: "sig"}}},
+		{Role: "user", Parts: []Part{{Kind: Text, Text: "go on"}}},
+	}}
+	trace, msgs := chatTrace(t, r)
+	want := "assistant user"
+	if trace != want {
+		t.Fatalf("trace = %q, want %q", trace, want)
+	}
+	if c, _ := msgs[0]["content"].(string); c != "on it" || !kimiValid(msgs) {
+		t.Fatalf("content = %q", c)
+	}
+}
+
+// A Resume's prefill turn is magpie's own ask to go on from: one whose
+// text the interruption cut to nothing keeps its prefix mark and its
+// reasoning, empty as it is — without it the upstream would answer from
+// scratch instead of going on.
+func TestChatResumeEmptyPrefillKept(t *testing.T) {
+	r := &Request{Resume: true, Messages: []Message{
+		{Role: "user", Parts: []Part{{Kind: Text, Text: "go on"}}},
+		{Role: "assistant", Parts: []Part{{Kind: Thinking, Text: "half"}}},
+	}}
+	_, msgs := chatTrace(t, buildChatReq(t, r, "deepseek-chat", "api.deepseek.com"))
+	last := msgs[len(msgs)-1]
+	if last["prefix"] != true || last["reasoning_content"] != "half" {
+		t.Fatalf("prefill = %v, want prefix and the reasoning kept", last)
 	}
 }
 

@@ -4017,6 +4017,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		}
 	case provider.Chat:
 		body = developerAsSystem(body)
+		body = emptyAssistantTurnsOut(body)
 		if mistral := p.Preset == "mistral" || p.Host() == "api.mistral.ai"; !mistral && (chatReplaysReasoning(buildHost(p), model) || chatReplaysReasoning(buildHost(p), upstream)) {
 			// a tool call the client kept no thinking for, which DeepSeek
 			// turns the whole request away for (#1462)
@@ -6023,6 +6024,100 @@ func developerAsSystem(body []byte) []byte {
 		return body
 	}
 	return out
+}
+
+// emptyAssistantTurnsOut takes assistant turns that say nothing out of a
+// relayed Chat request — no content, no tool_calls, `reasoning_content`
+// alone included (#2599): the agent cut its reply off before it said
+// anything, the turn stays in the agent's history, and DeepSeek, Kimi and
+// the like refuse the whole request over it on every later turn of the
+// conversation. The user messages around a dropped turn join into one, so
+// no two user messages stand in a row (some models' chat templates turn
+// those away). An assistant turn that answers a tool result stays — a
+// strict template wants the reply right behind its tool message.
+func emptyAssistantTurnsOut(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"assistant"`)) {
+		return body
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
+		return body
+	}
+	msgs, ok := m["messages"].([]any)
+	if !ok {
+		return body
+	}
+	out := make([]any, 0, len(msgs))
+	changed := false
+	dropped := false
+	for _, v := range msgs {
+		msg, ok := v.(map[string]any)
+		if !ok {
+			out = append(out, v)
+			dropped = false
+			continue
+		}
+		role, _ := msg["role"].(string)
+		if role != "assistant" {
+			// a user message after a dropped turn joins the user message
+			// before it, when both carry plain string content
+			if role == "user" && dropped && len(out) > 0 {
+				if prev, ok := out[len(out)-1].(map[string]any); ok {
+					if pr, _ := prev["role"].(string); pr == "user" {
+						a, aok := prev["content"].(string)
+						b, bok := msg["content"].(string)
+						if aok && bok {
+							prev["content"] = a + "\n\n" + b
+							changed = true
+							continue
+						}
+					}
+				}
+			}
+			out = append(out, v)
+			dropped = false
+			continue
+		}
+		if _, hasCalls := msg["tool_calls"]; hasCalls {
+			out = append(out, v)
+			dropped = false
+			continue
+		}
+		if s, ok := msg["content"].(string); ok && strings.TrimSpace(s) != "" {
+			out = append(out, v)
+			dropped = false
+			continue
+		}
+		if arr, ok := msg["content"].([]any); ok && len(arr) > 0 {
+			out = append(out, v)
+			dropped = false
+			continue
+		}
+		if n := len(out); n > 0 {
+			if prev, ok := out[n-1].(map[string]any); ok {
+				if pr, _ := prev["role"].(string); pr == "tool" {
+					// the turn answers this tool result; a strict template
+					// wants the reply right behind it — keep it
+					out = append(out, v)
+					dropped = false
+					continue
+				}
+			}
+		}
+		dropped = true
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	m["messages"] = out
+	out2, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out2
 }
 
 // sessionHeaders are where agents already name their conversation: OpenCode

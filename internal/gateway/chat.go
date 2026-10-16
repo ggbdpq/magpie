@@ -297,10 +297,15 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 			seen = append(seen, map[string]any{"type": "image_url", "image_url": map[string]any{"url": dataURL(im)}})
 		}
 	}
+	// dropJoin: the turn just built was left out as empty (#2599), so the
+	// user's next message joins the user message before it instead of
+	// standing alone or leaving two user messages in a row
+	dropJoin := false
 	showSeen := func() {
 		if len(seen) > 0 {
 			msgs = append(msgs, map[string]any{"role": "user", "content": seen})
 			seen = nil
+			dropJoin = false
 		}
 	}
 	turns := joinSplitCalls(r.Messages)
@@ -353,6 +358,19 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 			if len(calls) > 0 {
 				am["tool_calls"] = calls
 			}
+			// a turn the agent cut off before it said anything — thinking
+			// only, an empty text, nothing — is left out (#2599): DeepSeek,
+			// Kimi and the like refuse the whole request over an assistant
+			// message with neither content nor tool_calls, on every later
+			// turn of the conversation, and reasoning_content is not
+			// content. The user messages around it join into one, the way
+			// toolAsUser joins. A Resume's prefill turn is magpie's own ask
+			// to go on from and stays; so does a reply to a tool result.
+			if len(calls) == 0 && !afterTool && !(r.Resume && i == len(r.Messages)-1) && strings.TrimSpace(t) == "" {
+				dropJoin = true
+				continue
+			}
+			dropJoin = false
 			// a reply cut short and sent back to go on from (Resume) is marked
 			// with the upstream's own prefill mode — DeepSeek's prefix, Kimi's
 			// partial (continuation.go; an upstream without one is never asked
@@ -397,8 +415,20 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 				for _, c := range content {
 					b.WriteString(c["text"].(string))
 				}
+				// a user message after a turn left out as empty (#2599)
+				// joins the user message before it, so none of the cut
+				// turn remains and no two user messages stand in a row
+				if n := len(msgs); dropJoin && n > 0 {
+					if prev, ok := msgs[n-1]["content"].(string); ok && msgs[n-1]["role"] == "user" {
+						msgs[n-1]["content"] = prev + "\n\n" + b.String()
+						content, plain, dropJoin = nil, true, false
+						return
+					}
+				}
+				dropJoin = false
 				msgs = append(msgs, map[string]any{"role": "user", "content": b.String()})
 			} else {
+				dropJoin = false
 				msgs = append(msgs, map[string]any{"role": "user", "content": content})
 			}
 			content, plain = nil, true
@@ -442,7 +472,10 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 				seeLater(p)
 			}
 		}
-		msgs = append(msgs, tools...)
+		if len(tools) > 0 {
+			msgs = append(msgs, tools...)
+			dropJoin = false
+		}
 		afterTool = len(tools) > 0 && len(content) == 0 && len(seen) == 0
 		flush()
 	}

@@ -997,6 +997,95 @@ func TestModelsListReasoning(t *testing.T) {
 	}
 }
 
+// TestModelsListFlatReasoningLevels checks the list also says each model's
+// reasoning levels as a flat array of names (reasoning_levels), beside the
+// per-level objects (supported_reasoning_levels): clients of the Catwalk
+// schema (Crush and kin) read the flat array to know which reasoning
+// efforts a model takes, and one that names none has them stripped
+// (#2576). The objects stay for the readers magpie's list already has.
+func TestModelsListFlatReasoningLevels(t *testing.T) {
+	fresh(t)
+	if err := os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := `{"a":{"models":{
+		"sol":{"id":"sol","reasoning_options":[{"type":"effort","values":["low","medium","high","max"]}]},
+		"thinker":{"id":"thinker","reasoning_options":[{"type":"toggle"}]}}},
+		"b":{"models":{
+		"sol":{"id":"sol","reasoning_options":[{"type":"effort","values":["medium","high"]}]}}}}`
+	if err := os.WriteFile(catalog.CachePath(), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalog.Reset()
+	t.Cleanup(catalog.Reset)
+	for _, id := range []string{"a", "b"} {
+		if err := provider.Save(provider.Provider{ID: id, Name: id, Catalog: id, Key: "k", Chat: "http://127.0.0.1:1/v1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec := httptest.NewRecorder()
+	New().Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"a/sol": "low,medium,high,max", "b/sol": "medium,high", "group/auto-sol": "medium,high",
+	}
+	flatFound := map[string]bool{}
+	for _, m := range response.Data {
+		id, _ := m["id"].(string)
+		expected, ok := want[id]
+		if !ok {
+			continue
+		}
+		flatFound[id] = true
+		levels, ok := m["reasoning_levels"].([]any)
+		if !ok {
+			t.Errorf("%s: reasoning_levels %#v; want an array", id, m["reasoning_levels"])
+			continue
+		}
+		names := make([]string, 0, len(levels))
+		for _, level := range levels {
+			name, _ := level.(string)
+			names = append(names, name)
+		}
+		if got := strings.Join(names, ","); got != expected {
+			t.Errorf("%s: reasoning_levels %q; want %q", id, got, expected)
+		}
+		// the per-level objects stay, for the readers the list already has
+		objs, ok := m["supported_reasoning_levels"].([]any)
+		if !ok || len(objs) != len(levels) {
+			t.Errorf("%s: supported_reasoning_levels %#v; want %d objects beside the flat names", id, m["supported_reasoning_levels"], len(levels))
+		}
+	}
+	for id := range want {
+		if !flatFound[id] {
+			t.Errorf("%s: no reasoning_levels row checked", id)
+		}
+	}
+	// a toggle-only model reasons but has no levels: the array is there
+	// and empty, never null
+	for _, m := range response.Data {
+		if m["id"] != "a/thinker" {
+			continue
+		}
+		switch v := m["reasoning_levels"].(type) {
+		case []any:
+			if len(v) != 0 {
+				t.Errorf("a/thinker: reasoning_levels %v; want empty", v)
+			}
+		default:
+			t.Errorf("a/thinker: reasoning_levels %#v; want an empty array", m["reasoning_levels"])
+		}
+	}
+}
+
 func TestGeminiClientChatUpstream(t *testing.T) {
 	f := &fake{t: t, reply: sse(
 		`data: {"id":"c1","model":"m1","choices":[{"delta":{"role":"assistant","reasoning_content":"think"}}]}`,

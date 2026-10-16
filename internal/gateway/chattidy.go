@@ -369,7 +369,10 @@ const noReasoning = " "
 // api.deepseek.com on 2026-10-12, #1822). A message with reasoning_content
 // of its own keeps it, any other reply is left as it is (DeepSeek doesn't
 // ask for its thinking), and a body with no tool calls comes back byte for
-// byte.
+// byte. The thinking a turn kept in another spelling goes out as
+// reasoning_content alone, never beside it: an upstream that declares
+// reasoning_content an alias of reasoning reads the pair as a duplicate
+// field (#2607).
 func withReasoningOnToolTurns(body []byte) []byte {
 	afterTool := false
 	return editMessages(body, []string{"tool_calls"}, func(m map[string]json.RawMessage) bool {
@@ -396,6 +399,11 @@ func withReasoningOnToolTurns(body []byte) []byte {
 		if think == "" {
 			think = noReasoning
 		}
+		// the thinking now lives in reasoning_content; leaving beside it
+		// the spelling it came in as is a duplicate field to an upstream
+		// that declares reasoning_content an alias of reasoning (#2607)
+		delete(m, "reasoning")
+		delete(m, "reasoning_details")
 		m["reasoning_content"], _ = marshalPlain(think)
 		return true
 	})
@@ -407,7 +415,9 @@ func withReasoningOnToolTurns(body []byte) []byte {
 // shape it comes, OpenRouter's reasoning.text with a stream's index in it
 // (as another vendor's turn has it) or without ("the reasoning_details at
 // position 2 entry 0 must not contain streaming index", "… has an invalid
-// type", #1765), and takes reasoning_content.
+// type", #1765), and takes reasoning_content. A thinking the message kept
+// in reasoning beside reasoning_details goes out as reasoning_content
+// alone (#2607).
 func reasoningDetailsAsContent(body []byte) []byte {
 	return editMessages(body, []string{"reasoning_details"}, func(m map[string]json.RawMessage) bool {
 		if _, ok := m["reasoning_details"]; !ok {
@@ -417,6 +427,8 @@ func reasoningDetailsAsContent(body []byte) []byte {
 		if decodeJSON(m["reasoning_content"], &own) != nil || own == "" {
 			if think := reasoningText(m); think != "" {
 				m["reasoning_content"], _ = marshalPlain(think)
+				// one spelling goes out, not two (#2607)
+				delete(m, "reasoning")
 			}
 		}
 		delete(m, "reasoning_details")

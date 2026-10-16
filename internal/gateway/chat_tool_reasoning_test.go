@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -84,7 +85,7 @@ func TestChatToolTurnWithoutReasoningRelayed(t *testing.T) {
 		sameJSON(t, ms[1], `{"role":"assistant","content":"Hello!"}`)
 		sameJSON(t, ms[3], `{"role":"assistant","content":null,"tool_calls":[`+timeCall+`],"reasoning_content":" "}`)
 		sameJSON(t, ms[5], `{"role":"assistant","content":null,"tool_calls":[{"id":"call_2","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning_content":"Once more."}`)
-		sameJSON(t, ms[7], `{"role":"assistant","content":null,"tool_calls":[{"id":"call_3","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning":"OpenRouter's field.","reasoning_content":"OpenRouter's field."}`)
+		sameJSON(t, ms[7], `{"role":"assistant","content":null,"tool_calls":[{"id":"call_3","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning_content":"OpenRouter's field."}`)
 		sameJSON(t, ms[4], `{"role":"tool","tool_call_id":"call_1","content":"12:00"}`)
 	}
 
@@ -97,6 +98,50 @@ func TestChatToolTurnWithoutReasoningRelayed(t *testing.T) {
 	if strings.Contains(string(f.got), `"reasoning_content":" "`) || strings.Count(string(f.got), "reasoning_content") != 1 {
 		t.Errorf("glm was given reasoning: %s", f.got)
 	}
+}
+
+// aliasRefuseDuplicate answers as the vLLM frontend of #2607 does:
+// reasoning_content is declared a serde alias of reasoning, so an
+// assistant message carrying both names reads as a duplicate field and the
+// whole request is turned away.
+func aliasRefuseDuplicate(body []byte) (int, string) {
+	var q struct {
+		Messages []map[string]json.RawMessage `json:"messages"`
+	}
+	json.Unmarshal(body, &q)
+	for i, m := range q.Messages {
+		_, hasReasoning := m["reasoning"]
+		_, hasContent := m["reasoning_content"]
+		if hasReasoning && hasContent {
+			return 400, fmt.Sprintf(`{"error":{"message":"Failed to deserialize the JSON body into the target type: messages[%d]: duplicate field `+"`reasoning`"+`","type":"invalid_request_error"}}`, i)
+		}
+	}
+	return 0, ""
+}
+
+const secondTimeCall = `{"id":"call_2","type":"function","function":{"name":"get_time","arguments":"{}"}}`
+
+// A turn's thinking the client kept in `reasoning` or `reasoning_details`
+// goes to an upstream that wants reasoning_content as reasoning_content
+// alone (#2607): writing it without dropping the spelling it came in as
+// sends both, and an upstream that declares reasoning_content an alias of
+// reasoning reads the pair as a duplicate field and turns the request away.
+func TestChatToolTurnReplayReasoningAlone(t *testing.T) {
+	f := &fake{t: t, reply: chatWholeOK, ctype: "application/json", refuse: aliasRefuseDuplicate}
+	up := setup(t, provider.Chat, f)
+	chatProvider(t, up.URL, provider.Provider{ID: "vllm", Models: []string{"deepseek-v4.1-flash"}})
+	code, body := postTo(t, New(), "/v1/chat/completions", `{"model":"vllm/deepseek-v4.1-flash","stream":false,"messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":null,"tool_calls":[`+timeCall+`],"reasoning":"A"},
+		{"role":"tool","tool_call_id":"call_1","content":"12:00"},
+		{"role":"assistant","content":null,"tool_calls":[`+secondTimeCall+`],"reasoning_details":[{"type":"reasoning.text","text":"B","format":"unknown","index":0}]},
+		{"role":"tool","tool_call_id":"call_2","content":"12:01"}]}`)
+	if code != 200 || f.calls != 1 {
+		t.Fatalf("%d after %d calls, sent %s: %s", code, f.calls, f.got, body)
+	}
+	ms := sentMessages(t, f.got)
+	sameJSON(t, ms[1], `{"role":"assistant","content":null,"tool_calls":[`+timeCall+`],"reasoning_content":"A"}`)
+	sameJSON(t, ms[3], `{"role":"assistant","content":null,"tool_calls":[`+secondTimeCall+`],"reasoning_content":"B"}`)
 }
 
 // Mistral, which turns reasoning_content away (#494), is given none for a

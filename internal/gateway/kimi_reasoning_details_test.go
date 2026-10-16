@@ -51,16 +51,21 @@ func TestKimiGetsReasoningDetailsAsContent(t *testing.T) {
         {"role":"assistant","content":"91 = 7 x 13.","reasoning_details":[{"type":"reasoning.text","text":"Check divisibility by 7: 7*13=91.","format":"unknown","index":0}]},
         {"role":"user","content":"And 93?"},
         {"role":"assistant","content":"93 = 3 x 31.","reasoning_content":"Digits sum to 12.","reasoning_details":[{"type":"reasoning.text","text":"Digits sum to 12.","format":"unknown","index":0}]},
-        {"role":"user","content":"And 97? One word."}]}`)
+        {"role":"user","content":"And 97? One word."},
+        {"role":"assistant","content":"97 stays prime.","reasoning":"Odd and no factors below 10.","reasoning_details":[{"type":"reasoning.text","text":"Odd and no factors below 10.","format":"unknown","index":0}]},
+        {"role":"user","content":"And 99?"}]}`)
 	if code != 200 || f.calls != 1 {
 		t.Fatalf("%d after %d calls, sent %s: %s", code, f.calls, f.got, body)
 	}
 	ms := sentMessages(t, f.got)
-	if string(ms[0]) != `{"role":"user","content":"Is 91 prime?"}` || string(ms[4]) != `{"role":"user","content":"And 97? One word."}` {
+	if string(ms[0]) != `{"role":"user","content":"Is 91 prime?"}` || string(ms[4]) != `{"role":"user","content":"And 97? One word."}` || string(ms[6]) != `{"role":"user","content":"And 99?"}` {
 		t.Errorf("other messages changed: %s", f.got)
 	}
 	sameJSON(t, ms[1], `{"role":"assistant","content":"91 = 7 x 13.","reasoning_content":"Check divisibility by 7: 7*13=91."}`)
 	sameJSON(t, ms[3], `{"role":"assistant","content":"93 = 3 x 31.","reasoning_content":"Digits sum to 12."}`)
+	// OpenRouter replays `reasoning` beside `reasoning_details`; Kimi is
+	// given the one spelling (#2607)
+	sameJSON(t, ms[5], `{"role":"assistant","content":"97 stays prime.","reasoning_content":"Odd and no factors below 10."}`)
 }
 
 // An upstream that isn't known to be Kimi (a relay in front of it) and

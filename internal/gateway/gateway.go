@@ -4783,11 +4783,46 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	// client reads one event it can't parse where the protocol's error was
 	// meant (TestPassthroughStreamCutMidLine)
 	atLine := true
+	// pending is the line the upstream has begun but not ended: a stream
+	// read stops there on a failure, and what of it went out already is
+	// data the client's SSE parser dies on — a half event's JSON doesn't
+	// parse — so the error event appended after it is never reached
+	// (#2580: a stream Z.ai reset mid-line reached pi as "malformed
+	// server-sent event JSON"). Only lines that ended go out as they
+	// come; the half line waits for its rest, unheld puts it out when
+	// the reply ends whole, and dropHalf throws it away when the failure
+	// is appended, for no client can read it and the error is what there
+	// is left to say
+	var pending []byte
 	write := func(b []byte) (int, error) {
-		if len(b) > 0 {
-			atLine = b[len(b)-1] == '\n'
+		if !sse {
+			if len(b) > 0 {
+				atLine = b[len(b)-1] == '\n'
+			}
+			return w.Write(b)
 		}
-		return w.Write(b)
+		pending = append(pending, b...)
+		i := bytes.LastIndexByte(pending, '\n')
+		var err error
+		if i >= 0 {
+			_, err = w.Write(pending[:i+1])
+			pending = pending[i+1:]
+			atLine = true
+		}
+		return len(b), err
+	}
+	// unheld puts out the half line a whole reply ended inside: it goes
+	// as it came, as a stream the upstream itself ended short
+	unheld := func() {
+		if len(pending) > 0 {
+			w.Write(pending)
+			pending = nil
+		}
+	}
+	// dropHalf throws the line still pending away
+	dropHalf := func() {
+		pending = pending[:0]
+		atLine = true
 	}
 	// apart is what goes before an event magpie appends: a blank line,
 	// after the line still pending if the upstream's last write stopped
@@ -4915,7 +4950,10 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	unfinished := proto == provider.Chat && sniff.failed == "" && sniff.u.Stop == "" && saysItsEnd(p, proto, upstream)
 	if fin := sniff.tail.finish(); sse && unfinished && fin != "" && (rerr == nil || rerr == io.EOF) && r.Context().Err() == nil {
 		// only the finish_reason was lost, after the generation was done
-		// (chatTail): the client gets it, and the reply is whole
+		// (chatTail): the client gets it, and the reply is whole. The
+		// event the upstream began and never ended has no rest coming:
+		// dropped, for it is nothing a client can parse
+		dropHalf()
 		w.Write(append(apart(), "data: "+string(finishChunk(fin))+"\n\n"...))
 		if !sniff.ended {
 			w.Write([]byte("data: [DONE]\n\n"))
@@ -4941,15 +4979,20 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			failed = p.Name + ": " + errEndedShort.Error()
 		}
 		if failed != "" {
-			// what is appended begins after a blank line: the event still
-			// pending is left to stand, and the failure is read as an
-			// event of its own (TestPassthroughStreamEndsOnLineEnd)
+			// what is appended begins after a blank line, as an event of
+			// its own (TestPassthroughStreamEndsOnLineEnd); the half
+			// event the upstream left is dropped (#2580): a client
+			// reading it dies on its JSON before the error is reached
+			dropHalf()
 			w.Write(append(apart(), streamFailure(proto, failed)...))
 			if f != nil {
 				f.Flush()
 			}
 			return res.StatusCode, failed, true
 		}
+	}
+	if sse {
+		unheld()
 	}
 	return res.StatusCode, sniff.failed, true
 }

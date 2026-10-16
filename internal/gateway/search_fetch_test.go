@@ -3,11 +3,15 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/yetone/magpie/internal/settings"
 )
 
 func fetchCall(url string, more string) string {
@@ -134,5 +138,49 @@ func TestWebFetchOnlyPublic(t *testing.T) {
 	}
 	if hit {
 		t.Fatal("a private address was reached")
+	}
+}
+
+// Under Clash TUN's fake-ip and Surge's enhanced mode the resolver answers
+// every name with an address in 198.18.0.0/15, RFC 2544's benchmarking
+// range, and the tunnel carries the connection to the host the name stands
+// for (#2593, as the provider icons already allow, #252). Such a name is
+// fetched, not refused. No tunnel answers in the test, so a local server
+// stands in for the tunnel's proxy: it is sent the fake address the name
+// was pinned to, never the name.
+func TestWebFetchReadsANameAtAFakeIPAddress(t *testing.T) {
+	fresh(t)
+	var mu sync.Mutex
+	asked := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		asked = r.URL.String() + " Host=" + r.Host
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/plain")
+		io.WriteString(w, "the real page")
+	}))
+	t.Cleanup(srv.Close)
+	st := settings.Load()
+	st.Proxy = srv.URL
+	if err := settings.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	was := lookupIP
+	lookupIP = func(_ context.Context, host string) ([]netip.Addr, error) {
+		if host == "example.test" {
+			return []netip.Addr{netip.MustParseAddr("198.18.5.1")}, nil
+		}
+		return was(context.Background(), host)
+	}
+	t.Cleanup(func() { lookupIP = was })
+	h := lanGuard(New().Handler())
+	got, isErr := fetchText_(t, h, fetchCall("http://example.test/page", ""))
+	if isErr || !strings.Contains(got, "the real page") {
+		t.Fatalf("a name at a fake-ip address: %v %q", isErr, got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if asked != "http://198.18.5.1:80/page Host=198.18.5.1:80" {
+		t.Fatalf("the tunnel was asked %q", asked)
 	}
 }

@@ -25,9 +25,11 @@ import (
 // page web_fetch reads. Never from this computer (loopback), the user's
 // own network (RFC 1918, fc00::/7), link-local addresses (169.254/16 with
 // the cloud metadata service, fe80::/10), CGNAT (100.64/10, Tailscale's),
-// or the other special ranges below — through any redirect too. Otherwise
-// whoever can send magpie a request could have it read a service only
-// this computer reaches and get its answer back as the "image".
+// or the other special ranges below — through any redirect too. One range
+// is exempt, 198.18.0.0/15, where a TUN's fake-ip answers every name (see
+// specialNets below). Otherwise whoever can send magpie a request could
+// have it read a service only this computer reaches and get its answer
+// back as the "image".
 //
 // Where the request came from changes nothing: one that reaches magpie
 // on loopback may well be a reverse proxy's or a relay's on the same
@@ -146,6 +148,14 @@ var lookupIP = func(ctx context.Context, host string) ([]netip.Addr, error) {
 
 // specialNets are ranges no caller's image is fetched from beyond those
 // net/netip names (loopback, private, link-local, multicast, unspecified).
+//
+// 198.18.0.0/15, RFC 2544's benchmarking range, is not one of them: Clash's
+// TUN mode with fake-ip and Surge's enhanced mode answer every name with an
+// address there and carry the connection through the tunnel to the real
+// host (#2593, as the provider icons already allow, #252). No machine on
+// the user's network sits in that range, so a fetch aimed at it reaches the
+// internet host the name stands for where a tunnel answers, and nowhere at
+// all where none does.
 var specialNets = func() []netip.Prefix {
 	var out []netip.Prefix
 	for _, s := range []string{
@@ -153,7 +163,6 @@ var specialNets = func() []netip.Prefix {
 		"100.64.0.0/10",   // CGNAT, Tailscale
 		"192.0.0.0/24",    // IETF protocol assignments
 		"192.0.2.0/24",    // documentation
-		"198.18.0.0/15",   // benchmarking
 		"198.51.100.0/24", // documentation
 		"203.0.113.0/24",  // documentation
 		"240.0.0.0/4",     // reserved, broadcast

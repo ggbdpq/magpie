@@ -36,6 +36,17 @@ import (
 
 const fallbackCooldown = time.Minute
 
+// cappedRecheck is the longest an agent is told to wait when magpie itself
+// refuses a request because every account serving the model is held at its
+// usage cap or set not to spend its credits (cappedError, #2526). The wait
+// those holds name is a window's renewal, hours off, and an agent that
+// sleeps to it as told (Codex's responses_retry) sits a turn out for that
+// long while another account comes back under it — magpie reads what each
+// account has left again about every minute, so asked again sooner, it
+// finds one that did. A refusal of the vendor's own goes back with the
+// vendor's Retry-After as it came.
+const cappedRecheck = 30 * time.Second
+
 type candidate struct {
 	p     provider.Provider
 	model string

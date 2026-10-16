@@ -95,6 +95,11 @@ type Model struct {
 	// kind: an embedding's {"text": false} gives no Outputs and is still
 	// said (#3279), where a model said nothing of gives none and isn't
 	OutputsSaid bool `json:"outputsSaid,omitempty"`
+	// Temperature is whether the model takes temperature and top_p, where
+	// something said so: the config model's temperature (Factory's OpenAI
+	// route, plugins#154), models.dev's own, or the models hook's. Unsaid
+	// is nil, which keeps what the client sent.
+	Temperature *bool `json:"temperature,omitempty"`
 	// Fast is set by the plugin on a model it runs in its vendor's fast
 	// mode when the request says service_tier "priority" (m.fast: Cursor's
 	// plugin from 0.2.2, for a model Cursor has a fast variant of)

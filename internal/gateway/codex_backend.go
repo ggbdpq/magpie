@@ -903,9 +903,13 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		// models was picked, which goes out with Codex's own sign-in
 		msg, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 		writeError(w, provider.Responses, res.StatusCode, codexKeyRefused(msg))
-		s.record(Call{Time: start, From: provider.Responses, To: provider.Responses, Model: modelOf(body),
+		refused := Call{Time: start, From: provider.Responses, To: provider.Responses, Model: modelOf(body),
 			Provider: "openai", Agent: agentOf(r), Status: res.StatusCode,
-			Millis: time.Since(start).Milliseconds(), Error: res.Status})
+			Millis: time.Since(start).Milliseconds(), Error: res.Status}
+		if tr != nil {
+			refused.Route = tr.ID
+		}
+		s.record(refused)
 		end(res.StatusCode, res.Status, 0, 0)
 		return
 	}
@@ -917,7 +921,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 			// "Unknown error" alone (#409): said where the turn went
 			said := codexFailedEmpty(modelOf(body), res.Status)
 			writeError(w, provider.Responses, res.StatusCode, said)
-			s.record(Call{Time: start, From: provider.Responses, To: provider.Responses, Model: modelOf(body),
+			s.record(Call{Route: tr.ID, Time: start, From: provider.Responses, To: provider.Responses, Model: modelOf(body),
 				Provider: "openai", Agent: agentOf(r), Kind: callKind(r.Header), Status: res.StatusCode,
 				Millis: time.Since(start).Milliseconds(), Error: said})
 			end(res.StatusCode, said, 0, 0)

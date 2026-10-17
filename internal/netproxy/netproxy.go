@@ -40,14 +40,24 @@ func Func(req *http.Request) (*url.URL, error) {
 	if err := Held(req.Context()); err != nil {
 		return nil, err
 	}
-	if loopback(req.URL.Hostname()) {
+	return Resolve(choiceOf(req.Context()), req.URL)
+}
+
+// Resolve is the proxy a request to u goes through when it is made on a
+// provider whose choice is choice (With): nil for direct. It is the same
+// resolution Func makes — loopback never proxied, the provider's own
+// choice taken as named, the global one gone around for a host on the
+// user's own network — for a caller that holds the choice and the URL
+// rather than a request (#2682).
+func Resolve(choice string, u *url.URL) (*url.URL, error) {
+	if loopback(u.Hostname()) {
 		return nil, nil
 	}
-	if c := choiceOf(req.Context()); c != "" {
-		return forChoice(c)
+	if choice != "" {
+		return forChoice(choice)
 	}
-	p, err := For(req.URL)
-	if p != nil && onLAN(req.URL.Hostname()) {
+	p, err := For(u)
+	if p != nil && onLAN(u.Hostname()) {
 		return nil, nil
 	}
 	return p, err
@@ -180,10 +190,7 @@ func (d *dispatch) transport(r route) *http.Transport {
 			if err := Held(req.Context()); err != nil {
 				return nil, err
 			}
-			if loopback(req.URL.Hostname()) {
-				return nil, nil
-			}
-			return forChoice(c)
+			return Resolve(c, req.URL)
 		}
 	}
 	if r.h1 {

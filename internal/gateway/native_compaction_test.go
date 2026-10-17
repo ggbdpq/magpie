@@ -539,3 +539,63 @@ func TestNativeCompactionWriterGoneSaysWhy(t *testing.T) {
 		})
 	}
 }
+
+// A trigger Codex asks of a provider set to compact natively goes to the
+// one key that can be asked it on the Responses API even when the vendor's
+// lists hold the model to another key — one that can't be asked it there.
+// Before, the request was refused saying none of the keys that serve the
+// model can be asked it on Responses, though magpie had kept the trigger
+// because the provider (whose setting is what kept it) carries it: the
+// same "on, but told it can't go there" #2642 fixed for a compaction's
+// writer, for a compaction's carrier. A key whose own list lacks the model
+// is the last resort tried when none that lists it can (perKeyBarred), as
+// the writer whose list lacks the model is (checkpointReaders).
+func TestNativeCompactionTriggerThroughAKeyWhoseListLacksTheModel(t *testing.T) {
+	noRests()
+	t.Cleanup(noRests)
+	f := &fake{t: t, reply: nativeSealedReply("gAAAAB-sealed-by-resp")}
+	up := httptest.NewServer(f)
+	t.Cleanup(up.Close)
+	// the first key is set to chat: it serves the model, but not on Responses
+	p := provider.Provider{ID: "fake", Name: "Fake", Key: "kchat", KeyProtocol: provider.Chat, Models: []string{"m1"}}
+	p.Chat = up.URL + "/v1"
+	p.Responses = up.URL + "/v1"
+	p.Keys = []provider.KeyAccount{{Key: "kresp"}}
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	// the vendor lists m1 to the chat key alone, and another model to the
+	// responses key, so the responses key is left out of m1's candidates
+	// (perKeyBarred)
+	if err := catalog.SaveLive("fake", up.URL+"/v1", []catalog.Model{
+		{ID: "m1", Keys: []string{provider.KeyID("kchat")}},
+		{ID: "m2", Keys: []string{provider.KeyID("kresp")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	chatgpt(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(400) })
+	nativeOn(t, "fake")
+	srv := New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(strings.Replace(compactTurn, "%s", "fake/m1", 1)))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("chatgpt-account-id", "acct-1")
+	srv.Handler().ServeHTTP(rec, req)
+	code, body := rec.Code, rec.Body.String()
+	if code != 200 || f.calls == 0 || !strings.Contains(string(f.got), `{"type":"compaction_trigger"}`) {
+		t.Fatalf("%d, the relay asked %d times: %s", code, f.calls, body)
+	}
+	if !strings.Contains(body, `"encrypted_content":"gAAAAB-sealed-by-resp"`) || strings.Contains(body, magpieCompaction) {
+		t.Errorf("Codex got %s", body)
+	}
+	if strings.Contains(f.path, "chat/completions") {
+		t.Errorf("the chat key was asked, at %s", f.path)
+	}
+	// asked, its row leaves the routing page's left: not both attempted and
+	// unlisted, skipped
+	for _, w := range lastRoute(srv).Left {
+		if strings.Contains(w.ID, provider.KeyID("kresp")) {
+			t.Errorf("the responses key, tried, still left out: %+v", w)
+		}
+	}
+}

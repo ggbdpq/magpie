@@ -337,9 +337,39 @@ func checkpointHeld(cp *checkpointWriter, held []Weighed, pl planned) []Weighed 
 }
 
 // compactionCarriers keeps of cands those that can be asked Codex's own
-// compaction.
+// compaction. When none that lists the model can, one whose own list
+// lacks it (planned.unlisted) is kept too: it is tried as the last resort
+// a key whose list lacks the model is, and as the writer whose list lacks
+// it is (checkpointReaders) — nativeCompactionFor, the setting that kept
+// the trigger, judged the provider carries it.
 func (s *Server) compactionCarriers(cands []candidate, pl planned) (_ []candidate, _ planned, left bool) {
-	return keepCandidates(cands, pl, func(c candidate) bool { return s.carriesCompaction(c.p, c.model) })
+	kept, pl, ok := keepCandidates(cands, pl, func(c candidate) bool { return s.carriesCompaction(c.p, c.model) })
+	if ok {
+		return kept, pl, true
+	}
+	var found []candidate
+	var ws []Weighed
+	for i, c := range pl.unlisted {
+		if !s.carriesCompaction(c.p, c.model) {
+			continue
+		}
+		found = append(found, c)
+		w := pl.unlistedW[i]
+		w.Unlisted = false // it is asked, as the conversation's only carrier
+		ws = append(ws, w)
+	}
+	if len(found) == 0 {
+		return nil, pl, false
+	}
+	// the rows it goes to order with: they leave left, or the Routing page
+	// would have it both tried and unlisted, skipped
+	asked := make(map[string]bool, len(ws))
+	for _, w := range ws {
+		asked[w.ID] = true
+	}
+	pl.left = slices.DeleteFunc(pl.left, func(w Weighed) bool { return asked[w.ID] })
+	pl.order = append(pl.order, ws...)
+	return found, pl, true
 }
 
 func keepCandidates(cands []candidate, pl planned, keep func(candidate) bool) ([]candidate, planned, bool) {

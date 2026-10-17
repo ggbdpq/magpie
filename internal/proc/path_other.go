@@ -161,7 +161,7 @@ func userDirs(everyNode bool) []string {
 			fnm = append([]string{d}, fnm...)
 		}
 		for _, d := range slices.Compact(fnm) {
-			known = append(known, fnmBins(d)...)
+			known = append(known, fnmBins(d, filepath.Join("installation", "bin"), "bin")...)
 		}
 	}
 	known = append(known, SystemDirs("/opt/homebrew/bin", "/usr/local/bin")...)

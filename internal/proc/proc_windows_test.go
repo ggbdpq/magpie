@@ -117,3 +117,52 @@ func TestEndProbesWindows(t *testing.T) {
 		t.Fatal("the probe went on after EndProbes")
 	}
 }
+
+// fnm's Node a terminal reaches through its PATH: %APPDATA%\fnm's versions
+// (npx.cmd sits in the installation itself), highest first, with FNM_DIR's
+// folder ahead of those when the profile set it (#2685).
+func TestUserBinDirsFnm(t *testing.T) {
+	roaming := filepath.Join(t.TempDir(), "AppData", "Roaming")
+	t.Setenv("APPDATA", roaming)
+	t.Setenv("FNM_DIR", "")
+	t.Setenv("PATH", `C:\Windows\not-a-folder`)
+	install := func(fnm, v string) string {
+		d := filepath.Join(fnm, "node-versions", v, "installation")
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "npx.cmd"), []byte("@echo off\r\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	fnm := filepath.Join(roaming, "fnm")
+	install(fnm, "v9.11.2")
+	v22 := install(fnm, "v22.12.0")
+	var got []string
+	for _, d := range UserBinDirs() {
+		if strings.HasPrefix(d, fnm) {
+			got = append(got, d)
+		}
+	}
+	want := []string{v22, filepath.Join(fnm, "node-versions", "v9.11.2", "installation")}
+	if !slices.Equal(got, want) {
+		t.Fatalf("fnm's folders %q, want %q", got, want)
+	}
+	if p, want := FindTool("npx"), filepath.Join(v22, "npx.cmd"); p != want {
+		t.Fatalf("found %q, want %q", p, want)
+	}
+	moved := filepath.Join(t.TempDir(), "fnm")
+	movedV20 := install(moved, "v20.18.0")
+	t.Setenv("FNM_DIR", moved)
+	got = nil
+	for _, d := range UserBinDirs() {
+		if strings.HasPrefix(d, fnm) || strings.HasPrefix(d, moved) {
+			got = append(got, d)
+		}
+	}
+	want = []string{movedV20, v22, filepath.Join(fnm, "node-versions", "v9.11.2", "installation")}
+	if !slices.Equal(got, want) {
+		t.Fatalf("with FNM_DIR: %q, want %q", got, want)
+	}
+}

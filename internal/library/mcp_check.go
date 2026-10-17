@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -430,7 +431,18 @@ func checkStdio(ctx context.Context, s *Server) ServerHealth {
 	if len(unset) > 0 {
 		return failed("novar", strings.Join(unset, ", "))
 	}
-	cmd := proc.Command(s.Command, s.Args...)
+	// a bare name, as the agents look their own CLIs up: the PATH a magpie
+	// started from a shortcut carries doesn't reach a version manager's
+	// Node, and a server a terminal runs through fnm or nvm died here as
+	// "notfound" (#2685). A path — absolute or with a separator — starts as
+	// it is, resolved where the command runs (home), not where magpie does.
+	name := s.Command
+	if name == filepath.Base(name) {
+		if p := proc.FindTool(name); p != "" {
+			name = p
+		}
+	}
+	cmd := proc.Command(name, s.Args...)
 	// Agents start MCP servers from a project or home directory. A magpie
 	// launched from a shortcut (Windows Start menu) often has C:\Windows\system32
 	// as its own cwd, which is not writable; inherit that and a server that

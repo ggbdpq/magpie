@@ -3,6 +3,7 @@ package proc
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"golang.org/x/sys/windows/registry"
@@ -16,7 +17,8 @@ func UserPath() {}
 
 // UserBinDirs are the folders a user's command-line tools are installed in
 // that exist here — npm's global one, bun's, volta's, pnpm's, mise's
-// shims, the standalone installers' — for finding one PATH doesn't reach.
+// shims, fnm's Node, the standalone installers' — for finding one PATH
+// doesn't reach.
 func UserBinDirs() []string {
 	home, _ := os.UserHomeDir()
 	// mise's data folder: MISE_DATA_DIR, else XDG_DATA_HOME's mise (which
@@ -35,6 +37,17 @@ func UserBinDirs() []string {
 		filepath.Join(appdir.Getenv("LOCALAPPDATA"), "Volta", "bin"),
 		filepath.Join(appdir.Getenv("LOCALAPPDATA"), "pnpm"),
 		filepath.Join(mise, "shims"),
+	}
+	// fnm's Node, which a terminal reaches but the PATH a started magpie
+	// carries doesn't: FNM_DIR names the folder when the profile set it,
+	// else %APPDATA%\fnm, whose aliases/default and each version's
+	// installation hold npx.cmd directly (#2685)
+	fnm := []string{filepath.Join(appdir.Getenv("APPDATA"), "fnm")}
+	if d := os.Getenv("FNM_DIR"); filepath.IsAbs(d) {
+		fnm = append([]string{d}, fnm...)
+	}
+	for _, d := range slices.Compact(fnm) {
+		known = append(known, fnmBins(d, "installation", "")...)
 	}
 	var have []string
 	for _, d := range known {

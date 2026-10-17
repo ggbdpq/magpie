@@ -274,6 +274,53 @@ func mcpHandler(t *testing.T, sse bool, seen *http.Header) http.HandlerFunc {
 	}
 }
 
+// A bare command only a version manager has — npx from fnm's Node, which a
+// terminal reaches but the PATH a started magpie carries doesn't — is found
+// and started all the same, the way the agents find their own CLIs there
+// (#2685: the Library's check failed such a server with 找不到 npx).
+func TestCheckStdioVersionManagerNode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("FNM_DIR", "")
+	if runtime.GOOS == "windows" {
+		t.Setenv("PATH", `C:\Windows\system32`)
+	} else {
+		t.Setenv("PATH", "/usr/bin:/bin")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(home, ".local", "share", "fnm", "node-versions", "v22.12.0", "installation", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	name := "npx"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	b, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, name), b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initFile := filepath.Join(t.TempDir(), "init")
+	h := CheckServer(context.Background(), &Server{
+		Name: "fake", Transport: "stdio", Command: "npx",
+		Args: []string{"-test.run=^TestFakeMCPServer$"},
+		Env:  map[string]string{fakeMode: "ok", "MAGPIE_FAKE_MCP_INIT": initFile},
+	})
+	if h.State != "ok" || h.Tools != 3 {
+		t.Fatalf("got %+v, want ok with 3 tools: the server a terminal runs through fnm must start", h)
+	}
+	if b, _ := os.ReadFile(initFile); string(b) != "yes" {
+		t.Error("notifications/initialized wasn't sent before tools/list")
+	}
+}
+
 func TestCheckHTTP(t *testing.T) {
 	for _, sse := range []bool{false, true} {
 		t.Run(fmt.Sprintf("ok sse=%v", sse), func(t *testing.T) {

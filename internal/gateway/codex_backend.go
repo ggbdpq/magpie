@@ -171,6 +171,21 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 				writeError(w, provider.Responses, 403, compactHeldError(who, model))
 				return
 			}
+			// a seal only its writer reads (#1099, #2271): a compact
+			// carrying one magpie recorded the writer of is judged here —
+			// the writer on in magpie answers it signed as the writer, a
+			// gone writer is refused with the reason — not relayed to be
+			// refused there (#2727)
+			if writer, gone, judged := sealedCompact(r, model, body); judged {
+				if gone != "" {
+					writeError(w, provider.Responses, 400, gone)
+					return
+				}
+				if writer != nil {
+					s.codexUpstreamOn(w, r, rest, body, writer)
+					return
+				}
+			}
 			if on != nil {
 				s.codexUpstreamOn(w, r, rest, body, on)
 				return
@@ -714,6 +729,68 @@ func codexSealedFor(r *http.Request, model string, body []byte) (string, bool) {
 		return "", false
 	}
 	return id, true
+}
+
+// sealedCompact judges a legacy compact whose input carries a seal magpie
+// recorded the writer of (#2727): the writer on in magpie answers it,
+// signed as the writer — a seal only its writer reads (#1099, #2271), and
+// relayed as it came the compact reaches the sign-in, which another
+// account's seal refuses, its reason unread. A writer gone (signed out,
+// lapsed, paused, switched off, kept from the model) is refused here with
+// the same words the same request on /responses gets (checkpointError,
+// #2642). The sign-in's pause (compactOn) changes the signature, not the
+// judgment. judged is false for what goes as it came: a seal a magpie
+// key's candidate wrote, a request signing with its own
+// chatgpt-account-id (a Codex on WSL or another CODEX_HOME — codexServed's
+// caution), a provider or sign-in state magpie cannot read, and the
+// sign-in's own seal while the sign-in can still be asked (the backend
+// takes its own).
+func sealedCompact(r *http.Request, model string, body []byte) (writer *provider.Provider, gone string, judged bool) {
+	cp, ok := checkpointOf(body)
+	if !ok || strings.Contains(cp.Who, "#") {
+		return nil, "", false
+	}
+	if acct := r.Header.Get("chatgpt-account-id"); acct != "" && acct != provider.CodexSignedInAccount() {
+		return nil, "", false
+	}
+	p, err := provider.Find(cp.Provider)
+	if err != nil || p.Account == nil || p.Account.User == "" {
+		return nil, "", false
+	}
+	if len(provider.Logins(func() string {
+		if p.Account.Agent != "" {
+			return p.Account.Agent
+		}
+		return cp.Provider
+	}())) == 0 {
+		// the accounts aren't readable here (discovery off): not judged
+		return nil, "", false
+	}
+	// whether the writer can be asked is checkpointGone's walk: for a
+	// writer gone it answers with the reason, for one on and serving the
+	// seal's model its answer is checkpointNotRouted — its own words for a
+	// healthy writer (native_compaction.go)
+	why, _ := checkpointGone(model, "account", cp)
+	healthy, _ := checkpointNotRouted(model, "")
+	if why != healthy {
+		return nil, checkpointError(model, cp), true
+	}
+	user := strings.TrimPrefix(cp.Who, cp.Provider+"@")
+	// the writer is matched by its email, as the record holds the account
+	// user: two Team seats of one email read as one here, and a compact
+	// sealed by either relays as it came — the old forwarding, not worse
+	// (only the sign-in's own tokens go out unchanged)
+	if strings.EqualFold(p.Account.User, user) {
+		return nil, "", true // the sign-in's own: relayed as it came
+	}
+	others := p.AlsoOn()
+	for i := range others {
+		if o := others[i]; o.Account != nil && strings.EqualFold(o.Account.User, user) {
+			return &others[i], "", true
+		}
+	}
+	// on and serving, yet not among the accounts on: goes as it came
+	return nil, "", false
 }
 
 // withModel is a request body asking for another model.

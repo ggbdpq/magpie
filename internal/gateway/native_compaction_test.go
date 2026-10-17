@@ -265,6 +265,84 @@ func TestNativeCompactionFallbackSealStaysWithItsWriter(t *testing.T) {
 	}
 }
 
+// askGone posts a Codex turn carrying the sealed compaction enc, and
+// gives the 400 body the gateway answers when the key or account that
+// sealed it can't be asked now.
+func askGone(t *testing.T, enc string) string {
+	t.Helper()
+	srv := New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":[{"type":"compaction","encrypted_content":"`+enc+`"},{"type":"message","role":"user","content":[{"type":"input_text","text":"go on"}]}]}`))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("chatgpt-account-id", "acct-1")
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != 400 {
+		t.Fatalf("%d: %s", rec.Code, rec.Body)
+	}
+	return rec.Body.String()
+}
+
+// #2642: the one key or account a request's native compaction was sealed
+// by, which the request can't go to now, is told which way it is gone and
+// where to bring it back — the account's models keeping the model to the
+// others, it paused for the others on, or it signed out of magpie and
+// removed — not the three states as one sentence.
+func TestNativeCompactionWriterGoneSaysWhichWay(t *testing.T) {
+	t.Run("the model kept to the other accounts", func(t *testing.T) {
+		codexSignedIn(t, "spare@example.com")
+		newResetBackend(t, "me@example.com", "spare@example.com")
+		if err := provider.SetAccountModels("codex", "me@example.com", []string{"gpt-5.2"}); err != nil {
+			t.Fatal(err)
+		}
+		wroteCheckpoint("gAAAAB-gone-to-models", candidate{p: provider.Provider{ID: "codex", Account: &provider.Account{User: "me@example.com"}}})
+		body := askGone(t, "gAAAAB-gone-to-models")
+		for _, want := range []string{"me@example.com", "other accounts", "Providers"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("no %q in %s", want, body)
+			}
+		}
+		for _, not := range []string{"switched off, removed, or no longer serves"} {
+			if strings.Contains(body, not) {
+				t.Errorf("the three states as one sentence in %s", body)
+			}
+		}
+	})
+
+	t.Run("paused for the others on", func(t *testing.T) {
+		codexSignedIn(t, "spare@example.com")
+		newResetBackend(t, "me@example.com", "spare@example.com")
+		// the account the agent is signed in to, paused while another is on
+		if err := provider.SetLoginOn("codex", "me@example.com", false); err != nil {
+			t.Fatal(err)
+		}
+		wroteCheckpoint("gAAAAB-gone-paused", candidate{p: provider.Provider{ID: "codex", Account: &provider.Account{User: "me@example.com"}}})
+		body := askGone(t, "gAAAAB-gone-paused")
+		for _, want := range []string{"me@example.com", "paused"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("no %q in %s", want, body)
+			}
+		}
+		if strings.Contains(body, "switched off, removed, or no longer serves") {
+			t.Errorf("the three states as one sentence in %s", body)
+		}
+	})
+
+	t.Run("signed out or removed", func(t *testing.T) {
+		codexSignedIn(t, "spare@example.com")
+		newResetBackend(t, "spare@example.com")
+		wroteCheckpoint("gAAAAB-gone-signed-out", candidate{p: provider.Provider{ID: "codex", Account: &provider.Account{User: "gone@example.com"}}})
+		body := askGone(t, "gAAAAB-gone-signed-out")
+		for _, want := range []string{"gone@example.com", "signed out of magpie or removed"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("no %q in %s", want, body)
+			}
+		}
+		if strings.Contains(body, "switched off, removed, or no longer serves") {
+			t.Errorf("the three states as one sentence in %s", body)
+		}
+	})
+}
+
 // #2517: a conversation compacted natively by an account goes only to it,
 // so when that account is held at its usage cap the request is refused
 // saying so, not as if every account that serves the model were held: the

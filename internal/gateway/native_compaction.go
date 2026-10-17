@@ -333,6 +333,55 @@ func checkpointError(model string, cp checkpointWriter) string {
 		cp.Who, model, model, cp.Who, model)
 }
 
+// checkpointGoneError is checkpointError with the way the sealer is gone
+// now said alone, each with where to bring it back (#2642): the model kept
+// to the provider's other accounts or keys (the account's models), the
+// account paused for the others on, or the account or key signed out of
+// magpie and removed. The states as one sentence, as checkpointError says
+// them, when magpie finds the sealer serving and can't tell.
+func checkpointGoneError(model string, cp checkpointWriter) string {
+	who := strings.ToLower(cp.Who)
+	for _, p := range provider.All() {
+		ref := ""
+		if p.Account != nil && p.Account.User != "" && strings.ToLower(p.ID+"@"+p.Account.User) == who {
+			ref = p.Account.User
+		} else if p.Account == nil {
+			for _, k := range p.KeysOn() {
+				if strings.ToLower(p.ID+"#"+provider.KeyID(k.Key)) == who {
+					ref = provider.KeyID(k.Key)
+					break
+				}
+			}
+		}
+		if ref == "" {
+			continue
+		}
+		name := p.Name
+		if name == "" {
+			name = p.ID
+		}
+		if p.OwnPaused() {
+			return fmt.Sprintf("This conversation was compacted natively by %s, and only that key or account can read the compaction it sealed. The request for %s can't go to it now: %s is paused in magpie, kept for the accounts on beside it. Let it serve again in Providers → %s to go on with this conversation, or start a new one. magpie doesn't send the compaction to another, which would refuse it, nor drop it or summarise it in its place, which would lose the conversation's earlier context.",
+				cp.Who, model, cp.Who, name)
+		}
+		if !p.AccountServes(ref, model) {
+			return fmt.Sprintf("This conversation was compacted natively by %s, and only that key or account can read the compaction it sealed. The request for %s can't go to it now: magpie keeps %s to the other accounts or keys of %s. Give it to this account again, in Providers → %s, in the account's models, to go on with this conversation, or start a new one. magpie doesn't send the compaction to another, which would refuse it, nor drop it or summarise it in its place, which would lose the conversation's earlier context.",
+				cp.Who, model, model, name, name)
+		}
+		return checkpointError(model, cp)
+	}
+	if p, err := provider.Find(cp.Provider); err == nil {
+		name := p.Name
+		if name == "" {
+			name = p.ID
+		}
+		return fmt.Sprintf("This conversation was compacted natively by %s, and only that key or account can read the compaction it sealed. The request for %s can't go to it now: the account or key that sealed it is signed out of magpie or removed. Sign in to %s again in Providers → %s to go on with this conversation, or start a new one. magpie doesn't send the compaction to another, which would refuse it, nor drop it or summarise it in its place, which would lose the conversation's earlier context.",
+			cp.Who, model, cp.Who, name)
+	}
+	return fmt.Sprintf("This conversation was compacted natively by %s, and only that key or account can read the compaction it sealed. The request for %s can't go to it now: %s, the provider it was sealed at, is removed from magpie. Add it again and sign in to the same account to go on with this conversation, or start a new one. magpie doesn't send the compaction to another, which would refuse it, nor drop it or summarise it in its place, which would lose the conversation's earlier context.",
+		cp.Who, model, cp.Provider)
+}
+
 // carrierError is what Codex is told when its compaction_trigger, asked
 // of a provider set to compact natively, has nowhere left that carries it.
 func carrierError(model string) string {

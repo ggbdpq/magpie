@@ -1965,7 +1965,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			var left bool
 			if cands, pl, left = checkpointReaders(cands, pl, cp.Who); !left {
 				call.Status, call.Error = 400, "native compaction sealed elsewhere"
-				writeError(w, from, 400, checkpointError(call.Model, cp))
+				writeError(w, from, 400, checkpointGoneError(call.Model, cp))
 				turnedAway()
 				return
 			}

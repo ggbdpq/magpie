@@ -2119,7 +2119,7 @@ magpie.plugin("library", (ctx) => {
       if (d.transport === "stdio") {
         const line = field2([d.command, ...(d.args || [])].filter((x, i) => i > 0 || x).map(quote).join(" "), "npx -y @modelcontextprotocol/server-github", (v) => { const w = words(v); d.command = w[0] || ""; d.args = w.slice(1); });
         line.classList.add("mono");
-        g.append(...field(t("Command"), line, t("The command and its arguments, as you'd type them")));
+        g.append(...field(t("Command"), line, t("The command and its arguments, as you'd type them. A Windows path goes in as it is; quote a path with a blank in it")));
         g.append(...field(t("Environment"), pairs(d.env, "GITHUB_TOKEN", t("value"), (v) => { d.env = v; drawAgents(); }), refHint()));
       } else {
         const url = field2(d.url, "https://example.com/mcp", (v) => { d.url = v.trim(); signBox?.redraw(); });

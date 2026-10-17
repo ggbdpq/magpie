@@ -3876,6 +3876,12 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// max_tokens away as Bedrock's GPT models do
 			body = asCompletionTokens(body)
 		}
+		if deepSeekChat(p, proto) {
+			// the reply length as DeepSeek's API asks it, max_tokens: the
+			// newer OpenAI name reaches it as a field it doesn't act on,
+			// and its default is served instead, quietly (#2355)
+			body = asMaxTokens(body)
+		}
 	case provider.Gemini:
 		// the handler put stream in the body so serve can tell a
 		// streamGenerateContent from a generateContent. droid's generate
@@ -6118,6 +6124,41 @@ func asCompletionTokens(body []byte) []byte {
 	delete(m, "max_tokens")
 	if _, has := m["max_completion_tokens"]; !has {
 		m["max_completion_tokens"] = n
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// deepSeekChat reports whether a chat request goes to DeepSeek itself: by
+// its preset, or at its host.
+func deepSeekChat(p provider.Provider, to provider.Protocol) bool {
+	return p.Preset == "deepseek" || provider.HostOf(p.Base(to)) == "api.deepseek.com"
+}
+
+// asMaxTokens asks a chat request's reply length as max_tokens in place of
+// max_completion_tokens, as DeepSeek's API takes it (#2355); a max_tokens
+// the client named itself keeps the field, the only of the two DeepSeek
+// acts on.
+func asMaxTokens(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"max_completion_tokens"`)) {
+		return body
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var m map[string]any
+	if dec.Decode(&m) != nil {
+		return body
+	}
+	n, ok := m["max_completion_tokens"]
+	if !ok {
+		return body
+	}
+	delete(m, "max_completion_tokens")
+	if _, has := m["max_tokens"]; !has {
+		m["max_tokens"] = n
 	}
 	out, err := json.Marshal(m)
 	if err != nil {

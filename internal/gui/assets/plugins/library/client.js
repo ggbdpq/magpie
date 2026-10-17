@@ -1910,7 +1910,10 @@ magpie.plugin("library", (ctx) => {
     openLib(ed);
   }
 
-  // A command line split the way a shell would, quotes and all.
+  // A command line split the way a shell would, quotes and all. The line
+  // becomes argv for exec, not a shell's words (#2685): a backslash takes
+  // only the next blank or quote with it, so a Windows path — C:\Users\me,
+  // "C:\Program Files\me", \\srv\share — keeps its separators.
   function words(s) {
     const out = [];
     let cur = "", q = "", any = false;
@@ -1918,10 +1921,10 @@ magpie.plugin("library", (ctx) => {
       const c = s[i];
       if (q) {
         if (c === q) q = "";
-        else if (c === "\\" && q === '"' && i + 1 < s.length) cur += s[++i];
+        else if (c === "\\" && q === '"' && i + 1 < s.length && s[i + 1] === '"') cur += s[++i];
         else cur += c;
       } else if (c === "'" || c === '"') { q = c; any = true; }
-      else if (c === "\\" && i + 1 < s.length) { cur += s[++i]; any = true; }
+      else if (c === "\\" && i + 1 < s.length && /[\s'"]/.test(s[i + 1])) { cur += s[++i]; any = true; }
       else if (/\s/.test(c)) { if (cur || any) out.push(cur); cur = ""; any = false; }
       else cur += c;
     }

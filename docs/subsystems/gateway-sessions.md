@@ -337,7 +337,11 @@ them straight to its vendor, so the Usage page covers them too. The body is
 one record or an array of up to 5000 (32 MiB at most), in `usage.jsonl`'s
 shape: `t`, `agent`, `provider`, `model` and `rid` are required; `in`,
 `out`, `cache_read`, `cache_write`, `cache_write_1h`, `reasoning`, `ms`,
-`ttft_ms`, `status`, `cost`, `effort`, `session` and `err` are optional.
+`ttft_ms`, `first_text_ms`, `flow_ms`, `status`, `cost`, `effort`,
+`session` and `err` are optional (`first_text_ms` and `flow_ms` as
+`usage.jsonl` has them: a client that times its own reasoning calls tells
+the reply's first text and content flow, which the answer speed needs,
+#2637).
 Any other field, a quoted number, a negative or out-of-range count, a time
 more than an hour ahead or before 2000-01-01T00:00:00Z refuses the whole
 post with a 400 that names the record (`error.index`) and the field

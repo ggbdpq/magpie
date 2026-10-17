@@ -342,3 +342,52 @@ func TestUsageIngestConcurrent(t *testing.T) {
 		}
 	}
 }
+
+// A reported reasoning call can tell its answer's speed (#2637): the
+// reporter times the reply's first text itself, and the record carries it
+// as first_text_ms (and flow_ms), as usage.jsonl has them. DecodeOf times a
+// reasoning reply's answer from its first text, so without it such a call
+// shows "—" on the Requests page.
+func TestUsageIngestFirstTextAndFlow(t *testing.T) {
+	do := ingestServer(t)
+	c, out, b := do("127.0.0.1:5000", "["+reportedRecord("ft-1", `,"reasoning":129,"first_text_ms":4700`)+","+reportedRecord("ft-2", `,"flow_ms":300`)+"]")
+	if c != 200 || out.Accepted != 2 {
+		t.Fatalf("%d %.300s", c, b)
+	}
+	h := lanGuard(New().Handler())
+	r := httptest.NewRequest("GET", "/v1/magpie/usage/requests?period=all&via=reported", nil)
+	r.RemoteAddr = "127.0.0.1:5000"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	var l usageapi.Ledger
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &l) != nil {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	got := map[string]int64{}
+	for _, row := range l.Rows {
+		got[row.RequestID] = row.FirstText
+		if row.RequestID == "ft-2" && row.Flow != 300 {
+			t.Fatalf("ft-2 flow %d", row.Flow)
+		}
+	}
+	if got["ft-1"] != 4700 {
+		t.Fatalf("ft-1 first_text %d", got["ft-1"])
+	}
+	// checked like ttft_ms is
+	for _, c := range []struct {
+		bad, field string
+	}{
+		{reportedRecord("b", `,"first_text_ms":-5`), "first_text_ms"},
+		{reportedRecord("b", `,"first_text_ms":1.5`), "first_text_ms"},
+		{reportedRecord("b", `,"first_text_ms":999999999999`), "first_text_ms"},
+		{reportedRecord("b", `,"flow_ms":-1`), "flow_ms"},
+		{reportedRecord("b", `,"flow_ms":"300"`), "flow_ms"},
+	} {
+		if code, out, b := do("127.0.0.1:5000", "["+reportedRecord("ok", "")+","+c.bad+"]"); code != 400 || out.Error == nil || out.Error.Param != c.field {
+			t.Errorf("%s: %d %.200s", c.field, code, b)
+		}
+	}
+	if n := reportedLines(t); n != 2 {
+		t.Fatal("lines:", n)
+	}
+}

@@ -70,7 +70,7 @@ var ingestEarliest = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // ingestFields are the fields a reported record may carry, of the ones
 // usage.jsonl has: what a client can know of a call it made itself.
-var ingestFields = []string{"t", "agent", "provider", "model", "in", "out", "cache_read", "cache_write", "cache_write_1h", "reasoning", "ms", "ttft_ms", "status", "rid", "cost", "effort", "session", "err"}
+var ingestFields = []string{"t", "agent", "provider", "model", "in", "out", "cache_read", "cache_write", "cache_write_1h", "reasoning", "ms", "ttft_ms", "first_text_ms", "flow_ms", "status", "rid", "cost", "effort", "session", "err"}
 
 // ingestFault is what is wrong with one record of a post.
 type ingestFault struct {
@@ -319,6 +319,15 @@ func parseReported(i int, raw json.RawMessage, now time.Time) (usage.Record, *in
 		return rec, f
 	}
 	if rec.TTFT, f = whole("ttft_ms", ingestMaxMillis, false); f != nil {
+		return rec, f
+	}
+	// first_text_ms and flow_ms (#2637): the client often times a
+	// reasoning reply's first text and its content's flow itself, and
+	// DecodeOf needs them to tell that reply's speed
+	if rec.FirstText, f = whole("first_text_ms", ingestMaxMillis, false); f != nil {
+		return rec, f
+	}
+	if rec.Flow, f = whole("flow_ms", ingestMaxMillis, false); f != nil {
 		return rec, f
 	}
 	st, f := whole("status", 599, true)

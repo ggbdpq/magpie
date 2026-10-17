@@ -6,11 +6,13 @@ package gateway
 // as it came, sealed (encrypted_content), not as magpie's "magpie1:"
 // summary. Only the key or account that sealed it can read it again, so
 // magpie remembers who wrote each one (compactions.json, beside
-// affinity.json), and a later request carrying it goes only there. When
-// that one can't be asked — switched off, removed, out of the group —
-// the request is refused, saying why: the compaction is never sent to
-// another to be refused, dropped (withoutCompaction), or summarised in its
-// place, which would lose the conversation's earlier context unasked.
+// affinity.json), and a later request carrying it goes only there — a
+// writer whose own list has since dropped the model included, tried as
+// the last resort an account whose list lacks the model is. When that one
+// can't be asked — switched off, removed, out of the group — the request
+// is refused, saying why: the compaction is never sent to another to be
+// refused, dropped (withoutCompaction), or summarised in its place, which
+// would lose the conversation's earlier context unasked.
 
 import (
 	"bytes"
@@ -278,9 +280,31 @@ func saveCheckpoints() {
 }
 
 // checkpointReaders keeps of cands those of the key or account who, pl's
-// order with them; left says one is left, if only held or capped.
+// order with them; left says one is left, if only held or capped. One
+// whose own list lacks the model now (planned.unlisted) is kept too: it
+// is tried as the last resort an account whose list lacks the model is,
+// and none other can read what it sealed.
 func checkpointReaders(cands []candidate, pl planned, who string) (_ []candidate, _ planned, left bool) {
-	return keepCandidates(cands, pl, func(c candidate) bool { return c.who() == who })
+	kept, pl, ok := keepCandidates(cands, pl, func(c candidate) bool { return c.who() == who })
+	if ok {
+		return kept, pl, true
+	}
+	var found []candidate
+	var ws []Weighed
+	for i, c := range pl.unlisted {
+		if c.who() != who {
+			continue
+		}
+		found = append(found, c)
+		w := pl.unlistedW[i]
+		w.Unlisted = false // it is asked, as the conversation's only reader
+		ws = append(ws, w)
+	}
+	if len(found) == 0 {
+		return nil, pl, false
+	}
+	pl.order = append(pl.order, ws...)
+	return found, pl, true
 }
 
 // checkpointHeld is, of held, the key or account that sealed the native

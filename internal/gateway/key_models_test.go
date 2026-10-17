@@ -394,3 +394,83 @@ func TestGatewayKeyModelsHoldTheImageAndVideoLists(t *testing.T) {
 		t.Fatalf("a key held to one video model is told of image %v, video %v", image, video)
 	}
 }
+
+// A gateway key held to some accounts (#905) is told of the image and
+// video models its accounts may serve alone, as it is of chat models
+// (entryAllowed's accountServes): a relay's text key kept to text (#474)
+// is listed no video model its other key alone serves — one whose video
+// is refused it (onKeys) — where the chat list hides a model of the same
+// shape.
+func TestGatewayKeyAccountsHoldTheImageAndVideoLists(t *testing.T) {
+	fresh(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == "GET" && r.URL.Path == "/v1/models" {
+			if strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") == "k-image" {
+				io.WriteString(w, `{"object":"list","data":[{"id":"m1","object":"model"},{"id":"m-vid","object":"model","kind":"video"}]}`)
+			} else {
+				io.WriteString(w, `{"object":"list","data":[{"id":"m1","object":"model"}]}`)
+			}
+			return
+		}
+		io.WriteString(w, `{"id":"vid-1","object":"video","status":"queued"}`)
+	}))
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Chat: up.URL + "/v1", Key: "k-text",
+		Keys: []provider.KeyAccount{{Key: "k-image"}}}); err != nil {
+		t.Fatal(err)
+	}
+	// the text key is kept to text (#474)
+	if err := provider.SetAccountModels("relay", provider.KeyID("k-text"), []string{"m1"}); err != nil {
+		t.Fatal(err)
+	}
+	keys, secrets := newCaller(t, "Held", "Free")
+	if _, err := access.Update("models-key", access.Change{Key: keys[0].ID, Accounts: []string{"relay/" + provider.KeyID("k-text")}}); err != nil {
+		t.Fatal(err)
+	}
+	h := New().Handler()
+	listed := func(secret string) (chat, video []string) {
+		r := httptest.NewRequest("GET", "/v1/models", nil)
+		if secret != "" {
+			r.Header.Set("Authorization", "Bearer "+secret)
+		}
+		r.Header.Set(provider.VideomakersHeader, "1")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		var l struct {
+			Data []struct {
+				ID, Kind string
+			}
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &l); err != nil {
+			t.Fatal(w.Body.String())
+		}
+		for _, m := range l.Data {
+			if m.Kind == "video" {
+				video = append(video, m.ID)
+			} else {
+				chat = append(chat, m.ID)
+			}
+		}
+		return chat, video
+	}
+	chat, video := listed(secrets[0])
+	if !slices.Contains(chat, "relay/m1") {
+		t.Fatalf("a key held to the text key lost its chat model: %v", chat)
+	}
+	if slices.Contains(video, "relay/m-vid") {
+		t.Fatalf("a key held to the text key is told of the video model no account it may use serves: %v", video)
+	}
+	// its video is refused: the only key serving it is not the key's
+	r := httptest.NewRequest("POST", "/v1/videos", strings.NewReader(`{"model":"relay/m-vid","prompt":"a magpie"}`))
+	r.Header.Set("Authorization", "Bearer "+secrets[0])
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code == 200 {
+		t.Fatalf("a key held to the text key made the video: %d %s", w.Code, w.Body.String())
+	}
+	// a free key is told of it
+	if _, video := listed(secrets[1]); !slices.Contains(video, "relay/m-vid") {
+		t.Fatalf("a free key is told of no video model: %v", video)
+	}
+}

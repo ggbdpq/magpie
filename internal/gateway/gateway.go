@@ -2449,6 +2449,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		streams = strings.Contains(r.URL.Path, "streamGenerateContent")
 	}
 	gaveWay := map[string]bool{} // keys and accounts that gave way, full, to one free (laneMate)
+	// the proxy exits this request saw refuse a connection (failProxy),
+	// keyed by the exit each member's request resolves to (candidate.exit:
+	// a member that goes direct resolves to "" and is never in it), and
+	// what they said: their other members are skipped, not dialled again
+	// (#2682)
+	proxyFailed := map[string]string{}
 	// a group's members that failed in a way that passes are asked again,
 	// once each has been, for up to its Patience (#1418): a member of a
 	// group in the group uses the innermost that sets Patience (#2410)
@@ -2513,6 +2519,26 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			}
 		}
 		last := i == len(cands)-1
+		if why, down := proxyFailed[c.exit()]; down {
+			// this member's requests go out through the same proxy exit
+			// that just refused a connection: asking it dials a listener
+			// already refused within this request, one refused try after
+			// another (eight attempts over 796 seconds, #2682). It is
+			// skipped, not set aside: the next request dials the proxy
+			// again, so recovery is as quick as #381 kept it
+			if other == nil {
+				other = &Try{Status: http.StatusBadGateway, Error: why}
+			}
+			skipped = append(skipped, c.label()+": skipped, its proxy just failed ("+why+")")
+			if last {
+				failTo(w, kept, from, call.Status, call.Error)
+				break
+			}
+			cs := slices.Clone(cands)
+			cands = slices.Delete(cs, i, i+1)
+			i--
+			continue
+		}
 		// the last one's failure is held too when an earlier one failed,
 		// for its allowance running out to be told as that one's error
 		// and once the agent has the stream's headers from an earlier try's
@@ -3271,7 +3297,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		if !last && hw.failed() && failure(hw.code(), hw.errBody()) == failProxy {
 			// the proxy didn't take the connection: the request never got
 			// to the vendor, so this one doesn't rest, and a member that
-			// goes another way (or the proxy back up) may still answer (#381)
+			// goes another way (or the proxy back up) may still answer (#381).
+			// The exit is remembered for this request, so its other members
+			// aren't dialled to the same refusal (#2682)
+			if exit := c.exit(); exit != "" {
+				proxyFailed[exit] = call.Error
+			}
 			if other == nil {
 				other = &Try{Status: call.Status, Error: call.Error}
 			}

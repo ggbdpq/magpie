@@ -108,3 +108,42 @@ func TestLANModelListNotThroughProxy(t *testing.T) {
 		t.Fatalf("not the other magpie's list: %s", b)
 	}
 }
+
+// Resolve is the decision Func makes, for a caller that holds the choice
+// and the URL instead of a request (#2682): the gateway keys a group's
+// shared proxy exit on it, so what it names is the proxy the request
+// would really take — loopback and the user's own network direct, a
+// provider's own proxy as named, the global one for its vendors.
+func TestResolveNamesTheRealProxy(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		t.Setenv(k, "")
+	}
+	settings.Save(settings.Settings{Proxy: "127.0.0.1:7890"})
+	stubLookup(t, map[string]string{"server.lan": "192.168.131.20", "api.openai.com": "162.159.140.245"})
+	const global, own = "http://127.0.0.1:7890", "http://127.0.0.1:1080"
+	for _, c := range []struct {
+		choice, host, want string
+	}{
+		{"", "api.openai.com", global},
+		{"", "8.8.8.8", global},
+		{"", "127.0.0.1:11434", ""}, // loopback, never proxied
+		{"", "server.lan:3425", ""}, // the user's own network, direct (#982)
+		{own, "api.openai.com", own},
+		{own, "8.8.8.8", own},
+		{own, "server.lan:3425", own}, // a provider's own proxy is taken as it is (#982)
+		{own, "127.0.0.1:11434", ""},  // loopback even with a proxy of its own
+		{"direct", "api.openai.com", ""},
+		{"direct", "127.0.0.1:11434", ""},
+	} {
+		u := &url.URL{Scheme: "http", Host: c.host}
+		got, err := Resolve(c.choice, u)
+		gotS := ""
+		if got != nil {
+			gotS = got.String()
+		}
+		if gotS != c.want || err != nil {
+			t.Errorf("choice %q to %s: %q (%v), want %q", c.choice, c.host, got, err, c.want)
+		}
+	}
+}

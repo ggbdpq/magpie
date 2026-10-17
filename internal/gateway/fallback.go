@@ -23,6 +23,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"sort"
@@ -30,6 +31,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -94,6 +96,25 @@ func (c candidate) label() string {
 		return c.p.ID + " (" + c.p.KeyName + ")"
 	}
 	return c.p.ID + " (" + provider.Mask(c.p.Key) + ")"
+}
+
+// exit is the proxy a request from this member goes out through, resolved
+// for its vendor's host the way netproxy resolves one for a real request
+// (netproxy.Resolve): "" when it goes direct. Within one request,
+// candidates share a refused exit by it (#2682): a member that goes direct
+// (loopback, the user's own network, NO_PROXY, a direct setting) resolves
+// to "" whatever its proxy choice says, and never shares an exit.
+func (c candidate) exit() string {
+	u, err := url.Parse(cmp.Or(c.p.Base(provider.Responses), c.p.Base(provider.Chat),
+		c.p.Base(provider.Anthropic), c.p.Base(provider.Gemini), c.p.Base(provider.CodeAssist)))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	p, err := netproxy.Resolve(c.p.ProxyChoice(), u)
+	if err != nil || p == nil {
+		return ""
+	}
+	return p.String()
 }
 
 // restKey is what a candidate rests by: an account by its user, whether
@@ -1471,6 +1492,12 @@ func passing(status int, header http.Header, body []byte, again int) (time.Durat
 		return 0, false
 	case status == 408, status == 500, status == 502, status == 503, status == 504, status == 529:
 		if bytes.Contains(body, []byte(didNotStream)) {
+			return 0, false
+		}
+		if proxyDown.Match(body) {
+			// the proxy itself refused the connection (#381): it refuses
+			// again within this request, however soon it is asked again
+			// (#2682)
 			return 0, false
 		}
 		return wait, again < lastRetries

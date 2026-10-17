@@ -12,6 +12,8 @@
 package backup
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -21,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -96,6 +99,9 @@ type Bundle struct {
 	LibraryKeys   *bool `json:"libraryKeys,omitempty"`
 }
 
+// envelope is the file around the sealed bundle. Version 2 seals the
+// bundle compressed (zipped); version 1, an older magpie's, kept the
+// bundle plain and still opens.
 type envelope struct {
 	Format     string `json:"format"`
 	Version    int    `json:"version"`
@@ -262,7 +268,11 @@ func withoutKeys(p provider.Provider) provider.Provider {
 	return p
 }
 
-// Seal encrypts the bundle under the passphrase.
+// Seal encrypts the bundle under the passphrase. The bundle is compressed
+// first (envelope version 2): skills and their files shrink to a fraction,
+// and base64 inflates them again twice on the way into one sealed file, so
+// a full library stays under what GitHub's file API takes of a sync,
+// though magpie's own guard allows more (#2707).
 func Seal(b Bundle, pass string) ([]byte, error) {
 	if pass == "" {
 		return nil, errors.New("a backup needs a passphrase")
@@ -271,15 +281,34 @@ func Seal(b Bundle, pass string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := envelope{Format: format, Version: 1, KDF: "pbkdf2-sha256", Iterations: iterations,
+	e := envelope{Format: format, Version: 2, KDF: "pbkdf2-sha256", Iterations: iterations,
 		Salt: saltFor(pass), Nonce: make([]byte, 12)}
 	rand.Read(e.Nonce)
 	gcm, err := aead(pass, e)
 	if err != nil {
 		return nil, err
 	}
-	e.Data = gcm.Seal(nil, e.Nonce, plain, header(e))
+	e.Data = gcm.Seal(nil, e.Nonce, zipped(plain), header(e))
 	return json.MarshalIndent(e, "", "  ")
+}
+
+// zipped is plain as gzip. The error is dropped because the writer's
+// destination is memory, which cannot fail it.
+func zipped(plain []byte) []byte {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	zw.Write(plain)
+	zw.Close()
+	return buf.Bytes()
+}
+
+// unzipped reads back what zipped wrote.
+func unzipped(data []byte) ([]byte, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	return io.ReadAll(zr)
 }
 
 // Open decrypts a backup. A byte order mark in front of the JSON is read
@@ -304,7 +333,7 @@ func Open(data []byte, pass string) (Bundle, error) {
 	if e.Format != format {
 		return Bundle{}, ErrNotBackup
 	}
-	if e.Version != 1 || e.KDF != "pbkdf2-sha256" {
+	if (e.Version != 1 && e.Version != 2) || e.KDF != "pbkdf2-sha256" {
 		return Bundle{}, errors.New("this backup was made by a newer magpie; update magpie to open it")
 	}
 	if e.Iterations < 100_000 || e.Iterations > 10_000_000 || len(e.Nonce) != 12 || len(e.Salt) < 16 {
@@ -317,6 +346,12 @@ func Open(data []byte, pass string) (Bundle, error) {
 	plain, err := gcm.Open(nil, e.Nonce, e.Data, header(e))
 	if err != nil {
 		return Bundle{}, ErrPassphrase
+	}
+	// version 2 sealed the bundle compressed; version 1 kept it plain
+	if e.Version == 2 {
+		if plain, err = unzipped(plain); err != nil {
+			return Bundle{}, fmt.Errorf("%w: the sealed bundle doesn't decompress", ErrCorrupt)
+		}
 	}
 	var b Bundle
 	if err := json.Unmarshal(plain, &b); err != nil {

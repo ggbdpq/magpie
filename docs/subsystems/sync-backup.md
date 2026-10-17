@@ -17,7 +17,10 @@ clone a working tree or synchronize arbitrary files.
   interprets `github://owner/repo[/prefix]`, with `Config.Branch` selecting a
   branch or using the repository's default.
 - [`backup.go`](../../internal/backup/backup.go) owns bundle contents and
-  sealing. Sync divides the setup into providers, settings, profiles, agents
+  sealing. Sealing compresses the bundle before it is encrypted (envelope
+  version 2), so a full library seals near the size of the skill files it
+  carries; a backup an older magpie sealed plainly (version 1) still opens.
+  Sync divides the setup into providers, settings, profiles, agents
   and library. Provider keys, agent models, library and usage have their own
   inclusion switches.
 - [`usage.go`](../../internal/davsync/usage.go) shares separately sealed usage
@@ -113,8 +116,12 @@ repository can keep the token. The branch is part of the sync state key.
   The initial write omits `branch` so GitHub creates its default branch; other
   conflicts and missing branches are not treated as an empty repository.
 - Large files are downloaded by blob SHA, preserving the version that was
-  read. Sync files are limited to 64 MiB. Usage listing fails at the Contents
-  API's 1,000-file limit rather than treating a truncated list as complete.
+  read. Sync files are limited to 64 MiB, but GitHub's file API takes less of
+  an upload than that: a write it refuses as too large says the file's size
+  and the backends a backup that big fits. Sealed backups compress, so a
+  full library stays within what GitHub takes. Usage listing fails at the
+  Contents API's 1,000-file limit rather than treating a truncated list as
+  complete.
 - A stale SHA or a racing initial creation returns `errChanged`. Other 422
   responses stay actionable errors. Authentication, permission and branch
   failures remain distinct from missing files. Rate limits use sync backoff.

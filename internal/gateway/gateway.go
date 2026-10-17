@@ -864,21 +864,21 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 		if prices {
 			st, find = settings.Load(), provider.GroupFinder()
 		}
-		// for another magpie: the tiers its Codex is offered on each
-		// model, as Codex here is (#1234)
-		var tiers map[string][]any
-		if magpie {
-			tiers = codexTiers(shown)
-		}
+		// the tiers Codex here is offered on each model, as the accounts
+		// and Codex's own entries say (#1234): another magpie asks with
+		// X-Magpie-Drawers, and any client reading the list may see them
+		// — the Fast tier on a model is what tells a client whose model
+		// discovery reads it to offer its Fast mode (#1914, Cindy)
+		tiers := codexTiers(shown)
 		for i, e := range shown {
 			m := modelObject(e)
 			if magpie {
 				if how := webSearchOf(e, searches); how != "" {
 					m["web_search"] = how
 				}
-				if ts := tiers[e.ID]; len(ts) > 0 {
-					m["service_tiers"] = ts
-				}
+			}
+			if ts := tiers[e.ID]; len(ts) > 0 {
+				m["service_tiers"] = ts
 			}
 			if prices {
 				if pr, ok := provider.EntryPriceIn(st, find, e); ok {

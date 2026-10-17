@@ -283,7 +283,9 @@ func saveCheckpoints() {
 // order with them; left says one is left, if only held or capped. One
 // whose own list lacks the model now (planned.unlisted) is kept too: it
 // is tried as the last resort an account whose list lacks the model is,
-// and none other can read what it sealed.
+// and none other can read what it sealed. Its row goes from left to the
+// order with it, so the Routing page doesn't tell it both tried and
+// unlisted, skipped.
 func checkpointReaders(cands []candidate, pl planned, who string) (_ []candidate, _ planned, left bool) {
 	kept, pl, ok := keepCandidates(cands, pl, func(c candidate) bool { return c.who() == who })
 	if ok {
@@ -303,6 +305,13 @@ func checkpointReaders(cands []candidate, pl planned, who string) (_ []candidate
 	if len(found) == 0 {
 		return nil, pl, false
 	}
+	// the rows it goes to order with: they leave left, or the Routing page
+	// would have it both tried and unlisted, skipped
+	asked := make(map[string]bool, len(ws))
+	for _, w := range ws {
+		asked[w.ID] = true
+	}
+	pl.left = slices.DeleteFunc(pl.left, func(w Weighed) bool { return asked[w.ID] })
 	pl.order = append(pl.order, ws...)
 	return found, pl, true
 }

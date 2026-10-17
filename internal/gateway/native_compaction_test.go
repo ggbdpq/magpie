@@ -344,4 +344,61 @@ func TestNativeCompactionWriterWhoseListLacksTheModel(t *testing.T) {
 	if !strings.Contains(body, "pong") {
 		t.Errorf("the writer's answer: %s", body)
 	}
+	if strings.Contains(tried, "acct-2") {
+		t.Errorf("the spare, whose list has the model, was asked: %q", tried)
+	}
+	// tried, its row leaves the routing page's left: not both attempted
+	// and unlisted, skipped
+	for _, w := range lastRoute(srv).Left {
+		if w.Who == "me@example.com" {
+			t.Errorf("the writer, tried, still left out: %+v", w)
+		}
+	}
+}
+
+// The same through a routing group: the conversation's model is the group,
+// whose member is the codex provider, so the plan is planLevel's keys, not
+// plan's add, and the writer whose own list has since dropped the model is
+// tried still, the spare never asked. (#2642: keys kept the left-out
+// writer's row alone, so a request routed through the group was refused
+// 400 all the same.)
+func TestNativeCompactionWriterThroughAGroupWhoseListLacksTheModel(t *testing.T) {
+	codexSignedIn(t, "spare@example.com")
+	b := newResetBackend(t)
+	// the spare's plan lists the model; the writer's no longer does
+	if err := catalog.SaveLive("codex@"+provider.KeyID("spare@example.com"), provider.CodexBase, []catalog.Model{{ID: "gpt-5.5"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive("codex@"+provider.KeyID("me@example.com"), provider.CodexBase, []catalog.Model{{ID: "gpt-4.1"}}); err != nil {
+		t.Fatal(err)
+	}
+	nativeOn(t, "codex")
+	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"codex/gpt-5.5"}, Routing: provider.Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	wroteCheckpoint("gAAAAB-sealed-by-me", candidate{p: provider.Provider{ID: "codex", Account: &provider.Account{User: "me@example.com"}}})
+	srv := New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"group/g","stream":true,"input":[{"type":"compaction","encrypted_content":"gAAAAB-sealed-by-me"},{"type":"message","role":"user","content":[{"type":"input_text","text":"go on"}]}]}`))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("chatgpt-account-id", "acct-1")
+	srv.Handler().ServeHTTP(rec, req)
+	code, body := rec.Code, rec.Body.String()
+	tried, _ := b.seen()
+	if code != 200 || tried != "acct-1" {
+		t.Fatalf("%d tried %q: %s", code, tried, body)
+	}
+	if !strings.Contains(body, "pong") {
+		t.Errorf("the writer's answer: %s", body)
+	}
+	if strings.Contains(tried, "acct-2") {
+		t.Errorf("the spare, whose list has the model, was asked: %q", tried)
+	}
+	// tried, its row leaves the routing page's left: not both attempted
+	// and unlisted, skipped
+	for _, w := range lastRoute(srv).Left {
+		if w.Who == "me@example.com" {
+			t.Errorf("the writer, tried, still left out: %+v", w)
+		}
+	}
 }

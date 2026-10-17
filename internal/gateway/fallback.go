@@ -434,6 +434,8 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 			w := weighed(c, m.Provider, weighing{}, false, from)
 			w.Unlisted, w.Via = true, m.Groups()
 			pl.left = append(pl.left, w)
+			pl.unlisted = append(pl.unlisted, c)
+			pl.unlistedW = append(pl.unlistedW, w)
 		}
 		return cs
 	}
@@ -469,6 +471,8 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 				cs, sub.order = sinkOwn(m.Via[depth], cs, sub.order)
 				pl.left = append(pl.left, sub.left...)
 				pl.capped = append(pl.capped, sub.capped...)
+				pl.unlisted = append(pl.unlisted, sub.unlisted...)
+				pl.unlistedW = append(pl.unlistedW, sub.unlistedW...)
 				if len(cs) > 0 {
 					add(unit{cs: cs, order: sub.order, member: m.Path[depth]}, firstAwake(cs))
 				}

@@ -106,6 +106,19 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await save();
         assert.deepEqual(saves.pop(), { command: "C:\\Program Files\\nodejs\\npx.cmd", args: ["-y", "pkg"] }, "a double-quoted path");
 
+        // one that ends in a backslash, the way a folder separator leaves
+        // it: the quote still closes (`\` takes nothing with it in there),
+        // and the saved path survives its own editor
+        await row.locator(".name").click();
+        await ed.waitFor();
+        await line.fill('"C:\\Program Files\\" -y pkg');
+        await save();
+        assert.deepEqual(saves.pop(), { command: "C:\\Program Files\\", args: ["-y", "pkg"] }, "a double-quoted path ending in a backslash");
+        await row.locator(".name").click();
+        await ed.waitFor();
+        await save();
+        assert.deepEqual(saves.pop(), { command: "C:\\Program Files\\", args: ["-y", "pkg"] }, "a trailing separator survives its own editor");
+
         // a UNC path keeps its leading double separator
         await row.locator(".name").click();
         await ed.waitFor();

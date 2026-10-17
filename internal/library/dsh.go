@@ -95,7 +95,10 @@ func dshRead(path string) (*dshPatches, error) {
 		case strings.HasPrefix(l, "- ") || l == "-":
 			p.items = append(p.items, []string{l})
 		case len(p.items) == 0:
-			if t != "" && !strings.HasPrefix(t, "#") && t != "[]" {
+			// "---" is YAML's document start marker: a patch list may open
+			// with one (#2667), and it stays in the head it is written back
+			// with, so the file keeps it.
+			if t != "" && !strings.HasPrefix(t, "#") && t != "[]" && t != "---" {
 				return nil, fmt.Errorf("%s is not a list of entries magpie can edit", path)
 			}
 			if t != "[]" {

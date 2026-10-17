@@ -50,7 +50,12 @@ func readClaudeDir(dir string) (claudeCredentials, bool) {
 	if settings.AccountDiscoveryOff() {
 		return claudeCredentials{}, false
 	}
-	if claudeKeychain {
+	// A read of the item refused in a way that may have shown the user a
+	// dialog isn't asked again inside keychainDeniedTTL (#2408): a saved
+	// account's sign-in is read back on every request made for it, so a
+	// denial left unanswered would prompt on each one. What magpie put
+	// there is in the file beside the item, which the read falls to.
+	if claudeKeychain && !claudeDirPaused(dir) {
 		out, err := proc.Command("security", "find-generic-password", "-s", claudeDirService(dir), "-a", claudeKeychainAccount(), "-w").Output()
 		if err == nil {
 			b, _ := keychainText(bytes.TrimSpace(out))
@@ -59,6 +64,8 @@ func readClaudeDir(dir string) (claudeCredentials, bool) {
 				// Code reads no file beside it
 				return c, ok
 			}
+		} else if keychainDenied(err) {
+			claudeDirPause(dir)
 		}
 	}
 	b, err := readAccountFile(filepath.Join(dir, ".credentials.json"))
@@ -66,6 +73,28 @@ func readClaudeDir(dir string) (claudeCredentials, bool) {
 		return claudeCredentials{}, false
 	}
 	return parseClaudeCredentials(b)
+}
+
+// claudeDirAsk holds, per config directory, when a read of the item
+// Claude Code keeps there was refused in a way that may have shown a
+// dialog. It stands beside claudeAskAt, which is about the home item's
+// item alone, so one item's denial doesn't pause the other's reads.
+var claudeDirAsk = struct {
+	sync.Mutex
+	m map[string]time.Time
+}{m: map[string]time.Time{}}
+
+func claudeDirPaused(dir string) bool {
+	claudeDirAsk.Lock()
+	defer claudeDirAsk.Unlock()
+	at, ok := claudeDirAsk.m[dir]
+	return ok && time.Since(at) < keychainDeniedTTL
+}
+
+func claudeDirPause(dir string) {
+	claudeDirAsk.Lock()
+	defer claudeDirAsk.Unlock()
+	claudeDirAsk.m[dir] = time.Now()
 }
 
 // clearClaudeDir takes the sign-in out of config directory dir, so the one

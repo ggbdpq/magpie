@@ -539,3 +539,74 @@ func TestNativeCompactionWriterGoneSaysWhy(t *testing.T) {
 		})
 	}
 }
+
+// A legacy /responses/compact carrying a native compaction whose writer is
+// not the sign-in it would relay on is refused here, saying why, as the
+// same request on /responses is (serve, checkpointReaders, #2642): relayed
+// as it came, it reached the ChatGPT backend to be refused there, its
+// reason unread. A seal the sign-in itself wrote relays as it came, and a
+// request that names another account than magpie reads here (a Codex on
+// WSL or another CODEX_HOME, codexServed's caution) is not judged.
+func TestNativeCompactionCompactHoldsTheWriter(t *testing.T) {
+	compact := func(enc, acct string) (int, string, []string) {
+		t.Helper()
+		var asked []string
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			io.ReadAll(r.Body)
+			asked = append(asked, r.URL.Path)
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, sse(
+				`data: {"type":"response.created","response":{"id":"r1"}}`,
+				`data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":9,"output_tokens":2}}}`))
+		}))
+		t.Cleanup(up.Close)
+		was := provider.CodexBase
+		provider.CodexBase = up.URL + "/backend-api/codex"
+		t.Cleanup(func() { provider.CodexBase = was })
+		body := `{"model":"gpt-5.5","stream":true,"input":[{"type":"compaction","encrypted_content":"` + enc + `"},{"type":"message","role":"user","content":[{"type":"input_text","text":"go on"}]}]}`
+		req := httptest.NewRequest("POST", CodexPath+"/responses/compact", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer chatgpt-token")
+		if acct != "" {
+			req.Header.Set("chatgpt-account-id", acct)
+		}
+		rec := httptest.NewRecorder()
+		New().Handler().ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String(), asked
+	}
+	sealed := func(user string) candidate {
+		return candidate{p: provider.Provider{ID: "codex", Account: &provider.Account{User: user}}}
+	}
+
+	t.Run("another account's seal is refused here", func(t *testing.T) {
+		codexSignedIn(t) // the sign-in is me@example.com (acct-1); no spares
+		nativeOn(t, "codex")
+		wroteCheckpoint("gAAAAB-sealed-by-gone", sealed("gone@example.com"))
+		code, body, asked := compact("gAAAAB-sealed-by-gone", "")
+		if code != 400 || len(asked) != 0 {
+			t.Fatalf("%d, the backend asked %v: %s", code, asked, body)
+		}
+		for _, want := range []string{"compacted natively by codex@gone@example.com", "gone@example.com is no longer signed in to magpie", "sign in to gone@example.com again", "Native compaction is on for codex"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("no %q in %s", want, body)
+			}
+		}
+	})
+	t.Run("the sign-in's own seal relays", func(t *testing.T) {
+		codexSignedIn(t)
+		nativeOn(t, "codex")
+		wroteCheckpoint("gAAAAB-sealed-by-me", sealed("me@example.com"))
+		code, body, asked := compact("gAAAAB-sealed-by-me", "")
+		if code != 200 || len(asked) != 1 {
+			t.Fatalf("%d, the backend asked %v: %s", code, asked, body)
+		}
+	})
+	t.Run("a request naming another account is not judged", func(t *testing.T) {
+		codexSignedIn(t)
+		nativeOn(t, "codex")
+		wroteCheckpoint("gAAAAB-sealed-by-gone", sealed("gone@example.com"))
+		code, body, asked := compact("gAAAAB-sealed-by-gone", "acct-9")
+		if code != 200 || len(asked) != 1 {
+			t.Fatalf("%d, the backend asked %v: %s", code, asked, body)
+		}
+	})
+}

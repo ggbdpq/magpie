@@ -175,6 +175,15 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 				s.codexUpstreamOn(w, r, rest, body, on)
 				return
 			}
+			// a seal only the account that wrote it reads (#1099, #2271),
+			// and a compact relayed as it came reaches the sign-in: a seal
+			// of another account's is refused there, its reason magpie's
+			// settings already give. The same request on /responses is held
+			// to the writer in serve (checkpointReaders, #2642)
+			if cp, ok := checkpointOf(body); ok && codexSealedRelayGone(r, cp) {
+				writeError(w, provider.Responses, 400, checkpointError(model, cp))
+				return
+			}
 			break // preserve native compaction's existing passthrough
 		}
 		id, ok := codexAccounts(r, model)
@@ -714,6 +723,29 @@ func codexSealedFor(r *http.Request, model string, body []byte) (string, bool) {
 		return "", false
 	}
 	return id, true
+}
+
+// codexSealedRelayGone reports whether the account that sealed cp is not
+// the one Codex's auth.json here is signed in to: a compact relayed as it
+// comes reaches that sign-in, which a seal of another account's refuses.
+// A seal a magpie key's candidate wrote is not judged here, and neither
+// is a request that names an account other than the sign-in auth.json
+// names (a Codex signing from WSL or another CODEX_HOME signs with its
+// own, which magpie's auth.json doesn't name — codexServed's caution): a
+// compact either can't be held to its writer here goes as it came. A seal
+// the sign-in itself wrote goes on as it came.
+func codexSealedRelayGone(r *http.Request, cp checkpointWriter) bool {
+	if strings.Contains(cp.Who, "#") {
+		return false
+	}
+	p, err := provider.Find("codex")
+	if err != nil || p.Account == nil || p.Account.User == "" {
+		return false
+	}
+	if acct := r.Header.Get("chatgpt-account-id"); acct != "" && acct != provider.CodexSignedInAccount() {
+		return false
+	}
+	return !strings.EqualFold(p.Account.User, strings.TrimPrefix(cp.Who, cp.Provider+"@"))
 }
 
 // withModel is a request body asking for another model.

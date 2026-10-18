@@ -330,3 +330,41 @@ func TestCompactingAsksWhereTheAgentPutsThem(t *testing.T) {
 		}
 	}
 }
+
+// Alma's compaction ask, as the report on #2833 quotes it: the first bytes
+// of the last user message, the conversation behind it.
+const almaCompactAsk = "Merge the previous summary with the new conversation. Produce the <analysis>, then the merged structured summary exactly as instructed. The conversation continues after your summary — do not conclude it."
+
+// Alma compacting is recognised by its ask, at the start of the last user
+// message (#2833): a group's compact rule sends it to its model and says so
+// in X-Magpie-Model, while a note that only quotes the ask further into a
+// long message goes by the rule that matches it, as compactLead bounds it.
+func TestRuleCompactAlma(t *testing.T) {
+	s, _, _ := ruled(t, provider.Rule{Use: "a/small", Compact: true}, provider.Rule{Use: "b/big", Tokens: 1})
+	post := func(body string) (*httptest.ResponseRecorder, Route) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("x-session-id", "alma")
+		s.Handler().ServeHTTP(rec, req)
+		return rec, lastRoute(s)
+	}
+	alma := func(text string) string {
+		return `{"model":"group/r","messages":[{"role":"user","content":` + quote(text) + `}]}`
+	}
+
+	rec, r := post(alma(almaCompactAsk + "\n\n[user]: tidy up my desktop\n[assistant]: done"))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "from ka") ||
+		rec.Header().Get(modelHeader) != "a/small" || r.Rule == nil || !r.Rule.Compact || r.Rule.N != 1 {
+		t.Fatalf("Alma compacting: %d %s %q %+v", rec.Code, rec.Body.String(), rec.Header().Get(modelHeader), r.Rule)
+	}
+
+	// a long message that quotes the ask deep in is no compaction: only
+	// compactLead keeps it from being one, as it does the agents' own asks
+	history := strings.Repeat("[user]: tidy up my desktop\n[assistant]: done\n", 200)
+	rec, r = post(alma(history + "\n" + almaCompactAsk + "\nWhat does this line in my log mean?"))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "from kb") ||
+		rec.Header().Get(modelHeader) != "b/big" || r.Rule == nil || r.Rule.Compact || r.Rule.N != 2 {
+		t.Fatalf("a quoted Alma ask: %d %s %q %+v", rec.Code, rec.Body.String(), rec.Header().Get(modelHeader), r.Rule)
+	}
+}

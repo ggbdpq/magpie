@@ -54,6 +54,9 @@ var compactAsks = []compactAsk{
 	{ask: "You are now given a task to compact this conversation context"},
 	// Minis, around the conversation it sends as one user message
 	{ask: "END OF CONVERSATION TO COMPACT.", opens: "Compact this conversation into a context summary:"},
+	// Alma, which opens the user message of its compaction with this ask
+	// and sends the conversation behind it (#2833, as the report quotes it)
+	{ask: "Merge the previous summary with the new conversation."},
 }
 
 // leads reports whether p begins within compactLead bytes of text's start.

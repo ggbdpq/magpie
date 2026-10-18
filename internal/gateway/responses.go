@@ -1929,11 +1929,15 @@ func (e *responsesEncoder) event(ev Event) {
 		}
 		raw := json.RawMessage(ev.Text)
 		if e.open == Thinking && !e.thinkNew && (ev.ID == "" || ev.ID == e.itemID) {
-			// the item streamed so far, done as the upstream wrote it
-			e.closeAs(raw)
+			// the item streamed so far, done as the upstream wrote it,
+			// made over when it carries its text (another vendor's,
+			// #2855); its events name it by the id they already carried
+			e.closeAs(magpieMadeReasoningRaw(raw, e.itemID))
 			break
 		}
-		// none of it streamed (no summary): added and done whole
+		// none of it streamed (no summary): added and done whole, made
+		// over when the item carries its text (#2855)
+		raw = magpieMadeReasoningRaw(raw, "")
 		e.closeItem()
 		e.item++
 		e.thinkNew, e.thinkID = false, ""
@@ -2055,8 +2059,10 @@ func renderResponses(res Result, model string, named map[string]nsTool) []byte {
 				"content": []map[string]any{{"type": "output_text", "text": p.Text, "annotations": []any{}}}})
 		case Thinking:
 			if p.sealedBy(sealResponses) {
-				// as the upstream wrote it: id, summary, encrypted_content
-				output = append(output, p.Sealed)
+				// as the upstream wrote it: id, summary, encrypted_content;
+				// made over when it carries its text (another vendor's,
+				// #2855)
+				output = append(output, magpieMadeReasoningRaw(p.Sealed, ""))
 				continue
 			}
 			if p.Text == "" {

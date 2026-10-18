@@ -87,23 +87,26 @@ func setModelName(ref, name string) (bool, error) {
 	if name != "" && !p.serves(model) {
 		return false, fmt.Errorf("%s has no model %s (magpie provider %s lists them)", p.ID, model, p.ID)
 	}
-	s := settings.Load()
 	key := p.ID + "/" + model
-	if s.ModelNames[key] == name {
-		return false, nil
-	}
-	if name == "" {
-		delete(s.ModelNames, key)
-	} else {
-		if s.ModelNames == nil {
-			s.ModelNames = map[string]string{}
+	changed := false
+	if err := settings.Update(func(s *settings.Settings) error {
+		if s.ModelNames[key] == name {
+			return nil
 		}
-		s.ModelNames[key] = name
-	}
-	if err := settings.Save(s); err != nil {
+		if name == "" {
+			delete(s.ModelNames, key)
+		} else {
+			if s.ModelNames == nil {
+				s.ModelNames = map[string]string{}
+			}
+			s.ModelNames[key] = name
+		}
+		changed = true
+		return nil
+	}); err != nil {
 		return false, err
 	}
-	return true, nil
+	return changed, nil
 }
 
 // SetModelPrice is what a provider's model costs the user, in USD per million

@@ -1164,6 +1164,23 @@ func Save(s Settings) error {
 	return save(s, false)
 }
 
+// Update changes the settings under the file's lock: fn is handed what the
+// file holds now, and what fn leaves is what is saved. Load and Save each
+// take the lock on their own, so a setter that loads a snapshot, changes it
+// and saves it drops whatever another setter wrote in between (#2813); a
+// setter that reads, changes and writes the whole file goes through this,
+// the way SetGatewayConversations does. fn's error leaves the file as it
+// was, and like any save but the consent one, recording consent is kept.
+func Update(fn func(*Settings) error) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	s := load()
+	if err := fn(&s); err != nil {
+		return err
+	}
+	return save(s, false)
+}
+
 // SetGatewayConversations changes local recording consent without overwriting
 // other settings from an earlier snapshot.
 func SetGatewayConversations(on bool) error {

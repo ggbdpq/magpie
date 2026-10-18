@@ -35,12 +35,13 @@ func CodexCredits(user string) bool {
 // SetCodexCredits turns that on or off for user.
 func SetCodexCredits(user string, on bool) error {
 	user = accountKey(user)
-	s := settings.Load()
-	s.CodexNoCredits = slices.DeleteFunc(s.CodexNoCredits, func(u string) bool { return u == user })
-	if !on && user != "" {
-		s.CodexNoCredits = append(s.CodexNoCredits, user)
-	}
-	return settings.Save(s)
+	return settings.Update(func(s *settings.Settings) error {
+		s.CodexNoCredits = slices.DeleteFunc(s.CodexNoCredits, func(u string) bool { return u == user })
+		if !on && user != "" {
+			s.CodexNoCredits = append(s.CodexNoCredits, user)
+		}
+		return nil
+	})
 }
 
 // HoldCaps is the shares of its windows at which routing holds the

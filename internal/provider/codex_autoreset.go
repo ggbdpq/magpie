@@ -121,25 +121,26 @@ func SetCodexAutoResetCase(user, when string, on bool) error {
 
 func setCodexAutoReset(user string, week, expiring bool) error {
 	user = strings.ToLower(strings.TrimSpace(user))
-	s := settings.Load()
-	s.CodexAutoReset = slices.DeleteFunc(slices.Clone(s.CodexAutoReset), func(u string) bool { return u == user })
-	only := map[string]string{}
-	for u, c := range s.CodexAutoResetOnly {
-		if u != user {
-			only[u] = c
+	return settings.Update(func(s *settings.Settings) error {
+		s.CodexAutoReset = slices.DeleteFunc(slices.Clone(s.CodexAutoReset), func(u string) bool { return u == user })
+		only := map[string]string{}
+		for u, c := range s.CodexAutoResetOnly {
+			if u != user {
+				only[u] = c
+			}
 		}
-	}
-	if user != "" && (week || expiring) {
-		s.CodexAutoReset = append(s.CodexAutoReset, user)
-		switch {
-		case !expiring:
-			only[user] = ResetCaseWeek
-		case !week:
-			only[user] = ResetCaseExpiring
+		if user != "" && (week || expiring) {
+			s.CodexAutoReset = append(s.CodexAutoReset, user)
+			switch {
+			case !expiring:
+				only[user] = ResetCaseWeek
+			case !week:
+				only[user] = ResetCaseExpiring
+			}
 		}
-	}
-	s.CodexAutoResetOnly = only
-	return settings.Save(s)
+		s.CodexAutoResetOnly = only
+		return nil
+	})
 }
 
 var autoReset = autoResets{file: "codex-autoreset.json"}

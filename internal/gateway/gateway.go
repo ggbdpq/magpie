@@ -5595,6 +5595,14 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	if named != nil {
 		spaces = &nsTidy{named: named, sse: sse}
 	}
+	// a reasoning item another vendor wrote with its text in it, in a reply
+	// relayed as it came, made into one magpie could have (#2855): the
+	// client stores what it is handed and replays it where OpenAI's rules
+	// hold, on magpie or off it
+	var made *reasoningTidy
+	if proto == provider.Responses {
+		made = &reasoningTidy{sse: sse}
+	}
 	// a model's 2500.0 in a call's arguments, which Codex turns away
 	// (grok_integral.go, #1431, #3152: Grok's models and muse-spark alike)
 	var ints *intTidy
@@ -5734,6 +5742,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			if crArgs != nil {
 				out = crArgs.write(out)
 			}
+			if made != nil {
+				out = made.write(out)
+			}
 			if ints != nil {
 				out = ints.write(out)
 			}
@@ -5812,6 +5823,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			b = sigs.write(b)
 		}
 		write(out(b))
+	}
+	if made != nil {
+		write(sign(made.flush()))
 	}
 	if ints != nil {
 		b := ints.flush()

@@ -649,6 +649,16 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 		}
 	}
 	var walk func(v any, depth int) any
+	firstSays := func(members []any) any {
+		// the first schema of a tuple that says anything of its members:
+		// {} and whatever isn't an object says nothing
+		for _, m := range members {
+			if s, ok := m.(map[string]any); ok && len(s) > 0 {
+				return s
+			}
+		}
+		return nil
+	}
 	walk = func(v any, depth int) any {
 		switch x := v.(type) {
 		case []any:
@@ -792,6 +802,28 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 					out["type"] = "object"
 				case out["items"] != nil:
 					out["type"] = "array"
+				}
+			}
+			if out["type"] == "array" {
+				if t, ok := out["items"].([]any); ok {
+					// a tuple (draft 07's items as an array) stands as one
+					// schema: Gemini takes an items object and nothing else
+					out["items"] = firstSays(t)
+				}
+				if out["items"] == nil {
+					// the members prefixItems said are gone from the subset;
+					// the first one that says something stands in for them
+					if pfx, _ := x["prefixItems"].([]any); len(pfx) > 0 {
+						if s := firstSays(pfx); s != nil {
+							out["items"] = walk(s, depth+1)
+						}
+					}
+					if out["items"] == nil {
+						// an array says what its members are, or Google
+						// turns the whole request away over the missing
+						// field (#2826)
+						out["items"] = map[string]any{"type": "string"}
+					}
 				}
 			}
 			if req, ok := out["required"].([]any); ok {

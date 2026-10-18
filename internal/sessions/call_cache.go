@@ -12,12 +12,15 @@ import (
 	"hash/crc32"
 	"hash/fnv"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/steady"
 )
 
 // v3 persists Codex cumulative counters explicitly; v2 shards can contain
@@ -122,6 +125,17 @@ func pruneCalls(files []file) {
 			gone = true
 		}
 	}
+	callShardErrors.Lock()
+	live := make(map[string]bool, len(files))
+	for _, f := range files {
+		live[hashHead(f.path)+".gob"] = true
+	}
+	for path := range callShardErrors.on {
+		if !live[filepath.Base(path)] {
+			delete(callShardErrors.on, path)
+		}
+	}
+	callShardErrors.Unlock()
 	order = callContinuationOrder[:0]
 	for _, path := range callContinuationOrder {
 		if on[path] {
@@ -163,7 +177,12 @@ func pruneCalls(files []file) {
 		}
 		orphan := strings.HasSuffix(e.Name(), ".gob") && !shards[e.Name()] ||
 			strings.HasSuffix(e.Name(), ".rev") && !shards[strings.TrimSuffix(e.Name(), ".rev")+".gob"]
-		if strings.HasPrefix(e.Name(), "calls-") && strings.HasSuffix(e.Name(), ".tmp") {
+		// A write's temp file, from before shards went through
+		// steady.WriteFile (calls-*.tmp) or since (.<shard>.*): the process
+		// went down between writing it and renaming it in.
+		stale := strings.HasPrefix(e.Name(), "calls-") && strings.HasSuffix(e.Name(), ".tmp") ||
+			strings.HasPrefix(e.Name(), ".") && strings.Contains(e.Name(), ".gob.")
+		if stale {
 			if st, err := e.Info(); err == nil && time.Since(st.ModTime()) > time.Hour {
 				orphan = true
 			}
@@ -712,24 +731,46 @@ func writeCalls(st *callFile, start int, appendOnly bool) {
 	if os.MkdirAll(dir, 0700) != nil {
 		return
 	}
-	var out *os.File
-	var err error
-	if appendOnly {
-		out, err = os.OpenFile(callCachePath(st.Path), os.O_WRONLY|os.O_APPEND, 0600)
-	} else {
-		out, err = os.CreateTemp(dir, "calls-*.tmp")
-	}
-	if err != nil {
+	shard := callCachePath(st.Path)
+	if !appendOnly {
+		// The shard is flushed to the disk before it is renamed in: one
+		// renamed in first can come back all zero or cut short after a
+		// forced restart (#2814). A write that fails leaves the old shard,
+		// and a rename that fails (on Windows a reader or a virus scanner
+		// holding it open) is said once per shard rather than dropped: until
+		// one lands, every read re-parses the whole session file. The frames
+		// carry their headers, as the append path writes them.
+		sayCallShardError(shard, steady.WriteFile(shard, data.Bytes(), 0600))
 		return
 	}
-	if !appendOnly {
-		defer os.Remove(out.Name())
+	out, err := os.OpenFile(shard, os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return
 	}
 	_, err = out.Write(data.Bytes())
 	if closeErr := out.Close(); err == nil {
 		err = closeErr
 	}
-	if err == nil && !appendOnly {
-		_ = os.Rename(out.Name(), callCachePath(st.Path))
+}
+
+// callShardErrors are the shards whose write already failed, so one that
+// keeps failing is said once rather than on every read.
+var callShardErrors = struct {
+	sync.Mutex
+	on map[string]bool
+}{on: map[string]bool{}}
+
+// sayCallShardError logs a failed shard write once until one succeeds.
+func sayCallShardError(path string, err error) {
+	callShardErrors.Lock()
+	said := callShardErrors.on[path]
+	if err == nil {
+		delete(callShardErrors.on, path)
+	} else if !said {
+		callShardErrors.on[path] = true
+	}
+	callShardErrors.Unlock()
+	if err != nil && !said {
+		log.Printf("%s wasn't written over: %v", path, err)
 	}
 }

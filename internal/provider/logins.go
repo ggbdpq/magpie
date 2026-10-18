@@ -10,6 +10,7 @@ package provider
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -337,6 +338,10 @@ func upsertLogin(ls []savedLogin, l savedLogin) []savedLogin {
 			l.On = l.On || ls[i].On
 			l.Paused = l.Paused || ls[i].Paused
 			l.Order = ls[i].Order
+			// the id is the account's (#905), kept as its sign-in, read
+			// from the agent without one, takes the record's place: stamped
+			// anew from the name, a rename moved it (#2642)
+			l.ID = ls[i].ID
 			ls[i] = l
 			return ls
 		}
@@ -380,6 +385,7 @@ func dedupeLogins(ls []savedLogin) []savedLogin {
 		if keep.Order == 0 {
 			keep.Order = l.Order
 		}
+		keep.ID = cmp.Or(keep.ID, previous.ID, l.ID) // the account's, whichever record had it
 		out[found] = keep
 	}
 	return out

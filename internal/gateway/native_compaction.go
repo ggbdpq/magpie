@@ -6,8 +6,9 @@ package gateway
 // as it came, sealed (encrypted_content), not as magpie's "magpie1:"
 // summary. Only the key or account that sealed it can read it again, so
 // magpie remembers who wrote each one (compactions.json, beside
-// affinity.json), and a later request carrying it goes only there — a
-// writer whose own list has since dropped the model included, tried as
+// affinity.json, with its name and the stable id its logins keep through
+// renames), and a later request carrying it goes only there — a writer
+// whose own list has since dropped the model included, tried as
 // the last resort an account whose list lacks the model is. When that one
 // can't be asked — switched off, removed, out of the group — the request
 // is refused, saying why: the compaction is never sent to another to be
@@ -133,12 +134,16 @@ func (s *Server) keepsCompaction(from provider.Protocol, p provider.Provider, mo
 }
 
 // checkpointWriter is who sealed a compaction: the key or account
-// (candidate.who), its provider and the model it answered as.
+// (candidate.who), its provider and the model it answered as, and the
+// account's stable id (#905), which its logins keep through renames.
 type checkpointWriter struct {
-	Who      string    `json:"who"`
-	Provider string    `json:"provider"`
-	Model    string    `json:"model,omitempty"`
-	At       time.Time `json:"at"`
+	Who      string `json:"who"`
+	Provider string `json:"provider"`
+	Model    string `json:"model,omitempty"`
+	// ID finds the writer again when its name has changed since the
+	// record was written (#2642)
+	ID string    `json:"id,omitempty"`
+	At time.Time `json:"at"`
 }
 
 var checkpoints = struct {
@@ -223,7 +228,7 @@ func wroteCheckpoint(enc string, c candidate) {
 	now := time.Now()
 	checkpoints.Lock()
 	checkpointFor(enc) // the file's, read in first so the write keeps them
-	checkpoints.m[checkpointKey(enc)] = checkpointWriter{Who: c.who(), Provider: c.p.ID, Model: c.model, At: now}
+	checkpoints.m[checkpointKey(enc)] = checkpointWriter{Who: c.who(), Provider: c.p.ID, Model: c.model, ID: c.p.AccountID(), At: now}
 	checkpoints.Unlock()
 	saveCheckpoints()
 }
@@ -279,22 +284,34 @@ func saveCheckpoints() {
 	}
 }
 
-// checkpointReaders keeps of cands those of the key or account who, pl's
-// order with them; left says one is left, if only held or capped. One
-// whose own list lacks the model now (planned.unlisted) is kept too: it
-// is tried as the last resort an account whose list lacks the model is,
-// and none other can read what it sealed. Its row goes from left to the
-// order with it, so the Routing page doesn't tell it both tried and
+// isWriter says c is the key or account that sealed cp: as the record has
+// it, or — the record written before the account's name changed — by the
+// stable id its logins keep through renames (#905). The name alone left a
+// renamed writer refused as "no longer signed in", and signing in again
+// changed nothing, it being signed in under its new name (#2642).
+func isWriter(c candidate, cp checkpointWriter) bool {
+	if c.who() == cp.Who {
+		return true
+	}
+	return cp.ID != "" && c.p.ID == cp.Provider && c.p.AccountID() == cp.ID
+}
+
+// checkpointReaders keeps of cands those of the key or account that sealed
+// cp (isWriter), pl's order with them; left says one is left, if only held
+// or capped. One whose own list lacks the model now (planned.unlisted) is
+// kept too: it is tried as the last resort an account whose list lacks the
+// model is, and none other can read what it sealed. Its row goes from left
+// to the order with it, so the Routing page doesn't tell it both tried and
 // unlisted, skipped.
-func checkpointReaders(cands []candidate, pl planned, who string) (_ []candidate, _ planned, left bool) {
-	kept, pl, ok := keepCandidates(cands, pl, func(c candidate) bool { return c.who() == who })
+func checkpointReaders(cands []candidate, pl planned, cp checkpointWriter) (_ []candidate, _ planned, left bool) {
+	kept, pl, ok := keepCandidates(cands, pl, func(c candidate) bool { return isWriter(c, cp) })
 	if ok {
 		return kept, pl, true
 	}
 	var found []candidate
 	var ws []Weighed
 	for i, c := range pl.unlisted {
-		if c.who() != who {
+		if !isWriter(c, cp) {
 			continue
 		}
 		found = append(found, c)
@@ -430,7 +447,9 @@ func checkpointGone(model, what string, cp checkpointWriter) (why, fix string) {
 		agent = p.Account.Agent
 	}
 	for _, l := range provider.Logins(agent) {
-		if !strings.EqualFold(l.User, user) {
+		// the account under its new name, the record written before the
+		// rename, is found by its stable id (#2642)
+		if !strings.EqualFold(l.User, user) && !(cp.ID != "" && provider.LoginID(agent, l.User) == cp.ID) {
 			continue
 		}
 		switch {

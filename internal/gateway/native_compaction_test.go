@@ -547,6 +547,100 @@ func TestNativeCompactionWriterGoneSaysWhy(t *testing.T) {
 	}
 }
 
+// saveLogins rewrites the logins file the way a write of the logins
+// leaves it, and has the accounts read afresh.
+func saveLogins(t *testing.T, saved []map[string]any) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(provider.Path()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(provider.Path()), "logins.json"), mustJSON(saved), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider.ForgetAccounts()
+}
+
+// #2642: the account a conversation's native compaction was sealed by
+// keeps the conversation when its name has since changed — a seat moved
+// workspaces, a plan changed — the logins' stable id (#905) kept through
+// renames says it is the same account. It went to "no longer signed in",
+// and signing in again could not have helped: the account was there,
+// signed in under its new name.
+func TestNativeCompactionWriterRenamedStillGetsItsConversation(t *testing.T) {
+	codexSignedIn(t, "spare@example.com")
+	b := newResetBackend(t)
+	claims := func(m map[string]any) string {
+		b, _ := json.Marshal(m)
+		return "h." + base64.RawURLEncoding.EncodeToString(b) + ".s"
+	}
+	auth := func(email, acct string) map[string]any {
+		return map[string]any{"auth_mode": "chatgpt", "tokens": map[string]any{
+			"id_token":      claims(map[string]any{"email": email}),
+			"access_token":  claims(map[string]any{"exp": time.Now().Add(time.Hour).Unix(), "who": acct}),
+			"refresh_token": "r-" + acct, "account_id": acct}}
+	}
+	const renamed = "me@example.com · Team · ws-nine"
+	logins := func(user string) []map[string]any {
+		return []map[string]any{
+			{"agent": "codex", "user": user, "id": "writer-id", "on": true, "seen": time.Now(), "auth": auth("me@example.com", "acct-1")},
+			{"agent": "codex", "user": "spare@example.com", "on": true, "seen": time.Now(), "auth": auth("spare@example.com", "acct-2")},
+		}
+	}
+	saveLogins(t, logins("me@example.com"))
+	wroteCheckpoint("gAAAAB-sealed-by-me", candidate{p: provider.Provider{ID: "codex",
+		Account: &provider.Account{Agent: "codex", User: "me@example.com"}}, model: "gpt-5.5"})
+	saveLogins(t, logins(renamed)) // the seat renamed, its id kept
+	code, body := codexPost(t, `{"model":"gpt-5.5","stream":true,"input":[{"type":"compaction","encrypted_content":"gAAAAB-sealed-by-me"},{"type":"message","role":"user","content":[{"type":"input_text","text":"go on"}]}]}`)
+	if tried, _ := b.seen(); code != 200 || tried != "acct-1" {
+		t.Fatalf("%d tried %q: %s", code, tried, body)
+	}
+	if !strings.Contains(body, "pong") {
+		t.Errorf("the writer's answer: %s", body)
+	}
+}
+
+// #2642: the same rename with the account switched off besides: the
+// refusal says why magpie's settings have it aside — switched off — not
+// "no longer signed in", which had the user signing in an account that
+// was there all along under its new name.
+func TestNativeCompactionWriterRenamedSaysSwitchedOff(t *testing.T) {
+	codexSignedIn(t, "spare@example.com")
+	b := newResetBackend(t)
+	claims := func(m map[string]any) string {
+		b, _ := json.Marshal(m)
+		return "h." + base64.RawURLEncoding.EncodeToString(b) + ".s"
+	}
+	auth := func(email, acct string) map[string]any {
+		return map[string]any{"auth_mode": "chatgpt", "tokens": map[string]any{
+			"id_token":      claims(map[string]any{"email": email}),
+			"access_token":  claims(map[string]any{"exp": time.Now().Add(time.Hour).Unix(), "who": acct}),
+			"refresh_token": "r-" + acct, "account_id": acct}}
+	}
+	const renamed = "spare@example.com · Team · ws-two"
+	logins := func(user string, on bool) []map[string]any {
+		return []map[string]any{
+			{"agent": "codex", "user": "me@example.com", "id": "writer-id", "on": true, "seen": time.Now(), "auth": auth("me@example.com", "acct-1")},
+			{"agent": "codex", "user": user, "id": "spare-id", "on": on, "seen": time.Now(), "auth": auth("spare@example.com", "acct-2")},
+		}
+	}
+	saveLogins(t, logins("spare@example.com", true))
+	wroteCheckpoint("gAAAAB-sealed-by-spare", candidate{p: provider.Provider{ID: "codex",
+		Account: &provider.Account{Agent: "codex", User: "spare@example.com"}}, model: "gpt-5.5"})
+	saveLogins(t, logins(renamed, false)) // renamed, and switched off
+	code, body := codexPost(t, `{"model":"gpt-5.5","stream":true,"input":[{"type":"compaction","encrypted_content":"gAAAAB-sealed-by-spare"},{"type":"message","role":"user","content":[{"type":"input_text","text":"go on"}]}]}`)
+	if tried, _ := b.seen(); code != 400 || tried != "" {
+		t.Fatalf("%d tried %q: %s", code, tried, body)
+	}
+	for _, want := range []string{"switched off in magpie", "compacted natively by codex@spare@example.com"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("no %q in %s", want, body)
+		}
+	}
+	if strings.Contains(body, "no longer signed in") {
+		t.Errorf("signed out said of an account that is there: %s", body)
+	}
+}
+
 // #2639: a turn carrying a native compaction goes only to the account
 // that sealed it, and its route says so (Compaction), for Routing to say
 // that is why no other account was asked, not that it is the only one on.

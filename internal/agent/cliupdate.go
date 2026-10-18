@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf16"
 
@@ -1026,16 +1027,36 @@ func (a *Agent) UpdateCLI() (CLI, error) {
 	return c, nil
 }
 
+// stubShims are the npm packages whose bin is a shebang-less text stub that
+// only runs once postinstall has fetched the platform-native optional
+// package: Claude Code's bin/claude.exe (#2798) and opencode's
+// bin/opencode.exe. Every other CLI magpie updates has a #! script or a real
+// binary as its bin.
+var stubShims = []string{"@anthropic-ai/claude-code", "opencode-ai"}
+
 // runsBroken is what bin --version says when it ran and failed without
 // saying a version, "" when it said one or what it is can't be told: it
 // didn't start, took too long, or its interpreter wasn't found (127), none
-// of which says the update broke it. It runs as the update did, its npm's
-// folder first on PATH, so a node CLI finds the node it was installed for.
+// of which says the update broke it. One the kernel refused to exec is
+// broken, though, when its package's bin is such a stub: no shebang, no
+// native package, nothing to say but exec format error (#2798). It runs as
+// the update did, its npm's folder first on PATH, so a node CLI finds the
+// node it was installed for.
 func runsBroken(ctx context.Context, bin string, u *updater) string {
 	ctx, cancel := context.WithTimeout(ctx, checkTimeout)
 	defer cancel()
 	out, code, err := runCheck(ctx, bin, updateEnv(u))
-	if err == nil || ctx.Err() != nil || code <= 0 || code == 127 || parseVersion(out) != "" {
+	if err == nil || ctx.Err() != nil || code == 127 || parseVersion(out) != "" {
+		return ""
+	}
+	if code <= 0 {
+		// the kernel wouldn't exec it: a native CLI's npm stub without its
+		// binary is a shebang-less text file, so this is the broken install
+		// #2128 is about (#2798). Any other run that never started says
+		// nothing about the update.
+		if errors.Is(err, syscall.ENOEXEC) && contains(stubShims, u.pkg) {
+			return "exec format error"
+		}
 		return ""
 	}
 	if msg := lastLines(out, 2); msg != "" {

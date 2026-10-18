@@ -128,3 +128,41 @@ func TestRunsBrokenOnlyWhenSure(t *testing.T) {
 		t.Errorf("a CLI that didn't start: %q", got)
 	}
 }
+
+// claudeStub is @anthropic-ai/claude-code 2.1.302's bin/claude.exe, the
+// 500 bytes npm leaves when its optional native package isn't fetched. It
+// has no shebang: a shell runs it, the kernel won't (#2798).
+const claudeStub = `echo "Error: claude native binary not installed." >&2
+echo "" >&2
+echo "Either postinstall did not run (--ignore-scripts, some pnpm configs)" >&2
+echo "or the platform-native optional dependency was not downloaded" >&2
+echo "(--omit=optional)." >&2
+echo "" >&2
+echo "Run the postinstall manually (adjust path for local vs global install):" >&2
+echo "  node node_modules/@anthropic-ai/claude-code/install.cjs" >&2
+echo "" >&2
+echo "Or reinstall without --ignore-scripts / --omit=optional." >&2
+exit 1
+`
+
+// The real Claude Code stub can't be exec'd at all: no shebang, so Go says
+// "exec format error" with no output and no exit code. That is the broken
+// install #2128 is about, not a run that can't be told about (#2798).
+func TestRunsBrokenSeesAShebanglessStub(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no shebang-less stub: npm's shim runs the .exe through cmd.exe")
+	}
+	bin := file(t, filepath.Join(t.TempDir(), "claude.exe"), claudeStub)
+	for _, pkg := range []string{"@anthropic-ai/claude-code", "opencode-ai"} {
+		u := &updater{via: "npm", pkg: pkg, cmd: []string{"npm"}}
+		if got := runsBroken(context.Background(), bin, u); !strings.Contains(got, "exec format error") {
+			t.Errorf("%s: a stub the kernel won't run: %q, want it said as broken", pkg, got)
+		}
+	}
+	// a bin the kernel won't run for a package that doesn't ship such a
+	// stub is still unknown, not broken: its update may be fine
+	u := &updater{via: "npm", pkg: "some-other-cli", cmd: []string{"npm"}}
+	if got := runsBroken(context.Background(), bin, u); got != "" {
+		t.Errorf("a bin that didn't start for another package: %q", got)
+	}
+}

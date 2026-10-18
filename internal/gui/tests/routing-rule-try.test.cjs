@@ -27,11 +27,11 @@ const hit = { n: 1, use: "b/opus", when: ['intent "complex"'], turn: 1, tokens: 
 const none = { n: 0, turn: 1, tokens: 4200, classified: { by: "c/cls", intents: ["complex"] } };
 
 const words = {
-  en: { label: "Tryout", placeholder: "Try these rules on a message", button: "Try these rules", rule: "would match", noRule: "No rule would match", nothing: "decides nothing", real: "A real request also depends on" },
-  zh: { label: "试算", placeholder: "输入一条消息，试试这些规则", button: "试试这些规则", rule: "会命中", noRule: "没有规则会命中", nothing: "不参与路由决策", real: "真实请求还取决于" },
-  "zh-TW": { label: "試算", placeholder: "輸入一則訊息，試試這些規則", button: "試試這些規則", rule: "會命中", noRule: "沒有規則會命中", nothing: "不參與路由決策", real: "真實請求還取決於" },
-  ja: { label: "試算", placeholder: "メッセージを入力してルールを試す", button: "ルールを試す", rule: "が一致し", noRule: "一致するルールはありません", nothing: "ルーティングを決めません", real: "実際のリクエストはさらに" },
-  de: { label: "Ausprobieren", placeholder: "Diese Regeln an einer Nachricht ausprobieren", button: "Regeln ausprobieren", rule: "würde treffen", noRule: "Keine Regel würde treffen", nothing: "entscheidet nichts", real: "Eine echte Anfrage hängt auch davon ab" },
+  en: { label: "Tryout", said: "said turn 1 is", placeholder: "Try these rules on a message", button: "Try these rules", rule: "would match", noRule: "No rule would match", nothing: "decides nothing", saidNot: "said turn 1 isn't", real: "A real request also depends on" },
+  zh: { label: "试算", said: "判断第 1 轮是", placeholder: "输入一条消息，试试这些规则", button: "试试这些规则", rule: "会命中", noRule: "没有规则会命中", nothing: "不参与路由决策", saidNot: "判断第 1 轮不是", real: "真实请求还取决于" },
+  "zh-TW": { label: "試算", said: "判斷第 1 輪是", placeholder: "輸入一則訊息，試試這些規則", button: "試試這些規則", rule: "會命中", noRule: "沒有規則會命中", nothing: "不參與路由決策", saidNot: "判斷第 1 輪不是", real: "真實請求還取決於" },
+  ja: { label: "試算", said: "ターン 1 が「complex」だと", placeholder: "メッセージを入力してルールを試す", button: "ルールを試す", rule: "が一致し", noRule: "一致するルールはありません", nothing: "ルーティングを決めません", saidNot: "「complex」ではないと", real: "実際のリクエストはさらに" },
+  de: { label: "Ausprobieren", said: "Runde 1 sei", placeholder: "Diese Regeln an einer Nachricht ausprobieren", button: "Regeln ausprobieren", rule: "würde treffen", noRule: "Keine Regel würde treffen", nothing: "entscheidet nichts", saidNot: "Runde 1 sei nicht", real: "Eine echte Anfrage hängt auch davon ab" },
 };
 
 function serve(lang, tried) {
@@ -100,6 +100,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await tryRules(page, lang, w.rule, w.real);
       const said = await page.evaluate(() => document.documentElement.innerText);
       assert(said.includes(w.label), `the try's label is translated (${w.label}): ${said.slice(0, 3000)}`);
+      assert(said.includes(w.said), `with one intent, the try says whether turn 1 is it (${w.said}): ${said.slice(0, 3000)}`);
       assert(said.includes(w.button === "Try" ? "asks for “complex”" : w.rule), `the rule's condition is told: ${said.slice(0, 3000)}`);
       assert.deepEqual(errors, []);
     });
@@ -117,7 +118,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       });
       test(`${engine} en: a try where no rule would match says so`, async (t) => {
         const { page, errors } = await open(t, engine, lang, none);
-        await tryRules(page, lang, words.en.noRule, words.en.real);
+        await tryRules(page, lang, words.en.noRule, words.en.saidNot, words.en.real);
         assert.deepEqual(errors, []);
       });
       test(`${engine} en: a group that decides nothing says so`, async (t) => {

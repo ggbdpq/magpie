@@ -774,6 +774,9 @@ func groupTryCmd(args []string) error {
 		switch {
 		case cl.Error != "":
 			fmt.Println(amber.Render("!"), "the classifier", muted.Render(cl.By), "couldn't say:", cl.Error)
+		case cl.Intent == "" && len(cl.Intents) == 1:
+			// one intent, the answer is whether the turn is it
+			fmt.Println(green.Render("✓"), "the classifier", muted.Render(cl.By), "says it isn't", bold.Render("“"+cl.Intents[0]+"”"))
 		case cl.Intent == "":
 			fmt.Println(green.Render("✓"), "the classifier", muted.Render(cl.By), "says none of the intents")
 		default:

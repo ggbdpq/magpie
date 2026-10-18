@@ -824,9 +824,15 @@ function routingPage(part) {
     const effort = c.effort ? t("{by} rated turn {turn} {score} of 3, so it picks {level} reasoning for the turn — each model gets the level it has nearest.", { by, turn: r.rule.turn, score: (c.score || 0).toFixed(1), level: c.effort }) + toldEffort : "";
     if (!c.intents?.length) return effort ? `${effort} (${when})` : null;
     const sure = c.sure ? t(", {n} sure", { n: Math.round(c.sure * 100) + "%" }) : "";
-    const said = (!c.intent
-      ? t("{by} was asked which of {kinds} turn {turn} is, and said none ({took}).", { by, kinds, turn: r.rule.turn, took: when + sure })
-      : t("{by} was asked which of {kinds} turn {turn} is, and said “{intent}” ({took}).", { by, kinds, turn: r.rule.turn, intent: c.intent, took: when + sure })) + told;
+    // one intent in the group, the question is whether the turn is it —
+    // "which of the kinds" reads oddly when there is only the one
+    const said = (c.intents.length === 1
+      ? (!c.intent
+        ? t("{by} said turn {turn} isn't “{intent}” ({took}).", { by, turn: r.rule.turn, intent: c.intents[0], took: when + sure })
+        : t("{by} said turn {turn} is “{intent}” ({took}).", { by, turn: r.rule.turn, intent: c.intent, took: when + sure }))
+      : (!c.intent
+        ? t("{by} was asked which of {kinds} turn {turn} is, and said none ({took}).", { by, kinds, turn: r.rule.turn, took: when + sure })
+        : t("{by} was asked which of {kinds} turn {turn} is, and said “{intent}” ({took}).", { by, kinds, turn: r.rule.turn, intent: c.intent, took: when + sure }))) + told;
     return effort ? `${said} ${effort}` : said;
   }
   // a rule's condition as the gateway writes it, in the page's words

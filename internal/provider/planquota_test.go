@@ -104,7 +104,7 @@ func TestCommandCodeQuotaShowsWindows(t *testing.T) {
 	if err := json.Unmarshal([]byte(cmdCreditsReply), &c); err != nil {
 		t.Fatal(err)
 	}
-	q := cmdQuotaOf(SubscriptionQuota{}, c)
+	q := cmdQuotaOf(SubscriptionQuota{}, c, nil)
 	if q.Balance != "" || q.Plan != "GOAT" || len(q.Windows) != 3 {
 		t.Fatalf("%+v", q)
 	}
@@ -116,7 +116,7 @@ func TestCommandCodeQuotaShowsWindows(t *testing.T) {
 	// no plan and no windows: what is left is all there is to show
 	var none cmdCredits
 	_ = json.Unmarshal([]byte(`{"credits":{"purchasedCredits":"20","freeCredits":1}}`), &none)
-	if q := cmdQuotaOf(SubscriptionQuota{}, none); q.Balance != "$21.00" || len(q.Windows) != 0 {
+	if q := cmdQuotaOf(SubscriptionQuota{}, none, nil); q.Balance != "$21.00" || len(q.Windows) != 0 {
 		t.Errorf("no plan: %+v", q)
 	}
 }

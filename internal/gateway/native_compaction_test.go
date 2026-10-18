@@ -802,3 +802,104 @@ func TestNativeCompactionCompactKeepsTheKeysAccounts(t *testing.T) {
 		})
 	}
 }
+
+// A trigger Codex asks of a provider set to compact natively is kept only
+// when a key that lists the model can be asked it on the Responses API.
+// When the vendor's lists hold the model to a key that speaks no
+// Responses there (its key is set to Chat, so WithKey leaves it no
+// Responses URL), the trigger is not kept: magpie summarises instead,
+// which the listed key reads, as it does when native compaction is off.
+// Before, the trigger was kept because the provider (whose setting is
+// what kept it) carries it, and then refused saying none of the keys that
+// serve the model can be asked it on Responses — a dead end, when
+// magpie's summary was one turn away.
+func TestNativeCompactionTriggerSummarisedWhenNoListedKeyCarriesIt(t *testing.T) {
+	noRests()
+	t.Cleanup(noRests)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	// the summary comes back through the chat key, the one whose list
+	// holds the model
+	f := &fake{t: t, reply: sse(
+		`data: {"id":"c1","model":"m1","choices":[{"delta":{"content":"SUMM"}}]}`,
+		`data: {"id":"c1","choices":[{"delta":{"content":"ARY"},"finish_reason":"stop"}]}`,
+		`data: [DONE]`)}
+	up := httptest.NewServer(f)
+	t.Cleanup(up.Close)
+	// the first key is set to chat: it serves the model, but not on
+	// Responses; the second speaks nothing in particular and would carry
+	// the compaction, but the vendor's list doesn't hold the model to it
+	p := provider.Provider{ID: "fake", Name: "Fake", Key: "kchat", KeyProtocol: provider.Chat, Models: []string{"m1"}}
+	p.Chat = up.URL + "/v1"
+	p.Responses = up.URL + "/v1"
+	p.Keys = []provider.KeyAccount{{Key: "kresp"}}
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive("fake", up.URL+"/v1", []catalog.Model{
+		{ID: "m1", Keys: []string{provider.KeyID("kchat")}},
+		{ID: "m2", Keys: []string{provider.KeyID("kresp")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	chatgpt(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(400) })
+	nativeOn(t, "fake")
+	code, body := nativeAsk(t, "fake/m1", compactTurn)
+	if code != 200 || f.calls != 1 || !strings.Contains(string(f.got), "CONTEXT CHECKPOINT COMPACTION") || strings.Contains(string(f.got), "compaction_trigger") {
+		t.Fatalf("%d, the relay asked %d times: %s", code, f.calls, body)
+	}
+	// the summary went by the chat key, the only one that lists the model;
+	// the responses key, whose own list lacks it, was never asked
+	if f.path != "/v1/chat/completions" || f.head.Get("Authorization") != "Bearer kchat" {
+		t.Errorf("the summary didn't go by the listed key: %s %q", f.path, f.head.Get("Authorization"))
+	}
+	if !strings.Contains(body, magpieCompaction) || strings.Contains(body, "gAAAAB") {
+		t.Errorf("Codex got %s", body)
+	}
+}
+
+// A trigger Codex asks of a provider whose listed key can be asked the
+// compaction on Responses still goes to it as Codex sent it — the gate
+// that summarises when no listed key carries it changes nothing here —
+// and the key whose own list lacks the model stays unasked, as an
+// ordinary request leaves it.
+func TestNativeCompactionTriggerThroughTheListedKeyThatCarriesIt(t *testing.T) {
+	noRests()
+	t.Cleanup(noRests)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	f := &fake{t: t, reply: nativeSealedReply("gAAAAB-sealed-by-listed")}
+	up := httptest.NewServer(f)
+	t.Cleanup(up.Close)
+	// neither key is set to a protocol, so the first can be asked the
+	// compaction on Responses; the vendor's list holds the model to it
+	// alone, and another model to the second
+	p := provider.Provider{ID: "fake", Name: "Fake", Key: "kcarries", Models: []string{"m1"}}
+	p.Chat = up.URL + "/v1"
+	p.Responses = up.URL + "/v1"
+	p.Keys = []provider.KeyAccount{{Key: "kother"}}
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive("fake", up.URL+"/v1", []catalog.Model{
+		{ID: "m1", Keys: []string{provider.KeyID("kcarries")}},
+		{ID: "m2", Keys: []string{provider.KeyID("kother")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	chatgpt(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(400) })
+	nativeOn(t, "fake")
+	code, body := nativeAsk(t, "fake/m1", compactTurn)
+	if code != 200 || f.calls != 1 {
+		t.Fatalf("%d, the relay asked %d times: %s", code, f.calls, body)
+	}
+	if !strings.Contains(string(f.got), `{"type":"compaction_trigger"}`) || strings.Contains(string(f.got), "CONTEXT CHECKPOINT COMPACTION") {
+		t.Errorf("the relay wasn't asked Codex's own compaction: %s", f.got)
+	}
+	if f.path != "/v1/responses" || f.head.Get("Authorization") != "Bearer kcarries" {
+		t.Errorf("the trigger didn't go by the listed key: %s %q", f.path, f.head.Get("Authorization"))
+	}
+	if !strings.Contains(body, `"encrypted_content":"gAAAAB-sealed-by-listed"`) || strings.Contains(body, magpieCompaction) {
+		t.Errorf("Codex got %s", body)
+	}
+}

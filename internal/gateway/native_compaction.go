@@ -91,10 +91,12 @@ func (s *Server) compactsNatively(p provider.Provider, model string) bool {
 // nativeCompactionFor is whether Codex's compaction_trigger for the model
 // it asked (a provider's model, or a routing group) goes on as Codex sent
 // it: every member of a group compacting natively, as any of them may
-// answer it. A group with one that doesn't keeps magpie's summary, which
-// any member can read.
+// answer it, and the plan the request would go over carrying it
+// (planCarries) — the vendor's lists hold the model to keys that speak no
+// Responses there, none of them can. A group with one that doesn't keeps
+// magpie's summary, which any member can read.
 func (s *Server) nativeCompactionFor(asked string) bool {
-	if _, ms, ok := provider.FindGroup(asked); ok {
+	if g, ms, ok := provider.FindGroup(asked); ok {
 		if len(ms) == 0 {
 			return false
 		}
@@ -103,10 +105,30 @@ func (s *Server) nativeCompactionFor(asked string) bool {
 				return false
 			}
 		}
-		return true
+		return s.planCarriesGroup(g, ms)
 	}
 	p, model, ok := provider.Resolve(asked)
-	return ok && s.compactsNatively(p, model)
+	return ok && s.compactsNatively(p, model) && s.planCarries(p, model)
+}
+
+// planCarries is whether one of the keys or accounts Codex's compaction
+// would go over can be asked it: compactionCarriers, over the plan the
+// request itself would take — the provider's keys and its fallbacks',
+// the held and capped accounts among them. nativeCompactionFor keeps the
+// trigger only then, so it is asked only where the vendor's lists serve
+// the model, as an ordinary request is; else magpie's summary, which any
+// listed key reads.
+func (s *Server) planCarries(p provider.Provider, model string) bool {
+	cands, pl := s.plan(p, model, provider.Responses)
+	_, _, left := s.compactionCarriers(cands, pl)
+	return left
+}
+
+// planCarriesGroup is planCarries for a routing group's members together.
+func (s *Server) planCarriesGroup(g provider.Group, ms []provider.Member) bool {
+	cands, pl := s.planGroup(g, ms, provider.Responses)
+	_, _, left := s.compactionCarriers(cands, pl)
+	return left
 }
 
 // keepsCompaction is whether body goes to p as it is for its compaction:

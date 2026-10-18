@@ -736,3 +736,156 @@ func TestRuleFailsOverToTheNextRule(t *testing.T) {
 		t.Fatalf("a %d b %d c %d", a.n(), b.n(), c.n())
 	}
 }
+
+// A try (the Routing page's "try these rules" on a draft) decides with
+// the live decision code and keeps nothing: no turn decision, no cached
+// classifier answer, no rest for a classifier that failed. Whatever the
+// try breaks by hand, these are the counts that catch it.
+func TestTryLeavesNoTurnState(t *testing.T) {
+	s, _, _, c := intented(t, provider.Rule{Use: "b/big", Intent: "hard task"})
+	g, _, _ := provider.FindGroup("group/r")
+	c.set("1", 0)
+	state := func() (turns, cached, failed int) {
+		turnRules.Lock()
+		turns = len(turnRules.m)
+		turnRules.Unlock()
+		classified.Lock()
+		cached, failed = len(classified.m), len(classified.failed)
+		classified.Unlock()
+		return turns, cached, failed
+	}
+	t0, c0, f0 := state()
+	hit := s.TryRule(g, "a hard task", "")
+	t1, c1, f1 := state()
+	if hit == nil || hit.N != 1 || hit.Use != "b/big" || hit.Classified == nil || hit.Classified.Intent != "hard task" {
+		t.Fatalf("%+v", hit)
+	}
+	if t1 != t0 || c1 != c0 || f1 != f0 {
+		t.Fatalf("a try kept state: turns %d→%d, cached %d→%d, rested %d→%d", t0, t1, c0, c1, f0, f1)
+	}
+	// a classifier that fails is not rested either: the next live turn asks it
+	c.set("", 500)
+	hit = s.TryRule(g, "another hard task", "")
+	t2, c2, f2 := state()
+	if hit == nil || hit.Classified == nil || hit.Classified.Error == "" || hit.N != 0 {
+		t.Fatalf("%+v", hit)
+	}
+	if t2 != t1 || c2 != c1 || f2 != f1 {
+		t.Fatalf("a failed try kept state: turns %d→%d, cached %d→%d, rested %d→%d", t1, t2, c1, c2, f1, f2)
+	}
+}
+
+// A try follows the rules it is given, not the group's saved ones: the
+// draft need not be saved. The classifier is asked only when a rule waits
+// on its intent.
+func TestTryUsesTheDraftRules(t *testing.T) {
+	s, _, _, c := intented(t, provider.Rule{Use: "a/small", Intent: "quick question"})
+	g, _, _ := provider.FindGroup("group/r")
+	draft := g
+	draft.Rules = []provider.Rule{{Use: "b/big", Intent: "hard task"}}
+	c.set("1", 0)
+	hit := s.TryRule(draft, "a hard task", "")
+	if hit == nil || hit.N != 1 || hit.Use != "b/big" {
+		t.Fatalf("the saved rule won over the draft: %+v", hit)
+	}
+	// two intents in the draft: the classifier's pick decides
+	draft.Rules = []provider.Rule{{Use: "a/small", Intent: "quick question"}, {Use: "b/big", Intent: "hard task"}}
+	c.set("2", 0)
+	hit = s.TryRule(draft, "a hard task", "")
+	if hit == nil || hit.N != 2 || hit.Use != "b/big" || hit.Classified == nil || hit.Classified.Intent != "hard task" {
+		t.Fatalf("%+v", hit)
+	}
+	// a draft whose rules wait on nothing asks the classifier nothing
+	before := c.n()
+	draft.Rules = []provider.Rule{{Use: "b/big", Tokens: 1}}
+	hit = s.TryRule(draft, "short", "")
+	if hit == nil || hit.N != 1 || hit.Classified != nil || c.n() != before {
+		t.Fatalf("%+v, classifier asked %d→%d", hit, before, c.n())
+	}
+}
+
+// When the classifier can't say, a try says so, with what a live first
+// turn would do with that: no intent matches. It is never dressed up as
+// "no rule matched", and a first turn has nothing to fall back to.
+func TestTryClassifierFailsSaysSo(t *testing.T) {
+	s, _, _, c := intented(t, provider.Rule{Use: "b/big", Intent: "hard task"})
+	g, _, _ := provider.FindGroup("group/r")
+	c.set("", 500)
+	hit := s.TryRule(g, "a hard task", "")
+	if hit == nil || hit.Classified == nil || hit.Classified.Error == "" {
+		t.Fatalf("%+v", hit)
+	}
+	if hit.Classified.Intent != "" || hit.Classified.Fallback != "" {
+		t.Fatalf("a first turn has nothing to fall back to: %+v", hit.Classified)
+	}
+	if hit.N != 0 {
+		t.Fatalf("without the intent the rule doesn't match: %+v", hit)
+	}
+	// a draft with no classifier is said, not asked
+	draft := g
+	draft.Classifier = ""
+	before := c.n()
+	hit = s.TryRule(draft, "a hard task", "")
+	if hit == nil || hit.Classified == nil || hit.Classified.Error != "the group has no classifier" || c.n() != before {
+		t.Fatalf("%+v, classifier asked %d→%d", hit, before, c.n())
+	}
+}
+
+// What a try says is what a live first turn of the same words goes by.
+// Protective: this holds before any change to TryRule, and goes red when
+// the try and the live turn drift apart.
+func TestTryMatchesTheLiveDecision(t *testing.T) {
+	s, _, _, c := intented(t,
+		provider.Rule{Use: "a/small", Intent: "quick question"},
+		provider.Rule{Use: "b/big", Intent: "hard task"},
+	)
+	g, _, _ := provider.FindGroup("group/r")
+	c.set("2", 0)
+	if code, out := postAs(t, s, "live", chat("a hard task", nil, 0, "")); code != 200 {
+		t.Fatalf("%d %s", code, out)
+	}
+	r := lastRoute(s)
+	hit := s.TryRule(g, "a hard task", "")
+	if hit == nil || r.Rule == nil || r.Rule.Classified == nil || hit.Classified == nil {
+		t.Fatalf("try %+v live %+v", hit, r.Rule)
+	}
+	if hit.N != r.Rule.N || hit.Use != r.Rule.Use || !slices.Equal(hit.When, r.Rule.When) ||
+		hit.Classified.Intent != r.Rule.Classified.Intent || hit.Classified.By != r.Rule.Classified.By || hit.Pick != r.Rule.Pick {
+		t.Fatalf("try %+v, live %+v", hit, r.Rule)
+	}
+}
+
+// A try is a first turn that says no folder: a rule of folders matches
+// none, and a rule of except-folders holds — as the trace would tell for
+// the same request (provider.Rule.inFolders).
+func TestTryFromNoFolder(t *testing.T) {
+	s, _, _, _ := intented(t)
+	g, _, _ := provider.FindGroup("group/r")
+	draft := g
+	draft.Rules = []provider.Rule{{Use: "b/big", Folders: []string{"~/work"}}}
+	if hit := s.TryRule(draft, "hello", ""); hit == nil || hit.N != 0 {
+		t.Fatalf("a folder rule matched a try from no folder: %+v", hit)
+	}
+	draft.Rules = []provider.Rule{{Use: "b/big", ExceptFolders: []string{"~/work"}}}
+	if hit := s.TryRule(draft, "hello", ""); hit == nil || hit.N != 1 || hit.Use != "b/big" {
+		t.Fatalf("an except-folders rule passed a try over: %+v", hit)
+	}
+}
+
+// A rule naming a group in the group is decided as any rule is: the try
+// says the outer group's decision, as the trace's rule does — the group
+// in it decides its own when a live request goes in.
+func TestTryNestedMember(t *testing.T) {
+	s, _, _, c := intented(t, provider.Rule{Use: "b/big", Intent: "hard task"})
+	if err := provider.SaveGroup(provider.Group{ID: "rr", Name: "RR", Classifier: "c/cls",
+		Members: []string{"group/r"}, Routing: provider.Ordered,
+		Rules: []provider.Rule{{Use: "group/r", Intent: "hard task"}}}); err != nil {
+		t.Fatal(err)
+	}
+	rr, _, _ := provider.FindGroup("group/rr")
+	c.set("1", 0)
+	hit := s.TryRule(rr, "a hard task", "")
+	if hit == nil || hit.N != 1 || hit.Use != "group/r" || hit.Classified == nil || hit.Classified.Intent != "hard task" {
+		t.Fatalf("%+v", hit)
+	}
+}

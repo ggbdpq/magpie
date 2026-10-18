@@ -196,16 +196,7 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 		q.Folder = workDir(req)
 	}
 	hit := &RuleHit{Turn: turn, Tokens: q.Tokens, Images: q.Images, Effort: q.Effort, Folder: q.Folder, Bare: len(g.Rules) == 0}
-	defer func() {
-		// whatever put a member first, the rules after it that match too
-		// say who comes next
-		if hit != nil && hit.Use != "" && hit.N >= 1 {
-			hit.Then = provider.ThenUses(g.Rules, q, hit.N, hit.Use)
-			if hit.N <= len(g.Rules) {
-				hit.UseEffort = g.Rules[hit.N-1].UseEffort // and how hard it asks it to think
-			}
-		}
-	}()
+	defer func() { finishHit(hit, g, q) }()
 	if hit.Effort == "" && q.Thinking {
 		hit.Effort = "on"
 	}
@@ -264,11 +255,91 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 		}
 		return hit
 	}
-	// a new turn: the classifier is asked only when a rule that could be
-	// the first to match waits on its intent, or it picks the effort of a
-	// turn the agent asked to reason in. Reasoning turned off ("none",
-	// which Effort reads as low) is not asked to reason: the pick would
-	// never be sent (withEffort leaves "none" as it is), only shown (#2247)
+	// a new turn: what the group decides as it begins (turnDecide), then
+	// what it decided is kept for the turn's requests
+	turnDecide(g, req, q, hit, tr, had, size, now, liveAnswer(ask))
+	if hit.Classified != nil {
+		q.Intent = hit.Classified.Intent // as the classifier said, for the turn's keeping
+	}
+	turnRules.Lock()
+	defer turnRules.Unlock()
+	input, answered, hour := tr.input, tr.answered, tr.hour
+	if cur, ok := turnRules.m[key]; ok {
+		input, answered, hour = cur.input, cur.answered, cur.hour // answered while the classifier was asked
+	}
+	turnRules.m[key] = turnRule{turn: turn, use: hit.Use, n: hit.N, at: now, input: input, intent: q.Intent, effort: hit.Pick, wanted: hit.Wanted, answered: answered, size: size, hour: hour}
+	if len(turnRules.m) > 4096 {
+		for k, tr := range turnRules.m {
+			if now.Sub(tr.at) > stickKeep {
+				delete(turnRules.m, k)
+			}
+		}
+	}
+	return hit
+}
+
+// classAnswer is how a turn's decision reaches the classifier: it returns
+// what the classifier said, whether that answer came from the shared
+// cache (classify), and why it couldn't say.
+type classAnswer func(model string, intents []string, prev before, effort bool, text string) (verdict, bool, error)
+
+// liveAnswer asks the classifier the way a live turn does, through the
+// shared answers (classify): the same message and intents within
+// classifyKeep are answered from the cache, a classifier that failed
+// rests for classifyRest rather than being asked at every turn, and its
+// failure is said on the group's card.
+func liveAnswer(ask classifier) classAnswer {
+	if ask == nil {
+		return nil
+	}
+	return func(model string, intents []string, prev before, effort bool, text string) (verdict, bool, error) {
+		return classify(ask, model, intents, prev, effort, text)
+	}
+}
+
+// directAnswer asks the classifier the way a try does, by itself: no
+// shared cache to read or fill, no rest for a classifier that failed, no
+// failure note on the group's card — trying must leave the live
+// classifier's state as it was. A failure shows in the try's own answer.
+func directAnswer(ask classifier) classAnswer {
+	if ask == nil {
+		return nil
+	}
+	return func(model string, intents []string, prev before, effort bool, text string) (verdict, bool, error) {
+		v, err := ask(model, intents, prev, effort, text)
+		return v, false, err
+	}
+}
+
+// finishHit adds to a hit what the rules after the one that matched say:
+// Then, the members those that match too send to, who the request fails
+// over to before the group's others (#112), and UseEffort, the reasoning
+// the matched rule asks the member it names for (#2633).
+func finishHit(hit *RuleHit, g provider.Group, q provider.RuleRequest) {
+	// whatever put a member first, the rules after it that match too
+	// say who comes next
+	if hit == nil || hit.Use == "" || hit.N < 1 {
+		return
+	}
+	hit.Then = provider.ThenUses(g.Rules, q, hit.N, hit.Use)
+	if hit.N <= len(g.Rules) {
+		hit.UseEffort = g.Rules[hit.N-1].UseEffort // and how hard it asks it to think
+	}
+}
+
+// turnDecide is the decision a group makes as a user's turn begins: which
+// of its rules the request matches first, the group's classifier asked
+// before it when a rule that could be the first to match waits on its
+// intent, or it picks the effort of a turn the agent asked to reason in.
+// Reasoning turned off ("none", which Effort reads as low) is not asked
+// to reason: the pick would never be sent (withEffort leaves "none" as it
+// is), only shown (#2247). It only decides: what the turn before had
+// comes in (tr, had), and keeping the decision for the turn's requests —
+// turnRules — is the caller's, so a try (TryRule) can ask the same
+// decision of rules nobody saved. answer says how the classifier is
+// reached: a live turn asks it through the shared answers (liveAnswer),
+// a try by itself (directAnswer).
+func turnDecide(g provider.Group, req *Request, q provider.RuleRequest, hit *RuleHit, tr turnRule, had bool, size int, now time.Time, answer classAnswer) {
 	intents := provider.Intents(g.Rules, q)
 	effort := g.Effort == provider.EffortAuto && hit.Effort != "" && !req.ThinkOff
 	if len(intents) > 0 || effort {
@@ -288,13 +359,13 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 		switch {
 		case g.Classifier == "":
 			c.Error = "the group has no classifier"
-		case ask == nil:
+		case answer == nil:
 			c.Error = "nothing to ask the classifier with: this is a classifier's own call"
 		case text == "":
 			c.Error = "the message has no words to classify"
 		default:
 			t0 := time.Now()
-			v, cached, err := classify(ask, g.Classifier, intents, prev, effort, text)
+			v, cached, err := answer(g.Classifier, intents, prev, effort, text)
 			c.Intent, c.Cached, c.Ms = v.Intent, cached, int(time.Since(t0).Milliseconds())
 			if effort {
 				c.Effort, c.Score = v.Effort, v.Score
@@ -322,20 +393,32 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 	if i := provider.MatchRule(g.Rules, q); i >= 0 {
 		hit.N, hit.Use, hit.When = i+1, g.Rules[i].Use, g.Rules[i].Conditions()
 	}
-	turnRules.Lock()
-	defer turnRules.Unlock()
-	input, answered, hour := tr.input, tr.answered, tr.hour
-	if cur, ok := turnRules.m[key]; ok {
-		input, answered, hour = cur.input, cur.answered, cur.hour // answered while the classifier was asked
+}
+
+// TryRule is what a group's rules would decide for a conversation's first
+// turn saying text alone, from agent ("" for none): the classifier asked
+// which of the rules' intents the message is, and the first rule that
+// matches. The rules are the ones given, which need not be saved, so the
+// Routing page tries a draft; the answer is a RuleHit as the trace tells
+// one, nil for a group that decides nothing. It decides and keeps
+// nothing: no turn decision (turnRules), no affinity, and no rest or
+// failure note for a classifier that couldn't say — a try asks it by
+// itself. The ask is a real one, served as magpie's own, and rests a key
+// its vendor refused as any classifier call does. What a live request
+// meets besides the rules — the conversation kept from the turn before,
+// members resting, the members' windows — is not in the answer.
+func (s *Server) TryRule(g provider.Group, text, agent string) *RuleHit {
+	if !g.Ruled() {
+		return nil
 	}
-	turnRules.m[key] = turnRule{turn: turn, use: hit.Use, n: hit.N, at: now, input: input, intent: q.Intent, effort: hit.Pick, wanted: hit.Wanted, answered: answered, size: size, hour: hour}
-	if len(turnRules.m) > 4096 {
-		for k, tr := range turnRules.m {
-			if now.Sub(tr.at) > stickKeep {
-				delete(turnRules.m, k)
-			}
-		}
-	}
+	req := &Request{Messages: []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: text}}}}}
+	turn, _ := turnIn(req)
+	now := ruleClock()
+	size := estimate(req)
+	q := provider.RuleRequest{Tokens: size, Agent: agent, At: now}
+	hit := &RuleHit{Turn: turn, Tokens: q.Tokens, Bare: len(g.Rules) == 0}
+	turnDecide(g, req, q, hit, turnRule{}, false, size, now, directAnswer(s.askClassifier))
+	finishHit(hit, g, q)
 	return hit
 }
 

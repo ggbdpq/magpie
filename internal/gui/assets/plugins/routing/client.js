@@ -5841,6 +5841,41 @@ function routingPage(part) {
     drawLevels();
     ed.append(el("label", "", t("Levels")), lw);
 
+    // trying the rules: what they would decide for a conversation's first
+    // turn saying the words given, on the draft as it is — the classifier
+    // asked for real, nothing routed and nothing kept
+    const tryOut = el("div", "hint");
+    const tryBtn = el("button", "text", t("Try these rules"));
+    const tryRules = async () => {
+      const text = tryIn.value.trim();
+      if (!text) return tryIn.focus({ preventScroll: true });
+      if (d.rules.some((r) => r.intent) && !d.classifier) return status(t("Choose the model that tells which intent a message is"), "warn");
+      tryBtn.classList.add("busy");
+      tryOut.replaceChildren(el("div", "", t("Trying…")));
+      try {
+        const { hit } = await api("groups/try", { id: idOf(), from: g?.id, name: d.name.trim() || idOf(), members: namedOf(d), match: d.match, routing: d.routing, pick: d.pick || "", affinity: d.affinity, rules: d.rules, effort: d.effort, classifier: d.rules.some((r) => r.intent) || d.effort === "auto" ? d.classifier : "", text });
+        const lines = [];
+        const why = classWhy(hit);
+        if (why) lines.push(why);
+        if (!hit || hit.bare) lines.push(t("This group decides nothing: it has no rules but pauses, or none at all."));
+        else if (hit.n) {
+          const when = (hit.when || []).map(condText).join(", ");
+          lines.push(t("Rule {n} would match — {when} — and {use} would go first; the group's others stay behind it if it fails.", { n: hit.n, when, use: memberName(hit.use) }));
+        } else lines.push(t("No rule would match: the group's order stands."));
+        if (d.rules.some((r) => r.compact)) lines.push(t("A rule for compacting matches compacting requests only; a try matches none of them."));
+        if (d.rules.some((r) => r.folders?.length || r.exceptFolders?.length)) lines.push(t("A try is a first turn from no folder: rules of folders match none, rules of except-folders hold."));
+        lines.push(t("A real request also depends on the conversation a turn keeps, its members resting and their windows."));
+        tryOut.replaceChildren(...lines.map((s) => el("div", "", s)));
+      } catch (e) { tryOut.replaceChildren(); status(e.message, "err"); }
+      tryBtn.classList.remove("busy");
+    };
+    tryBtn.onclick = () => { tryRules().catch((e) => { tryBtn.classList.remove("busy"); status(e.message, "err"); }); };
+    const tryIn = input("", t("Try these rules on a message"));
+    tryIn.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") tryBtn.onclick(); };
+    const tryRow = el("div", "rt-pickrow");
+    tryRow.append(tryIn, tryBtn);
+    ed.append(el("label", "", t("Tryout")), tryRow, tryOut);
+
     const bar = el("div", "bar");
     if (g) {
       const del = el("button", "text danger", t("Remove"));

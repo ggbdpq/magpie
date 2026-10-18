@@ -2,6 +2,7 @@ package gui
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -360,6 +361,28 @@ func groupsState() groupsJSON {
 func groupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/groups", func(rw http.ResponseWriter, r *http.Request) {
 		writeJSON(rw, groupsState())
+	})
+	// what a group's rules would decide for a first turn saying text
+	// alone: the rules as sent, a draft the page has not saved. The
+	// classifier's answer is a real ask, served as magpie's own; nothing
+	// else is decided, kept or rested
+	mux.HandleFunc("POST /api/groups/try", func(rw http.ResponseWriter, r *http.Request) {
+		var body struct {
+			provider.Group
+			Text  string `json:"text"`
+			Agent string `json:"agent"`
+		}
+		r.Body = http.MaxBytesReader(rw, r.Body, 256<<10)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			fail(rw, err)
+			return
+		}
+		gw := served.Load()
+		if gw == nil {
+			fail(rw, errors.New("this magpie doesn't serve the gateway, so there is nothing to ask"))
+			return
+		}
+		writeJSON(rw, map[string]any{"hit": gw.TryRule(body.Group, body.Text, body.Agent)})
 	})
 	mux.HandleFunc("POST /api/groups/{action}", func(rw http.ResponseWriter, r *http.Request) {
 		var body struct {

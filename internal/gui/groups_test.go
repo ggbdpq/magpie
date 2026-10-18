@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -189,5 +190,54 @@ func TestGroupsPick(t *testing.T) {
 	}
 	if g, _, _ := provider.FindGroup("group/hand"); g.Pick != "b/gpt-6-astra" {
 		t.Fatalf("%+v", g)
+	}
+}
+
+// The Routing view's try asks what a draft's rules would decide for a
+// first turn saying text alone, through the running gateway; with none,
+// there is nothing to ask.
+func TestGroupTry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	mux := http.NewServeMux()
+	groupRoutes(mux)
+	post := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest("POST", "/api/groups/try", strings.NewReader(body)))
+		return w
+	}
+	if w := post(`{"text":"hi"}`); w.Code != 400 || !strings.Contains(w.Body.String(), "doesn't serve the gateway") {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	old := served.Swap(gateway.New())
+	t.Cleanup(func() { served.Swap(old) })
+	try := func(body string) *gateway.RuleHit {
+		t.Helper()
+		w := post(body)
+		if w.Code != 200 {
+			t.Fatalf("%d %s", w.Code, w.Body)
+		}
+		var out struct {
+			Hit *gateway.RuleHit `json:"hit"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Hit
+	}
+	hit := try(`{"id":"g","name":"G","rules":[{"use":"x/y","tokens":1}],"text":"please read the file"}`)
+	if hit == nil || hit.N != 1 || hit.Use != "x/y" {
+		t.Fatalf("%+v", hit)
+	}
+	// a group that decides nothing: no rule to tell of
+	if hit := try(`{"text":"hello"}`); hit != nil {
+		t.Fatalf("%+v", hit)
+	}
+	// a body that isn't one is refused
+	if w := post(`{`); w.Code != 400 {
+		t.Fatalf("%d", w.Code)
 	}
 }

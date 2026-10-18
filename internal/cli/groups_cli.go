@@ -11,6 +11,7 @@ import (
 
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -42,6 +43,9 @@ const groupUsage = `usage:
                                           group alone; listed=yes lists them too again)
   magpie group pick <id> <model>          route the group manually, every request to that one of its models
                                           (as clicking it on the group's card in the Routing view does)
+  magpie group try <id> <message…>        what the group's rules would decide for a first turn saying <message>:
+                                          which intent its classifier picked, which rule matched; nothing routed,
+                                          nothing kept
   magpie group copy <id> [name]           duplicate a group with its models, routing and rules, listed after it
                                           (name: "<its name> copy" when left out; also: magpie group duplicate)
   magpie group template [kind] [name]     a group for a common need, made of your own models in one go; without
@@ -711,6 +715,11 @@ func groupCmd(args []string) error {
 		return templateCmd(rest)
 	case "rule", "rules":
 		return ruleCmd(rest)
+	case "try":
+		if len(rest) < 2 {
+			return fmt.Errorf("magpie group try <id> <message…>")
+		}
+		return groupTryCmd(rest)
 	case "show":
 		if len(rest) != 1 {
 			return fmt.Errorf("magpie group show <id>")
@@ -745,6 +754,41 @@ func groupCmd(args []string) error {
 		return err
 	}
 	return showGroup(g)
+}
+
+// groupTry decides what a group's rules would decide for a conversation's
+// first turn saying the words given: which intent its classifier picked
+// and which rule matched. It asks the classifier itself, beside any
+// running magpie — the rules tried are the group's as saved; nothing is
+// routed and nothing is kept.
+func groupTryCmd(args []string) error {
+	g, err := findGroup(args[0])
+	if err != nil {
+		return err
+	}
+	hit := gateway.New().TryRule(g, strings.Join(args[1:], " "), "")
+	if hit == nil {
+		return fmt.Errorf("%s decides nothing: it has no rules but pauses, or none at all", g.Name)
+	}
+	if cl := hit.Classified; cl != nil {
+		switch {
+		case cl.Error != "":
+			fmt.Println(amber.Render("!"), "the classifier", muted.Render(cl.By), "couldn't say:", cl.Error)
+		case cl.Intent == "":
+			fmt.Println(green.Render("✓"), "the classifier", muted.Render(cl.By), "says none of the intents")
+		default:
+			fmt.Println(green.Render("✓"), "the classifier", muted.Render(cl.By), "says:", bold.Render(cl.Intent))
+		}
+	}
+	if hit.N == 0 {
+		fmt.Println(muted.Render("no rule matched: the group's order stands"))
+		return nil
+	}
+	fmt.Println(green.Render("✓"), fmt.Sprintf("rule %d", hit.N), ruleLine(g.Rules[hit.N-1]))
+	if len(hit.Then) > 0 {
+		fmt.Println(muted.Render("  failing over to"), strings.Join(hit.Then, ", "))
+	}
+	return nil
 }
 
 func addGroup(name string, pairs []string) (provider.Group, error) {

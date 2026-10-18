@@ -321,3 +321,30 @@ func TestGroupRenameSaysTheIDStays(t *testing.T) {
 		t.Fatalf("rename said %q; want that the id stays fast", out)
 	}
 }
+
+// magpie group try decides beside any running magpie: it asks the
+// classifier itself, from the same files the gateway reads.
+func TestGroupTryCmd(t *testing.T) {
+	groupsHome(t)
+	if err := groupTryCmd([]string{"nope", "hello"}); err == nil || !strings.Contains(err.Error(), "no group") {
+		t.Fatalf("%v", err)
+	}
+	if err := provider.SaveGroup(provider.Group{ID: "mine", Name: "Mine", Members: []string{"a/m"},
+		Rules: []provider.Rule{{Use: "a/m", Tokens: 1}}}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := stdoutOf(t, func() error { return groupTryCmd([]string{"mine", "hello"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "rule 1") || !strings.Contains(out, "a/m") {
+		t.Fatalf("try said %q", out)
+	}
+	// a group with no deciding rules is said, not asked about
+	if err := provider.SaveGroup(provider.Group{ID: "idle", Name: "Idle", Members: []string{"a/m"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := groupTryCmd([]string{"idle", "hello"}); err == nil || !strings.Contains(err.Error(), "decides nothing") {
+		t.Fatalf("%v", err)
+	}
+}

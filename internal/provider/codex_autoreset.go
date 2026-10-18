@@ -38,8 +38,15 @@ const (
 // CodexAutoResetWhen says at which of those times the Codex account user
 // spends a reset by itself: both unless the user kept it to one.
 func CodexAutoResetWhen(user string) (week, expiring bool) {
-	user = strings.ToLower(user)
 	s := settings.Load()
+	return codexAutoResetWhenOf(&s, user)
+}
+
+// codexAutoResetWhenOf is CodexAutoResetWhen for settings already in hand:
+// the same answer from s, so a setter reads the time it keeps inside the
+// update that writes it.
+func codexAutoResetWhenOf(s *settings.Settings, user string) (week, expiring bool) {
+	user = strings.ToLower(user)
 	if user == "" || !slices.Contains(s.CodexAutoReset, user) {
 		return false, false
 	}
@@ -105,23 +112,40 @@ func SetCodexAutoReset(user string, on bool) error {
 }
 
 // SetCodexAutoResetCase turns one of the two times (ResetCaseWeek or
-// ResetCaseExpiring) on or off for user, the other kept as it is.
+// ResetCaseExpiring) on or off for user, the other kept as it is. The other
+// time is read inside the update's lock: read before it, two calls that
+// each turned one time on for the same account, at once, each saved the
+// account with its own time alone, and the second lost the first (#2813).
 func SetCodexAutoResetCase(user, when string, on bool) error {
-	week, expiring := CodexAutoResetWhen(strings.TrimSpace(user))
 	switch when {
-	case ResetCaseWeek:
-		week = on
-	case ResetCaseExpiring:
-		expiring = on
+	case ResetCaseWeek, ResetCaseExpiring:
 	default:
 		return fmt.Errorf("a reset is used by itself when the week runs out (%s) or before one expires (%s), not %q", ResetCaseWeek, ResetCaseExpiring, when)
 	}
-	return setCodexAutoReset(user, week, expiring)
+	user = strings.ToLower(strings.TrimSpace(user))
+	return settings.Update(func(s *settings.Settings) error {
+		week, expiring := codexAutoResetWhenOf(s, user)
+		switch when {
+		case ResetCaseWeek:
+			week = on
+		case ResetCaseExpiring:
+			expiring = on
+		}
+		return keepCodexAutoReset(s, user, week, expiring)
+	})
 }
 
 func setCodexAutoReset(user string, week, expiring bool) error {
 	user = strings.ToLower(strings.TrimSpace(user))
-	s := settings.Load()
+	return settings.Update(func(s *settings.Settings) error {
+		return keepCodexAutoReset(s, user, week, expiring)
+	})
+}
+
+// keepCodexAutoReset leaves user spending its reset at the times week and
+// expiring say, in the settings an update holds: the account is kept with
+// the one time the user left it to, or with both when kept to neither.
+func keepCodexAutoReset(s *settings.Settings, user string, week, expiring bool) error {
 	s.CodexAutoReset = slices.DeleteFunc(slices.Clone(s.CodexAutoReset), func(u string) bool { return u == user })
 	only := map[string]string{}
 	for u, c := range s.CodexAutoResetOnly {
@@ -139,7 +163,7 @@ func setCodexAutoReset(user string, week, expiring bool) error {
 		}
 	}
 	s.CodexAutoResetOnly = only
-	return settings.Save(s)
+	return nil
 }
 
 var autoReset = autoResets{file: "codex-autoreset.json"}

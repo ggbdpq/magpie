@@ -10,6 +10,7 @@ package settings
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -1280,6 +1281,39 @@ func SavedAddr() string {
 func Save(s Settings) error {
 	fileMu.Lock()
 	defer fileMu.Unlock()
+	return save(s, false)
+}
+
+// ErrUnchanged is what an update's fn returns when it changed nothing:
+// Update then skips the save and returns nil, so an update that finds the
+// file already as wanted writes nothing — a settings file that cannot be
+// written is never asked about a change that did not happen.
+var ErrUnchanged = errors.New("settings: nothing changed")
+
+// Update changes the settings under the file's lock: fn is handed what the
+// file holds now, and what fn leaves is what is saved (fn returns
+// ErrUnchanged to say nothing changed, and nothing is written). The file is
+// read checked: one that cannot be read is unknown, never empty, and the
+// update stops before fn instead of saving the defaults over it. Load and
+// Save each take the lock on their own, so a setter that loads a snapshot,
+// changes it and saves it drops whatever another setter wrote in between
+// (#2813); a setter that reads, changes and writes the whole file goes
+// through this, the way SetGatewayConversations does. fn's error leaves the
+// file as it was, and like any save but the consent one, recording consent
+// is kept.
+func Update(fn func(*Settings) error) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	if err := fn(&s); err != nil {
+		if errors.Is(err, ErrUnchanged) {
+			return nil
+		}
+		return err
+	}
 	return save(s, false)
 }
 

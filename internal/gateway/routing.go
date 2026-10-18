@@ -1016,11 +1016,14 @@ func (c candidate) allowance() (provider.Allowance, bool) {
 // keepRetry passes on, with a vendor's error, what it said about when to
 // try again: restAfter reads it to rest the candidate that long, and an
 // agent given the error reads it too. When it said so in the error itself
-// (ChatGPT's resets_at), that goes on as Retry-After.
+// (ChatGPT's resets_at), that goes on as Retry-After. The other magpie's
+// marker that its key's own limit came with goes on too (#2077): the
+// relay's holdWriter answers restAfterMarked, and without it the key's
+// limit reads as one model's refusal and rests the model alone.
 func keepRetry(dst, src http.Header, body []byte) {
 	for k, vs := range src {
 		l := strings.ToLower(k)
-		if l == "retry-after" || strings.Contains(l, "ratelimit") && strings.Contains(l, "reset") {
+		if l == "retry-after" || strings.EqualFold(k, remoteKeyLimitHeader) || strings.Contains(l, "ratelimit") && strings.Contains(l, "reset") {
 			dst[k] = vs
 		}
 	}

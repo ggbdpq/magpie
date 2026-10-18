@@ -203,6 +203,147 @@ func TestCopilotAutoSessionAsVSCode(t *testing.T) {
 	}
 }
 
+// autoHeld is an Auto upstream whose /models/session answer is held until
+// its gate is opened, counting the asks it was and saying so on arrived.
+type autoHeld struct {
+	mu      sync.Mutex
+	asks    int
+	gate    chan struct{}
+	open    sync.Once
+	arrived chan struct{}
+	srv     *httptest.Server
+}
+
+func newAutoHeld(t *testing.T) *autoHeld {
+	t.Helper()
+	h := &autoHeld{gate: make(chan struct{}), arrived: make(chan struct{}, 4)}
+	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auto" {
+			w.WriteHeader(404) // Auto v2 not offered: /models/session
+			return
+		}
+		if r.URL.Path != "/models/session" || r.Method != http.MethodPost {
+			w.WriteHeader(404)
+			return
+		}
+		h.mu.Lock()
+		h.asks++
+		h.mu.Unlock()
+		select {
+		case h.arrived <- struct{}{}:
+		default:
+		}
+		<-h.gate
+		io.WriteString(w, `{"session_token":"held-tok","selected_model":"m-held","available_models":["m-held"],"expires_at":0}`)
+	}))
+	t.Cleanup(func() {
+		h.open.Do(func() { close(h.gate) }) // let a held answer go before the server is closed
+		h.srv.Close()
+	})
+	return h
+}
+
+func (h *autoHeld) count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.asks
+}
+
+func (h *autoHeld) openNow() { h.open.Do(func() { close(h.gate) }) }
+
+// An account's Auto resolution asked while another account's answer is held
+// is answered all the same (#2809: one lock over every account's Auto asked
+// them one by one), and the same account asked twice together goes upstream
+// once, the second sharing the first's session.
+func TestCopilotAutoConcurrent(t *testing.T) {
+	signIn(t)
+	copilotAutoSessions = map[string]copilotAutoSession{}
+	sess := func(api string) copilotSession {
+		s := copilotSession{Token: "sess", ExpiresAt: time.Now().Add(time.Hour).Unix()}
+		s.Endpoints.API = api
+		return s
+	}
+	held := newAutoHeld(t)
+	free := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auto" {
+			w.WriteHeader(404)
+			return
+		}
+		if r.URL.Path != "/models/session" || r.Method != http.MethodPost {
+			w.WriteHeader(404)
+			return
+		}
+		io.WriteString(w, `{"session_token":"free-tok","selected_model":"m-free","available_models":["m-free"],"expires_at":0}`)
+	}))
+	defer free.Close()
+	copilotSessions = map[string]copilotSession{
+		"gho_held": sess(held.srv.URL),
+		"gho_free": sess(free.URL),
+	}
+	appA := copilotApp{User: "octocat", Token: "gho_held"}
+	appB := copilotApp{User: "hubot", Token: "gho_free"}
+
+	// A's answer is held upstream; B's cold resolution is asked meanwhile
+	// and answered, its session come within 2s
+	doneA := make(chan error, 1)
+	go func() { _, err := copilotAutoResolve(context.Background(), appA, false); doneA <- err }()
+	<-held.arrived
+	modelB := make(chan string, 1)
+	failedB := make(chan error, 1)
+	go func() {
+		a, err := copilotAutoResolve(context.Background(), appB, false)
+		if err != nil {
+			failedB <- err
+			return
+		}
+		modelB <- a.Model
+	}()
+	select {
+	case <-time.After(2 * time.Second):
+		t.Error("an account's Auto resolution held another account's: B's wasn't answered within 2s while A's upstream answer was held")
+	case err := <-failedB:
+		t.Errorf("B's Auto resolution failed instead of a session: %v", err)
+	case m := <-modelB:
+		if m != "m-free" {
+			t.Errorf("B's Auto picked %q, want m-free", m)
+		}
+	}
+	held.openNow()
+	if err := <-doneA; err != nil {
+		t.Errorf("A's Auto resolution: %v", err)
+	}
+
+	// the same account asked twice together (fresh, so no cache answers
+	// the second): one ask upstream, its session shared, not one ask each
+	held2 := newAutoHeld(t)
+	copilotSessions["gho_twice"] = sess(held2.srv.URL)
+	appC := copilotApp{User: "octocat", Token: "gho_twice"}
+	picked := make(chan copilotAutoSession, 2)
+	askErr := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			a, err := copilotAutoResolve(context.Background(), appC, true)
+			picked <- a
+			askErr <- err
+		}()
+	}
+	<-held2.arrived
+	time.Sleep(100 * time.Millisecond) // the second caller lands on the first's ask
+	held2.openNow()
+	for i := 0; i < 2; i++ {
+		if err := <-askErr; err != nil {
+			t.Fatalf("the same account asked twice together: %v", err)
+		}
+	}
+	a1, a2 := <-picked, <-picked
+	if a1 != a2 || a1.Model != "m-held" {
+		t.Errorf("asked together picked %+v and %+v, want one session for m-held", a1, a2)
+	}
+	if n := held2.count(); n != 1 {
+		t.Errorf("the same account asked twice together went upstream %d times, want once", n)
+	}
+}
+
 // An account Copilot has no Auto session for (404 however asked) is told
 // so, and goes on with the first model it may pick by hand, when it has one.
 func TestCopilotAutoUnavailable(t *testing.T) {

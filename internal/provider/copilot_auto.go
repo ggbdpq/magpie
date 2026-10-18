@@ -158,7 +158,28 @@ func pickRefused(ctx context.Context, model, said string) {
 var (
 	copilotAutoMu       sync.Mutex
 	copilotAutoSessions = map[string]copilotAutoSession{} // by GitHub token
+	// copilotAutoInflight is the Auto session being asked for an account,
+	// by GitHub token and whether the ask was fresh: callers landing on it
+	// while it is being asked wait for its answer instead of asking Copilot
+	// again (#2809).
+	copilotAutoInflight = map[copilotAutoAsking]*copilotAutoWait{}
 )
+
+// copilotAutoAsking says whose Auto session is being asked: the account,
+// and whether the ask was a fresh one (a fresh ask is answered by its own
+// ask, not by another caller's).
+type copilotAutoAsking struct {
+	token string
+	fresh bool
+}
+
+// copilotAutoWait is one account's Auto ask the others are waiting on: its
+// session, or why it has none, said once done is closed.
+type copilotAutoWait struct {
+	done chan struct{}
+	a    copilotAutoSession
+	err  error
+}
 
 type copilotAutoKey struct{}
 
@@ -172,13 +193,49 @@ func WithAutoPrompt(ctx context.Context, prompt string) context.Context {
 
 // copilotAutoResolve is the account's Auto session, asked again a couple of
 // minutes before it expires, when fresh is set or once the account was
-// refused its model.
+// refused its model. The ask is one per account at a time and its callers
+// share its session or its error; no account's ask holds another's, one
+// account's slow answer having held every account's lookups behind
+// copilotAutoMu (#2809). The lock is held for the cache and the answer's
+// keeping alone, never for the asking.
 func copilotAutoResolve(ctx context.Context, app copilotApp, fresh bool) (copilotAutoSession, error) {
 	copilotAutoMu.Lock()
-	defer copilotAutoMu.Unlock()
 	if a, ok := copilotAutoSessions[app.Token]; ok && !fresh && (a.ExpiresAt == 0 || time.Until(time.Unix(a.ExpiresAt, 0)) > 2*time.Minute) && !copilotRefuses(app.Token, a.Model) {
+		copilotAutoMu.Unlock()
 		return a, nil
 	}
+	key := copilotAutoAsking{app.Token, fresh}
+	call, waiting := copilotAutoInflight[key]
+	if !waiting {
+		call = &copilotAutoWait{done: make(chan struct{})}
+		copilotAutoInflight[key] = call
+	}
+	copilotAutoMu.Unlock()
+	if waiting {
+		select {
+		case <-call.done:
+			return call.a, call.err
+		case <-ctx.Done():
+			return copilotAutoSession{}, ctx.Err()
+		}
+	}
+	a, err := copilotAutoAsk(ctx, app)
+	copilotAutoMu.Lock()
+	if err == nil {
+		copilotAutoSessions[app.Token] = a
+	}
+	call.a, call.err = a, err
+	delete(copilotAutoInflight, key)
+	close(call.done)
+	copilotAutoMu.Unlock()
+	return a, err
+}
+
+// copilotAutoAsk asks Copilot the account's Auto session with no lock held:
+// the session (its endpoint may want asking), POST /auto as Copilot Chat
+// does, and /models/session when /auto doesn't answer. copilotAutoResolve
+// keeps what it answers for the callers waiting on it.
+func copilotAutoAsk(ctx context.Context, app copilotApp) (copilotAutoSession, error) {
 	s, err := app.session(ctx)
 	if err != nil {
 		return copilotAutoSession{}, err
@@ -186,7 +243,6 @@ func copilotAutoResolve(ctx context.Context, app copilotApp, fresh bool) (copilo
 	base := s.apiBase(app.Host)
 	a, why, answered := copilotAutoRoute(ctx, app, s, base)
 	if why == "" {
-		copilotAutoSessions[app.Token] = a
 		return a, nil
 	}
 	if answered {
@@ -260,9 +316,7 @@ func copilotAutoResolve(ctx context.Context, app copilotApp, fresh bool) (copilo
 	if model == "" {
 		return copilotAutoSession{}, errors.New("Copilot Auto picked no model")
 	}
-	a = copilotAutoSession{Token: v.Token, Model: model, ExpiresAt: v.ExpiresAt, Via: "/models/session", Skipped: why}
-	copilotAutoSessions[app.Token] = a
-	return a, nil
+	return copilotAutoSession{Token: v.Token, Model: model, ExpiresAt: v.ExpiresAt, Via: "/models/session", Skipped: why}, nil
 }
 
 // copilotAutoRoute asks POST /auto for the model, as Copilot Chat does, at
@@ -341,7 +395,6 @@ func copilotAutoFallback(ctx context.Context, app copilotApp, why string) (copil
 		return copilotAutoSession{}, errors.New("Copilot doesn't offer Auto to this account (" + why + "), and lists no model it may pick by hand that it serves; check the plan at github.com/settings/copilot")
 	}
 	a := copilotAutoSession{Model: picks[0], ExpiresAt: time.Now().Add(10 * time.Minute).Unix(), Via: AutoFallback, Skipped: why}
-	copilotAutoSessions[app.Token] = a
 	return a, nil
 }
 
@@ -462,6 +515,7 @@ func ForgetCopilotForTest() {
 	copilotMu.Unlock()
 	copilotAutoMu.Lock()
 	copilotAutoSessions = map[string]copilotAutoSession{}
+	copilotAutoInflight = map[copilotAutoAsking]*copilotAutoWait{}
 	copilotAutoMu.Unlock()
 	copilotTermsMu.Lock()
 	copilotTerms, copilotPicks = map[string]map[string]bool{}, map[string][]string{}

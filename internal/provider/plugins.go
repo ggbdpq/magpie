@@ -454,6 +454,22 @@ func (p Provider) Origin(ctx context.Context) string {
 	return scheme + "://" + HostOf(rest)
 }
 
+// LoaderKeyed is whether the account's loader gave a key (its Options'
+// apiKey, an API-key sign-in's): such a provider's requests are signed
+// with it, as a provider of the user's own are (#2817). false for any
+// other provider, and when the loader can't be asked.
+func (p Provider) LoaderKeyed(ctx context.Context) bool {
+	if !p.IsPlugin() {
+		return false
+	}
+	pp := *p.Account.plugin
+	if cur, ok := PluginOf(p.ID); ok {
+		pp = cur
+	}
+	o, err := plugin.LoaderOptions(ctx, pp.ID, p.Account.pluginKey)
+	return err == nil && o.APIKey != ""
+}
+
 // pluginFetch sends a request the gateway made for a plugin's provider
 // through the plugin: to the base URL its loader gave (else the model's,
 // the provider's, the AI SDK package's), with what the loader adds.

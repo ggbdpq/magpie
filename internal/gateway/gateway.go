@@ -3832,7 +3832,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 				req.Header.Set(h, v)
 			}
 		}
-		if p.Account == nil && fromClaudeCode(in) {
+		if claudeCodeRelay(ctx, p) && fromClaudeCode(in) {
 			// a relay that serves only Claude Code (#179: "only accessible
 			// via the official Claude CLI") knows it by its own headers,
 			// which go on as it sent them; its key to magpie never does
@@ -3978,6 +3978,16 @@ func claudeCodeHeader(k string) bool {
 		}
 	}
 	return false
+}
+
+// claudeCodeRelay is whether p is asked a Claude Code request as a relay
+// is (#179): a provider of the user's own, or a plugin's account whose
+// model speaks Anthropic and whose loader gave a key (#2817) — the
+// plugin's fetch carries the headers on as magpie put them, its own key
+// signing the request as ever. Asked on Anthropic's API alone, where the
+// gate's callers stand; a subscription signed in to is neither.
+func claudeCodeRelay(ctx context.Context, p provider.Provider) bool {
+	return p.Account == nil || p.LoaderKeyed(ctx)
 }
 
 // fromCodex is a request Codex sent — its CLI, exec, the IDE extension,
@@ -4177,7 +4187,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	if proto == provider.Gemini && p.IsVertex() && geminiWhole {
 		path = provider.VertexWholePath(upstream) // answered as one JSON body
 	}
-	if proto == provider.Anthropic && p.Account == nil && fromClaudeCode(r.Header) && r.URL.Query().Get("beta") == "true" {
+	if proto == provider.Anthropic && claudeCodeRelay(r.Context(), p) && fromClaudeCode(r.Header) && r.URL.Query().Get("beta") == "true" {
 		path += "?beta=true" // as Claude Code asks it
 	}
 	if proto != provider.Anthropic {

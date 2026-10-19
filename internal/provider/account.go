@@ -1007,22 +1007,32 @@ func codexAccount(home string) (Provider, bool) {
 // sign-in (auth.json or the keychain item, codexStore.write) for Codex to
 // find.
 func codexToken(ctx context.Context, dir string) (tok, accountID string, err error) {
+	return codexTokenRefresh(ctx, dir, false)
+}
+
+// codexTokenRefresh is codexToken, with force to renew the sign-in even
+// while its access token looks good: the vendor's 401 has said otherwise
+// (signin_expired.go, #2973). The same lock a request's signing waits on
+// holds the merge, so one refresh goes out however many ask at once.
+func codexTokenRefresh(ctx context.Context, dir string, force bool) (tok, accountID string, err error) {
 	codexMu.Lock()
 	defer codexMu.Unlock()
 	b, st, err := readCodexLogin(dir, false)
 	var a codexAuth
 	if err == nil && json.Unmarshal(b, &a) == nil && a.Tokens.AccessToken != "" {
-		if exp, _ := jwtClaims(a.Tokens.AccessToken)["exp"].(float64); exp == 0 || time.Until(time.Unix(int64(exp), 0)) > 5*time.Minute {
-			return a.Tokens.AccessToken, codexAccountID(a), nil
-		}
-		// about to be refreshed: the store's own, not a kept read, which
-		// Codex may have rotated since (its refresh token spent)
-		if st.keychain {
-			b, st, err = readCodexLogin(dir, true)
-			a = codexAuth{}
-			if err == nil && json.Unmarshal(b, &a) == nil && a.Tokens.AccessToken != "" {
-				if exp, _ := jwtClaims(a.Tokens.AccessToken)["exp"].(float64); exp == 0 || time.Until(time.Unix(int64(exp), 0)) > 5*time.Minute {
-					return a.Tokens.AccessToken, codexAccountID(a), nil
+		if !force {
+			if exp, _ := jwtClaims(a.Tokens.AccessToken)["exp"].(float64); exp == 0 || time.Until(time.Unix(int64(exp), 0)) > 5*time.Minute {
+				return a.Tokens.AccessToken, codexAccountID(a), nil
+			}
+			// about to be refreshed: the store's own, not a kept read, which
+			// Codex may have rotated since (its refresh token spent)
+			if st.keychain {
+				b, st, err = readCodexLogin(dir, true)
+				a = codexAuth{}
+				if err == nil && json.Unmarshal(b, &a) == nil && a.Tokens.AccessToken != "" {
+					if exp, _ := jwtClaims(a.Tokens.AccessToken)["exp"].(float64); exp == 0 || time.Until(time.Unix(int64(exp), 0)) > 5*time.Minute {
+						return a.Tokens.AccessToken, codexAccountID(a), nil
+					}
 				}
 			}
 		}

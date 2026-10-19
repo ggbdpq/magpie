@@ -47,8 +47,14 @@ func noteSignIn(ctx context.Context, a *provider.Account, req *http.Request, res
 	case res.StatusCode == http.StatusUnauthorized && res.Body != nil:
 		b, err := io.ReadAll(io.LimitReader(res.Body, 64<<10))
 		res.Body = readCloser{io.MultiReader(bytes.NewReader(b), res.Body), res.Body}
-		if err == nil && provider.SignInRevoked(res.StatusCode, b) {
+		switch {
+		case err == nil && provider.SignInRevoked(res.StatusCode, b):
 			provider.NoteRevokedSignIn(ctx, a, req)
+		case err == nil && provider.SignInRefreshable(res.StatusCode, b):
+			// the vendor said the token had expired and asked for a
+			// refresh (#2973): the sign-in is renewed where it is kept,
+			// and the next request goes out with the fresh token
+			provider.NoteRefreshableSignIn(ctx, a, req)
 		}
 	}
 }

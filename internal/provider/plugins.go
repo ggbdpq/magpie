@@ -713,8 +713,12 @@ const SignInHeader = "X-Magpie-Sign-In"
 
 // ModelUnserved are how a vendor says the model isn't one it serves this
 // key, or this way — words another provider, or key, may not answer with
-// (the gateway's unservedWords, read decoded: catalog.Words).
-var ModelUnserved = regexp.MustCompile(`(?i)model.{0,80}(not (supported|accessible|available|found|enabled|allowed)|unsupported|does ?n[o']t exist|unknown|invalid)|(no such|unknown|invalid|unsupported) model|model_not_found|模型.{0,12}(不存在|不支持|无权|未开通)`)
+// (the gateway's unservedWords, read decoded: catalog.Words): ModelScope's
+// 400 for a model id none of its instances serves, "Model id : … , has no
+// provider supported" (#2887), and Azure OpenAI's DeploymentNotFound, whose
+// message "The API deployment for this resource does not exist" a relay
+// passes on as a 400 (its 404 fails over by its status already).
+var ModelUnserved = regexp.MustCompile(`(?i)model.{0,80}(not (supported|accessible|available|found|enabled|allowed)|unsupported|does ?n[o']t exist|unknown|invalid)|(no such|unknown|invalid|unsupported) model|model_not_found|has no provider supported|deployment[ _]?not[ _]?found|deployment.{0,60}does ?n[o']t exist|模型.{0,12}(不存在|不支持|无权|未开通)`)
 
 // signInWords are words of a refusal about the sign-in itself, which a
 // model named beside them doesn't make the model's: "model gpt-x: invalid

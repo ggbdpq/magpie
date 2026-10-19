@@ -2409,13 +2409,19 @@ var openaiOnly = [][]byte{[]byte(`"internal_chat_message_metadata_passthrough"`)
 // forVendor is a Responses request as Codex sends it to a provider not
 // OpenAI's: without its messages' internal metadata, a call's
 // encrypted_function_args, stream_options' reasoning_summary_delivery and
-// configuration_update items.
+// configuration_update items; and, for a summary ask of magpie's own
+// (compaction, codexCompact), with its developer messages as the system
+// ones they are (developerItemsAsSystem) — Codex's own turns keep the
+// role, which a relay may be checking them by (#350, #1758).
 // A relay that checks it is Codex's turned the lot away ("invalid codex
 // request", #292). OpenAI's API and the ChatGPT backend get it as it came;
 // so does anything else, byte for byte, when none of them is in it.
-func forVendor(p provider.Provider, body []byte) []byte {
+func forVendor(p provider.Provider, body []byte, compaction bool) []byte {
 	if p.Account != nil && p.Account.Agent == "codex" || strings.HasSuffix(p.Host(), "openai.com") {
 		return body
+	}
+	if compaction {
+		body = developerItemsAsSystem(body)
 	}
 	if !slices.ContainsFunc(openaiOnly, func(k []byte) bool { return bytes.Contains(body, k) }) || !forVendorChanges(body) {
 		return body
@@ -2499,6 +2505,56 @@ func forVendorChanges(body []byte) bool {
 	})
 }
 
+// developerItemsAsSystem turns the developer messages of a Responses
+// request into system ones, where they stand. A provider that isn't
+// OpenAI's may not take the role: its Responses answered a Codex
+// compaction 400 "developer is not one of ['system', 'assistant', 'user',
+// 'tool', 'function']", the chat-only vendor behind it knowing chat roles
+// alone (#2955) — every retry Codex made failed the same, while the turns
+// around it, carrying no developer message, passed. Zed's cloud turned
+// the whole request away over one (ZedBody), and a Chat Completions
+// upstream is given the messages as system for the same reason
+// (developerAsSystem). A developer message says what a system one says,
+// and every Responses backend takes system; the ChatGPT backend, which
+// takes developer alone, never comes here. The message stays where it
+// stood, so a thread's cached prefix keeps its shape (#502).
+func developerItemsAsSystem(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"developer"`)) {
+		return body
+	}
+	var q map[string]json.RawMessage
+	if json.Unmarshal(body, &q) != nil {
+		return body
+	}
+	var items []json.RawMessage
+	if json.Unmarshal(q["input"], &items) != nil {
+		return body
+	}
+	changed := false
+	out := make([]json.RawMessage, 0, len(items))
+	for _, raw := range items {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber() // a number goes back as it came, not as a float
+		var it map[string]any
+		if dec.Decode(&it) == nil && (it["type"] == nil || it["type"] == "message") && it["role"] == "developer" {
+			it["role"] = "system"
+			if b, err := marshalPlain(it); err == nil {
+				raw, changed = b, true
+			}
+		}
+		out = append(out, raw)
+	}
+	if !changed {
+		return body
+	}
+	q["input"], _ = marshalPlain(out)
+	nb, err := marshalPlain(q)
+	if err != nil {
+		return body
+	}
+	return nb
+}
+
 func userMessage(text string) map[string]any { return codexsummary.UserMessage(text) }
 
 // codexCompact compacts a conversation held by a magpie model: the model
@@ -2536,6 +2592,7 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
 		r.Header.Set(turnMetadataHeader, turn)
 	}
 	r = askWhole(r)
+	r = askCompaction(r)
 	ask := func(b []byte) (*recorder, compactResult, error) {
 		rec := &recorder{header: http.Header{}, status: 200}
 		s.serve(rec, r, provider.Responses, b)

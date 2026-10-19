@@ -5815,7 +5815,8 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		msg := p.Name + ": " + errEndedShort.Error()
 		return writeError(w, from, 502, msg), msg
 	}
-	if (empty || repliesCounted(actual) && uncounted(col.res.Usage)) && !saidAnything(col.res.Parts) && answersNothing(col.res.Stop) {
+	if (empty || repliesCounted(actual) && uncounted(col.res.Usage)) && !saidAnything(col.res.Parts) && answersNothing(col.res.Stop) ||
+		cutVoidAt(actual, r.Context()) && cutVoid(col.res.Stop, !saidAnything(col.res.Parts)) {
 		msg := p.Name + ": " + emptyReply
 		return writeError(w, from, 502, msg), msg
 	}
@@ -5868,6 +5869,24 @@ func uncounted(u Usage) bool {
 // safety filter (told as a refusal, #248).
 func answersNothing(stop string) bool {
 	return stop != "length" && stop != "filter"
+}
+
+// cutVoidAt tells whether a reply in proto cut at its length that says
+// nothing fails: a Chat upstream's does (#2972: qoder/dfmodel ended four
+// replies of one turn with 48,000 tokens each, every one of them
+// reasoning, and the agent, told the output limit was reached, went on
+// at the user's "continue" and burned the same void again). A Gemini's
+// and a Code Assist's still goes as it came (#667), and so does a title,
+// description or prediction written here: its cut goes back the
+// response.incomplete it was, Codex's to ask again (#1466).
+func cutVoidAt(proto provider.Protocol, ctx context.Context) bool {
+	return proto == provider.Chat && ctx.Value(titleCheckKey{}) == nil
+}
+
+// cutVoid says whether this reply was one: cut at its length having said
+// nothing — no text and no call, only thinking, or nothing at all.
+func cutVoid(stop string, saidNothing bool) bool {
+	return saidNothing && stop == "length"
 }
 
 // saysSomething tells whether an event is any of a reply an agent shows or

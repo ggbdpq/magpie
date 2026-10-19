@@ -196,7 +196,11 @@ func TestUpstreamOfClinePass(t *testing.T) {
 
 // The real ClinePass stream's provider reaches the route, its try, the
 // request log and the usage ledger, relayed to a Chat client or translated
-// to a Messages one (#2847).
+// to a Messages one (#2847). The recording is itself a length cut that
+// said nothing — 16 completion tokens, all 16 of them reasoning (#2972)
+// — so the Messages client's reply is asked again and ends with the
+// empty-reply error, its ClinePass metadata kept; a Chat client's is
+// relayed as it came.
 func TestClinePassUpstreamRecorded(t *testing.T) {
 	stream := clinePassStream(t)
 	for _, path := range []string{"/v1/chat/completions", "/v1/messages"} {
@@ -220,14 +224,21 @@ func TestClinePassUpstreamRecorded(t *testing.T) {
 			if rec.Code != 200 {
 				t.Fatalf("%d %s", rec.Code, rec.Body)
 			}
+			translated := path == "/v1/messages"
+			if translated && !strings.Contains(rec.Body.String(), "an empty reply") {
+				t.Errorf("a length cut that said nothing answered as it came: %s", rec.Body)
+			}
 			r := lastRoute(s)
-			if r.Upstream != "deepseek" || len(r.Tries) != 1 || r.Tries[0].Upstream != "deepseek" {
+			if !translated && (r.Upstream != "deepseek" || len(r.Tries) != 1) {
+				t.Errorf("route upstream %q, tries %+v", r.Upstream, r.Tries)
+			}
+			if len(r.Tries) == 0 || r.Tries[0].Upstream != "deepseek" {
 				t.Errorf("route upstream %q, tries %+v", r.Upstream, r.Tries)
 			}
 			if calls := s.Recent(); len(calls) == 0 || calls[0].Usage.Upstream != "deepseek" {
 				t.Errorf("request log: %+v", calls)
 			}
-			if u := usage.Load(time.Time{}); len(u) != 1 || u[0].Upstream != "deepseek" {
+			if u := usage.Load(time.Time{}); len(u) == 0 || u[0].Upstream != "deepseek" {
 				t.Errorf("usage %+v", u)
 			}
 		})

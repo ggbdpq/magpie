@@ -374,6 +374,9 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 	// counts: a reply in this protocol counts its tokens, and one that
 	// said nothing and counted none fails too (repliesCounted, #2086)
 	var counts bool
+	// voids: a reply in this protocol cut at its length that says nothing
+	// fails too (cutVoidAt, #2972)
+	var voids bool
 	empties := 0 // the times such a reply was asked again here
 	said, stop := false, ""
 	var kept []Event       // the reply's end, while nothing is said in it
@@ -436,7 +439,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 		case KStop:
 			stop = ev.Stop
 		}
-		if (empty || counts) && !said {
+		if (empty || counts || voids) && !said {
 			switch {
 			case saysSomething(ev):
 				said = true
@@ -477,6 +480,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 			u.RequestID = requestID(res.Header)
 			summaryUpstream = actual == provider.Responses || actual == provider.Gemini || actual == provider.CodeAssist
 			empty, counts = emptyFails(actual), repliesCounted(actual)
+			voids = cutVoidAt(actual, r.Context())
 		}
 		if err == nil && res.StatusCode >= 400 {
 			b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
@@ -589,7 +593,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 			if held != nil {
 				held()
 			}
-			if (empty || counts && uncounted(this)) && !said && answersNothing(stop) {
+			if (empty || counts && uncounted(this)) && !said && answersNothing(stop) || voids && cutVoid(stop, !said) {
 				if empties < emptyRetries(w, r.Context()) && r.Context().Err() == nil {
 					// asked again here first, for the agent to have the
 					// answer rather than the error: Gemini on a long

@@ -263,6 +263,13 @@ var (
 	// RESOURCE_EXHAUSTED. A 5xx's words don't: a relay's 500 "当前模型 …
 	// 负载已经达到上限，请稍后重试" is its load's limit, not the plan's (#1418).
 	quotaCodes = regexp.MustCompile(`(?i)limit reached\|\d{10}\b|usage_limit_reached|RESOURCE_EXHAUSTED`)
+	// cutWords: a plugin's own error for the turn its upstream's stream
+	// died mid-call: the model wrote its tool call as text, the text
+	// stopped before the call was whole, and the plugin ends the turn as a
+	// failure "the gateway can retry or fail over" — its words, shared by
+	// the plugins that read text-form calls (magpie-community/plugins#38,
+	// packages/trae and packages/qoder's CUT_SHORT; #2873)
+	cutWords = regexp.MustCompile(`(?i)tool call, written as text, was cut short`)
 )
 
 // Why a candidate failed, as rest tells it.
@@ -323,6 +330,12 @@ const (
 	// 403 11140, "账号存在异常行为，已被限制使用", #1849) — the next is
 	// asked, and it rests restrictedRest, until the vendor lifts it
 	failRestricted = "restricted"
+	// failCut: a plugin ended the turn on purpose — its upstream's stream
+	// died mid-call, and the tool call it was reading, written as text,
+	// can't go on as the answer (plugins#38: the turn ends as an error
+	// "the gateway can retry or fail over"). The cut isn't the account's
+	// doing: the request is asked again, and nobody rests (#2873)
+	failCut = "cut"
 )
 
 // loopErrType is the usage log's ErrType for a reply ended for looping
@@ -382,6 +395,13 @@ func failure(status int, body []byte) string {
 	// the words are matched decoded, too
 	body = wordsOf(body)
 	switch {
+	case cutWords.Match(body):
+		// a plugin ended the turn on purpose: its upstream's stream died
+		// mid-call, and the call it was reading isn't the answer
+		// (plugins#38). The cut is transient and nobody's fault — the next
+		// answer mostly isn't one — so the request is asked again, and
+		// nobody rests (#2873)
+		return failCut
 	case restrictedSaid(status, body):
 		return failRestricted
 	case overflowed(status, body):
@@ -917,6 +937,12 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	now := time.Now()
 	d := fallbackCooldown
 	why := failureOf(c, status, body)
+	if why == failCut {
+		// a plugin ended the turn on purpose, its upstream's stream having
+		// died mid-call (plugins#38): the account is as good as it was, the
+		// request is asked again, and no rest and no failure counted (#2873)
+		return Rest{Why: why, Status: status, By: "off", Until: now}
+	}
 	if header.Get(zdrHeader) != "" || zdrRefused(status, body) {
 		// Command Code's Zero Data Retention setting refused the request:
 		// the model and the account are as good as they were, and answer

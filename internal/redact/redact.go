@@ -117,6 +117,9 @@ var rules = append([]rule{
 	{kind: "API_KEY", re: regexp.MustCompile(`sk-(?:ant-|proj-|or-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}`), markers: []string{"sk-"}, bound: tokenCh},
 	// a gateway's or a relay's own: oc_sk_…, or_sk_… (#195)
 	{kind: "API_KEY", re: regexp.MustCompile(`[a-z]{2,4}_sk_[A-Za-z0-9_-]{20,}`), markers: []string{"_sk_"}, bound: tokenCh, ok: secretValue},
+	// Volcano Ark and the relays in front of it issue keys with an ark-
+	// prefix (#2946)
+	{kind: "API_KEY", re: regexp.MustCompile(`ark-[A-Za-z0-9][A-Za-z0-9_-]{15,}`), markers: []string{"ark-"}, bound: tokenCh, ok: secretValue},
 	{kind: "API_KEY", re: regexp.MustCompile(`(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|glpat-[A-Za-z0-9_-]{20,})`), markers: []string{"gh", "github_pat_", "glpat-"}, bound: tokenCh},
 	{kind: "API_KEY", re: regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`), markers: []string{"AIza"}, bound: tokenCh},
 	{kind: "API_KEY", re: regexp.MustCompile(`xox[abposr]-[0-9A-Za-z-]{10,}`), markers: []string{"xox"}, bound: tokenCh},
@@ -130,6 +133,18 @@ var rules = append([]rule{
 	// password = …, API_KEY: "…", as .env files and configs have them
 	{kind: "SECRET", re: regexp.MustCompile(`(?i)[A-Za-z0-9_.-]*(?:` + secretNames.pattern() + `)[A-Za-z0-9_.-]*` + quote + `[ \t]*[:=][ \t]*` + quote + `(` + secretCh + `{8,})`),
 		markers: secretNames.markers(), ok: secretValue},
+	// an env var's name says what it holds in the upper case: a
+	// SERVICE_X_KEY, a DB_PASS (#2946). The names above have a word for the
+	// secret in them; these only end in one, and only in the upper case is
+	// that a secret's name — in the lower case a name that ends in key is
+	// code's: a sort key, a cache key, a public key (notAPlainKey turns the
+	// upper-case ones of those away too).
+	{kind: "SECRET", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9_.-])[A-Za-z0-9_.-]*_(?:KEY|PASS)` + quote + `[ \t]*[:=][ \t]*` + quote + `(` + secretCh + `{8,})`),
+		markers: fieldNames{{"key", "key"}, {"pass", "pass"}}.markers(), ok: secretValue, at: notAPlainKey},
+	// an Authorization or Cookie header's value is a secret whatever it
+	// looks like: an opaque bearer token, a session value (#2946)
+	{kind: "SECRET", re: regexp.MustCompile(`(?im)^[ \t]*(?:authorization|cookie)[ \t]*:[ \t]*(\S[^\r\n]{7,})`),
+		markers: fieldNames{{"authorization", "authorization"}, {"cookie", "cookie"}}.markers()},
 	// a field called key and nothing more, as providers.json has one: "key":
 	// "oc_sk_…" (#195). Only a long value of letters and digits both, since
 	// code calls anything a key: a map's "key": "value", sort_key, keyboard.
@@ -205,6 +220,23 @@ func secretValue(v string) bool {
 		return false
 	}
 	return strings.ContainsAny(v, digits) && strings.IndexFunc(v, func(r rune) bool { return r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' }) >= 0
+}
+
+// notAPlainKey turns away the upper-case name before the value at s[:a]
+// when it only ends in key and holds no secret: a sort key, a cache key, a
+// prompt cache key, a public key (#2946).
+func notAPlainKey(s string, a, b int) bool {
+	i := a
+	for i > 0 && strings.IndexByte(`"' `+"\t:=", s[i-1]) >= 0 {
+		i--
+	}
+	end := i
+	for i > 0 && strings.IndexByte(alnum+"_.-", s[i-1]) >= 0 {
+		i--
+	}
+	name := strings.ToLower(s[i:end])
+	return !strings.HasSuffix(name, "sort_key") && !strings.HasSuffix(name, "cache_key") &&
+		!strings.HasSuffix(name, "prompt_cache_key") && !strings.HasSuffix(name, "public_key")
 }
 
 func realEmail(v string) bool {

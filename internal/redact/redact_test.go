@@ -207,6 +207,51 @@ func TestMaskJSONSignedGoesBackAsWritten(t *testing.T) {
 	}
 }
 
+// A field named for a secret holds one, whatever its value looks like
+// (#2946): the rules judge a value by its shape, so {"api_key": "…"} with a
+// value no rule knows went out as it was, and access_key_id's _id kept even
+// an AKIA from the value's own rule. A name that only ends in key is no
+// secret: a sort key, a cache key, a public key stay, and so do a
+// signature and a data value the vendor reads.
+func TestMaskJSONNamedSecrets(t *testing.T) {
+	o := Options{Secrets: true}
+	for _, c := range []struct {
+		key, value string
+		gone       bool
+	}{
+		{"api_key", "Qm27wVb9nLx4tRk8Ps3d", true},
+		{"client_secret", "randomvalue42x", true},
+		{"db_pass", "Hr7jTm2qwXz94", true},
+		{"access_key_id", "AKIAIOSFODNN7EXAMPLE", true},
+		{"Authorization", "Bearer zq83Mw2vNx7kRt5", true},
+		{"Cookie", "sid=Yn41Pc8wLd2mQs6", true},
+		{"apiKey", "plainrandomvalue1", true},
+		{"sort_key", "created_at_2024", false},
+		{"cache_key", "lru_items_01", false},
+		{"prompt_cache_key", "conv_12345678", false},
+		{"public_key", "04a1b2c3d4e5f6a7", false},
+		{"signature", "sigofvendor42", false},
+		{"data", "rawbytes12345", false},
+	} {
+		body := `{"` + c.key + `":"` + c.value + `"}`
+		out, n := MaskJSON([]byte(body), o)
+		if !c.gone {
+			if n != 0 || string(out) != body {
+				t.Errorf("%s: %d masked: %s", c.key, n, out)
+				continue
+			}
+		} else {
+			if strings.Contains(string(out), c.value) || !strings.Contains(string(out), "{{SECRET_") {
+				t.Errorf("%s: not masked as a secret: %s", c.key, out)
+				continue
+			}
+		}
+		if back := RestoreJSON(out); string(back) != body {
+			t.Errorf("%s: restored %s", c.key, back)
+		}
+	}
+}
+
 // An id goes as the vendor gave it, on both sides of what it matches.
 func TestMaskJSONKeepsIDs(t *testing.T) {
 	o := Options{Secrets: true, Personal: true}

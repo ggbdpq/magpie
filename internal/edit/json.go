@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -120,21 +121,88 @@ func setJSONBytes(raw []byte, keyPath string, value any) ([]byte, error) {
 		if !r.Exists() {
 			continue
 		}
+		if i < len(parts) && r.IsArray() {
+			// A numeric key under an array indexes it.
+			return setArrayElem(raw, stripped, r, keyPath, parts[i:], value)
+		}
 		if i == len(parts) || !r.IsObject() {
 			// Exact key exists (replace value), or an ancestor exists but is a
 			// scalar (replace it with the nested object we need).
-			return splice(raw, r.Index, len(r.Raw), marshalAt(raw, r.Index, nest(parts[i:], value)))
+			v, err := nest(parts[i:], value, keyPath)
+			if err != nil {
+				return nil, err
+			}
+			return splice(raw, r.Index, len(r.Raw), marshalAt(raw, r.Index, v))
 		}
-		return insertKey(raw, stripped, r.Index, unescapeKey(parts[i]), nest(parts[i+1:], value))
+		v, err := nest(parts[i+1:], value, keyPath)
+		if err != nil {
+			return nil, err
+		}
+		return insertKey(raw, stripped, r.Index, unescapeKey(parts[i]), v)
 	}
-	return insertKey(raw, stripped, 0, unescapeKey(parts[0]), nest(parts[1:], value))
+	v, err := nest(parts[1:], value, keyPath)
+	if err != nil {
+		return nil, err
+	}
+	return insertKey(raw, stripped, 0, unescapeKey(parts[0]), v)
 }
 
-func nest(parts []string, value any) any {
+// setArrayElem writes into the array r at the numeric key that heads parts:
+// the element at an index the array has is replaced (a longer key path would
+// have matched it above), one at its length is appended, anything past that
+// is refused.
+func setArrayElem(raw, stripped []byte, r gjson.Result, keyPath string, parts []string, value any) ([]byte, error) {
+	idx, ok := arrayIndex(parts[0])
+	if !ok {
+		return nil, fmt.Errorf("key %q in %q addresses an array: want a numeric index", unescapeKey(parts[0]), keyPath)
+	}
+	n := len(r.Array())
+	if idx < n {
+		// An existing element would have matched a longer prefix above; only
+		// a key gjson cannot read as an index (a leading zero) lands here.
+		return nil, fmt.Errorf("cannot address element %d in %q", idx, keyPath)
+	}
+	if idx > n {
+		return nil, fmt.Errorf("index %d in %q is past the end of the array (length %d)", idx, keyPath, n)
+	}
+	v, err := nest(parts[1:], value, keyPath)
+	if err != nil {
+		return nil, err
+	}
+	return insertElem(raw, stripped, r.Index, v)
+}
+
+// arrayIndex is a key path's part as an array index: a plain decimal number.
+func arrayIndex(part string) (int, bool) {
+	if part == "" {
+		return 0, false
+	}
+	for i := 0; i < len(part); i++ {
+		if part[i] < '0' || part[i] > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.Atoi(part)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+func nest(parts []string, value any, keyPath string) (any, error) {
 	for i := len(parts) - 1; i >= 0; i-- {
+		if idx, ok := arrayIndex(parts[i]); ok {
+			// A numeric part builds an array. Every container here is being
+			// created empty, so an index other than 0 is past its end.
+			if idx != 0 {
+				return nil, fmt.Errorf("index %d in %q is past the end of the array being created (length 0)", idx, keyPath)
+			}
+			value = []any{value}
+			continue
+		}
 		value = map[string]any{unescapeKey(parts[i]): value}
 	}
-	return value
+	return value, nil
 }
 
 // splitPath splits a key path at its dots, as gjson does: a dot escaped
@@ -201,6 +269,44 @@ func insertKey(raw, stripped []byte, from int, key string, value any) ([]byte, e
 	return splice(raw, open+1, 0, []byte("\n"+kv+","))
 }
 
+// insertElem appends value as the last element of the array that starts at
+// or after position from.
+func insertElem(raw, stripped []byte, from int, value any) ([]byte, error) {
+	open := from
+	for open < len(raw) && stripped[open] != '[' {
+		open++
+	}
+	close := matchBracket(stripped, open)
+	if open >= len(raw) || close < 0 {
+		return nil, fmt.Errorf("cannot locate array")
+	}
+	pretty := bytes.IndexByte(raw, '\n') >= 0
+	empty := len(bytes.TrimSpace(raw[open+1:close])) == 0
+
+	if !pretty {
+		v, _ := json.Marshal(value)
+		ins := string(v)
+		if !empty {
+			ins = "," + ins
+		}
+		return splice(raw, close, 0, []byte(ins))
+	}
+
+	base := lineIndent(raw, open)
+	unit := indentUnit(raw, open, base)
+	child := base + unit
+	v, _ := json.MarshalIndent(value, child, unit)
+	if empty {
+		return splice(raw, open, close-open+1, []byte("[\n"+child+string(v)+"\n"+base+"]"))
+	}
+	// after the last element, before the line break that leads to the bracket
+	at := close
+	for at > open && isSpace(raw[at-1]) {
+		at--
+	}
+	return splice(raw, at, 0, []byte(",\n"+child+string(v)))
+}
+
 // marshalAt renders value with indentation matching the line that holds pos.
 func marshalAt(raw []byte, pos int, value any) []byte {
 	if bytes.IndexByte(raw, '\n') < 0 {
@@ -238,7 +344,14 @@ func indentUnit(raw []byte, pos int, base string) string {
 
 // matchBrace returns the index of the '}' closing the '{' at open, skipping
 // over string literals. It expects comment-free input.
-func matchBrace(b []byte, open int) int {
+func matchBrace(b []byte, open int) int { return matchPair(b, open, '{', '}') }
+
+// matchBracket returns the index of the ']' closing the '[' at open.
+func matchBracket(b []byte, open int) int { return matchPair(b, open, '[', ']') }
+
+// matchPair returns the index of cb closing ob at open, skipping over string
+// literals. It expects comment-free input.
+func matchPair(b []byte, open int, ob, cb byte) int {
 	depth := 0
 	inStr := false
 	for i := open; i < len(b); i++ {
@@ -252,9 +365,9 @@ func matchBrace(b []byte, open int) int {
 			}
 		case c == '"':
 			inStr = true
-		case c == '{':
+		case c == ob:
 			depth++
-		case c == '}':
+		case c == cb:
 			depth--
 			if depth == 0 {
 				return i

@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/catalog"
@@ -636,8 +637,14 @@ func (p Provider) clone() Provider {
 // AllBuilt counts the times All built the list anew, for tests.
 var AllBuilt atomic.Int64
 
+// AllBuiltAt is when the build All last counted was asked for (allProviders
+// entered, the hold's rule read at once after), for a test to judge a build
+// by when it was asked, not by when the request that asked began (#2965).
+var AllBuiltAt atomic.Int64
+
 func allProviders() []Provider {
 	AllBuilt.Add(1)
+	AllBuiltAt.Store(time.Now().UnixNano())
 	f := load()
 	stored := f.Providers
 	picks := map[string]Provider{}

@@ -631,10 +631,13 @@ func shapes(in []Summary) map[string]Shape {
 	return out
 }
 
-// toolUse sums up the sessions' tool calls, the n most called.
+// toolUse sums up the sessions' tool calls, the n most called. The callers
+// spell a tool's name either way ("bash", "Bash"), so its spellings are one
+// tool here, shown as its summary spells it.
 func toolUse(in []Summary, first time.Time, n int) ToolUse {
 	out := ToolUse{Top: []ToolStat{}, Categories: []ToolStat{}, Weeks: []ToolWeek{}}
 	tools, cats := map[string]*ToolStat{}, map[string]*ToolStat{}
+	shown, said := map[string]string{}, map[string]int{} // the spelling a tool is shown by, the calls each spelling has
 	weeks := map[string]map[string]int{}
 	for _, s := range in {
 		if s.ToolCalls == 0 {
@@ -642,16 +645,24 @@ func toolUse(in []Summary, first time.Time, n int) ToolUse {
 		}
 		out.Sessions++
 		out.Calls += s.ToolCalls
-		seen := map[string]bool{}
+		seen, seenTool := map[string]bool{}, map[string]bool{}
 		for _, tc := range s.tools {
 			name, c := tc.name, tc.n
-			t := tools[name]
+			key := strings.ToLower(name) // one tool apiece, its spellings together
+			t := tools[key]
 			if t == nil {
 				t = &ToolStat{Name: name, Category: ToolCategory(name)}
-				tools[name] = t
+				tools[key] = t
 			}
 			t.Calls += c
-			t.Sessions++
+			if !seenTool[key] {
+				seenTool[key] = true
+				t.Sessions++
+			}
+			said[name] += c
+			if best := shown[key]; best == "" || said[name] > said[best] || (said[name] == said[best] && name < best) {
+				shown[key] = name // its most called spelling, the shorter name on a tie
+			}
 			cat := cats[t.Category]
 			if cat == nil {
 				cat = &ToolStat{Name: t.Category}
@@ -679,7 +690,12 @@ func toolUse(in []Summary, first time.Time, n int) ToolUse {
 			}
 		}
 	}
-	for _, t := range tools {
+	for key, t := range tools {
+		t.Name = shown[key]
+		t.Category = ToolCategory(t.Name)
+		if strings.EqualFold(t.Name, t.Category) {
+			t.Name = t.Category // "bash" shown as the summary's "Bash"
+		}
 		out.Top = append(out.Top, *t)
 	}
 	for _, c := range cats {

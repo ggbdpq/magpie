@@ -1343,6 +1343,10 @@ type responsesDecoder struct {
 	held    string          // its deltas since they made whole JSON, not given yet
 	whole   jsonWhole       // where its deltas stand in their JSON
 	full    string          // the open call's arguments as its done events give them
+	// addedID is the id each reasoning item went out added by, by its
+	// output_index: an upstream whose ids change per event (Copilot's)
+	// does the same item done by another (#2974)
+	addedID map[int]string
 }
 
 // argsDelta gives an open call's argument delta, or holds it when with
@@ -1433,9 +1437,10 @@ func pickArgs(streamed, done string) string {
 
 func (d *responsesDecoder) decode(data string, emit func(Event)) error {
 	var ev struct {
-		Type  string `json:"type"`
-		Delta string `json:"delta"`
-		Item  rItem  `json:"item"`
+		Type        string `json:"type"`
+		Delta       string `json:"delta"`
+		OutputIndex int    `json:"output_index"`
+		Item        rItem  `json:"item"`
 		// function_call_arguments.done's
 		Arguments string `json:"arguments"`
 		Response  struct {
@@ -1479,6 +1484,10 @@ func (d *responsesDecoder) decode(data string, emit func(Event)) error {
 		if ev.Item.Type == "reasoning" {
 			// an item of its own, by the id the upstream gave it (#1445)
 			emit(Event{Kind: KThinkStart, ID: ev.Item.ID})
+			if d.addedID == nil {
+				d.addedID = map[int]string{}
+			}
+			d.addedID[ev.OutputIndex] = ev.Item.ID
 		}
 	case "response.output_text.delta":
 		d.endCall(emit)
@@ -1505,7 +1514,12 @@ func (d *responsesDecoder) decode(data string, emit func(Event)) error {
 		}
 		if ev.Item.Type == "reasoning" && ev.Item.EncryptedContent != "" {
 			// sealed: the item as the upstream wrote it, for a Responses
-			// client and for its next request (#1445)
+			// client and for its next request (#1445). An encoder knows
+			// the item by the id it went out added by, so when the ids
+			// change per event the done one is told by its own (#2974)
+			if a := d.addedID[ev.OutputIndex]; a != "" {
+				ev.Item.ID = a
+			}
 			var whole struct {
 				Item json.RawMessage `json:"item"`
 			}
@@ -1612,8 +1626,11 @@ type responsesEncoder struct {
 	text    strings.Builder // text of the open message / reasoning
 	// a reasoning item began upstream (KThinkStart): the next thinking
 	// opens an item of its own, by thinkID when the upstream named it
+	// rs_ … . thinkUp is the id it came with whatever its shape: the
+	// sealed item done by it is the one that streamed, not another (#2974)
 	thinkNew bool
 	thinkID  string
+	thinkUp  string
 	output   []any
 	col      collector
 	named    map[string]nsTool // the request's namespaced tools
@@ -1795,7 +1812,8 @@ func (e *responsesEncoder) closeAs(sealed json.RawMessage) {
 	}
 	e.send("response.output_item.done", map[string]any{"output_index": e.item, "item": item})
 	e.output = append(e.output, item)
-	e.open, e.text = "", strings.Builder{}
+	// the open item's upstream id went with it
+	e.open, e.text, e.thinkUp = "", strings.Builder{}, ""
 }
 
 func (e *responsesEncoder) openItem(k Kind, prefix string, item map[string]any) {
@@ -1844,7 +1862,7 @@ func (e *responsesEncoder) event(ev Event) {
 		e.text.WriteString(ev.Text)
 		e.send("response.reasoning_summary_text.delta", map[string]any{"item_id": e.itemID, "output_index": e.item, "summary_index": 0, "delta": ev.Text})
 	case KThinkStart:
-		e.thinkNew, e.thinkID = true, ""
+		e.thinkNew, e.thinkID, e.thinkUp = true, "", ev.ID
 		if strings.HasPrefix(ev.ID, "rs_") {
 			e.thinkID = ev.ID
 		}
@@ -1853,7 +1871,7 @@ func (e *responsesEncoder) event(ev Event) {
 			break // another API's, which a Responses client can't read
 		}
 		raw := json.RawMessage(ev.Text)
-		if e.open == Thinking && !e.thinkNew && (ev.ID == "" || ev.ID == e.itemID) {
+		if e.open == Thinking && !e.thinkNew && (ev.ID == "" || ev.ID == e.itemID || ev.ID == e.thinkUp) {
 			// the item streamed so far, done as the upstream wrote it
 			e.closeAs(raw)
 			break

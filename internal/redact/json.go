@@ -365,10 +365,22 @@ func jsonEscape(s string) string {
 	return string(out[1 : len(out)-2]) // the quotes and the newline
 }
 
+// namedSecret says a string under a field named for a secret holds one,
+// whatever the value looks like: the rules judge a value by its shape, the
+// name by what a field so called carries (#2946) — {"api_key": "…"} with a
+// value no rule knows, an AKIA under access_key_id, a bearer token under
+// "Authorization". A short value, and one that stands for a variable
+// (${PASS}, <token>, ****), are left alone.
+func namedSecret(key, s string) bool {
+	return key != "" && len(s) >= 8 && notAVariable(s) && SecretName(key)
+}
+
 // MaskJSON masks the strings of a request body, and says how many values
 // it masked. A body that isn't JSON is masked as text.
 //
-// What a vendor sealed with a signature (a thinking block, Gemini's
+// A field named for a secret has its value masked by its name, before the
+// ids and names that would keep it: secret names come first (#2946). What
+// a vendor sealed with a signature (a thinking block, Gemini's
 // thoughts, Responses' encrypted reasoning) is checked by the vendor
 // against the text it wrote, so it goes back as written: the values
 // masked elsewhere in the request become their placeholders again, which
@@ -406,6 +418,14 @@ func MaskJSON(body []byte, o Options) ([]byte, int) {
 		return p
 	}
 	out, ok := walk(body, func(path, key, s string) string {
+		if strings.HasPrefix(s, "data:") || signed != nil && under(path, signed) {
+			return s
+		}
+		if !under(path, defs) && namedSecret(key, s) {
+			p := put("SECRET", s)
+			total++
+			return p
+		}
 		if !masked(path, key, s) {
 			return s
 		}

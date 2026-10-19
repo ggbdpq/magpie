@@ -4978,7 +4978,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		if p.Account == nil || p.Account.Agent != "codex" {
 			body, searchFn = searchAsFunction(body)
 		}
-		body = forVendor(p, body)
+		body = forVendor(p, body, asksCompaction(r.Context()))
 		// Ark takes web_search in the shape its docs give (search_ark.go)
 		body = forArkSearch(p, body)
 		if replay {

@@ -2707,6 +2707,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			s.trace.update(tr, func(t *Route) {
 				tt := &t.Tries[len(t.Tries)-1]
 				tt.Done, tt.Status, tt.Error, tt.Queued, tt.Millis = true, call.Status, call.Error, queued, time.Since(began).Milliseconds()
+				// whose 429 this was: magpie's own gate, not the vendor's,
+				// with nothing sent (#2939)
+				tt.Fail = failLocal
 			})
 			if !last {
 				skipped = append(skipped, c.label()+": "+call.Error)

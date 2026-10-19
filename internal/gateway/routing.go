@@ -298,6 +298,14 @@ const (
 	// 403 11140, "账号存在异常行为，已被限制使用", #1849) — the next is
 	// asked, and it rests restrictedRest, until the vendor lifts it
 	failRestricted = "restricted"
+	// failLocal: magpie itself turned the try away at one of its own gates
+	// — its key's or account's queue was full (QueueLimit) or it waited as
+	// long as it may (QueueWait), or its MaxRPM has no room in the minute —
+	// before anything went to the vendor. The agent is told 429 as for a
+	// vendor's, and nobody rests; this says whose the 429 was (#2939: a
+	// day's routing log held 7,761 429s, 18 of them the vendor's, and
+	// nothing but the wording told them apart)
+	failLocal = "local"
 )
 
 // loopErrType is the usage log's ErrType for a reply ended for looping

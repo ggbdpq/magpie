@@ -53,7 +53,7 @@ function server(lang, opts) {
       log.posts.push(id);
       log.running++;
       log.most = Math.max(log.most, log.running);
-      await new Promise((r) => setTimeout(r, 500)); // an update takes a while
+      await new Promise((r) => setTimeout(r, opts.updateMs || 500)); // an update takes a while
       log.running--;
       if (id === "gemini") return route.fulfill({ status: 500, json: { error: "npm install -g @google/gemini-cli@latest: EACCES: permission denied" } });
       clis[id] = { ...clis[id], version: clis[id].latest, update: false };
@@ -104,7 +104,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
     await t.test("Update all runs each, one at a time, and says how it went", async () => {
       const log = {};
-      const page = await open("en", { log });
+      const page = await open("en", { log, updateMs: 1500 });
       const bar = page.locator("#agentsUpdates");
       await bar.waitFor();
       assert.equal(await bar.locator(".ag-updates-say").textContent(), "3 agents have updates: Codex, Gemini CLI, Crush");
@@ -118,13 +118,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.waitForTimeout(300);
       const top = await view.evaluate((v) => v.scrollTop);
       await bar.locator("button").click();
-      await page.waitForTimeout(200);
+      await page.waitForFunction(() => /^Updating Codex… \(1 of 3\)$/.test(document.querySelector("#agentsUpdates .ag-updates-say")?.textContent || ""), null, { timeout: 4000 });
       assert.match(await bar.locator(".ag-updates-say").textContent(), /^Updating Codex… \(1 of 3\)$/);
       assert.equal(await page.locator(`${row("codex")} .ag-up.busy`).count(), 1, "the row's pill is busy in its turn");
       assert.equal(await page.locator(`${row("gemini")} .ag-up.busy`).count(), 0);
       // clicked again while it runs: nothing more is asked
       await bar.locator("button").click({ force: true });
-      await page.waitForTimeout(500);
+      await page.waitForFunction(() => /Updating Gemini CLI… \(2 of 3\)/.test(document.querySelector("#agentsUpdates .ag-updates-say")?.textContent || ""), null, { timeout: 4000 });
       assert.match(await bar.locator(".ag-updates-say").textContent(), /Updating Gemini CLI… \(2 of 3\)/);
       await page.waitForFunction(() => /didn't/.test(document.querySelector("#agentsUpdates .ag-updates-say")?.textContent || ""), null, { timeout: 4000 });
       assert.deepEqual(log.posts, ["codex", "gemini", "crush"]);

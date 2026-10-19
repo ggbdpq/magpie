@@ -1044,8 +1044,14 @@ func quotaSaid(msg string) bool {
 }
 
 // unservedWords are how a vendor says the model isn't one it serves this
-// key, or this way — words another provider, or key, may not answer with.
-var unservedWords = regexp.MustCompile(`(?i)model.{0,80}(not (supported|accessible|available|found|enabled|allowed)|unsupported|does ?n[o']t exist|unknown|invalid)|(no such|unknown|invalid|unsupported) model|model_not_found|模型.{0,12}(不存在|不支持|无权|未开通)`)
+// key, or this way — words another provider, or key, may not answer with:
+// ModelScope's 400 for a model id none of its instances serves, "Model id
+// : deepseek-ai/DeepSeek-V4.1-Flash , has no provider supported" (#2887),
+// and Azure OpenAI's for a deployment its resource has none of, its code
+// DeploymentNotFound, whose message "The API deployment for this resource
+// does not exist" a relay passes on as a 400 (its 404 fails over by its
+// status already).
+var unservedWords = regexp.MustCompile(`(?i)model.{0,80}(not (supported|accessible|available|found|enabled|allowed)|unsupported|does ?n[o']t exist|unknown|invalid)|(no such|unknown|invalid|unsupported) model|model_not_found|has no provider supported|deployment[ _]?not[ _]?found|deployment.{0,60}does ?n[o']t exist|模型.{0,12}(不存在|不支持|无权|未开通)`)
 
 // modelRefused says the vendor turned the request away over its model
 // alone — not one this key's plan, or this key, may use: SenseNova's 403

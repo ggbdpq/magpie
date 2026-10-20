@@ -17,6 +17,12 @@ package provider
 //     for every turn of it. A fixed string would put every session on one
 //     cache key. ${threadId} is the thread's (conversation.go); Headers
 //     take both too.
+//   - ${subagentId} in a string value is the Claude Code subagent the
+//     request is of (x-claude-code-agent-id), "" on the conversation's
+//     own turns, which never send the header. "${sessionId}:${subagentId}"
+//     gives a relay one prompt_cache_key per subagent, where ${sessionId}
+//     alone carries every subagent's turns on one key (yetone/magpie#2937).
+//     It is extraBody's alone: a header naming it goes as written.
 //   - The fields that carry the conversation, or that magpie must decide
 //     for routing and streaming to work (ExtraBodyReserved), can't be set:
 //     a save naming one is refused, and one written into the file by hand
@@ -89,6 +95,10 @@ func (p Provider) extraBodyTakes() (owned []string, ok bool) {
 // conversation's id.
 const SessionPlaceholder = "${sessionId}"
 
+// SubagentPlaceholder is what a string value of extraBody writes for the
+// Claude Code subagent a request is of, "" on the conversation's own turns.
+const SubagentPlaceholder = "${subagentId}"
+
 // extraName is a field's name without its "!", and whether it is forced.
 func extraName(k string) (string, bool) {
 	n, forced := strings.CutPrefix(strings.TrimSpace(k), "!")
@@ -141,7 +151,8 @@ func cleanExtraBody(e ExtraBody) ExtraBody {
 
 // WithExtraBody is body with the provider's extra fields merged in, as the
 // package's comment says; c is the conversation for ${sessionId} and
-// ${threadId}. A body that isn't a JSON object goes as it came.
+// ${threadId}, its Subagent for ${subagentId}. A body that isn't a JSON
+// object goes as it came.
 func (p Provider) WithExtraBody(body []byte, c Conversation) []byte {
 	owned, takes := p.extraBodyTakes()
 	if len(p.ExtraBody) == 0 || !takes {
@@ -182,12 +193,14 @@ func (p Provider) WithExtraBody(body []byte, c Conversation) []byte {
 	return bytes.TrimSuffix(out.Bytes(), []byte("\n"))
 }
 
-// withSession is v with ${sessionId} and ${threadId} in its strings, at
-// any depth, as c's ids.
+// withSession is v with ${sessionId}, ${threadId} and ${subagentId} in its
+// strings, at any depth, as c's ids. The subagent is extraBody's alone
+// (Conversation.expand serves the headers too, and they don't take it):
+// a header naming ${subagentId} goes as written.
 func withSession(v any, c Conversation) any {
 	switch x := v.(type) {
 	case string:
-		return c.expand(x)
+		return strings.ReplaceAll(c.expand(x), SubagentPlaceholder, c.Subagent)
 	case map[string]any:
 		for k, e := range x {
 			x[k] = withSession(e, c)
@@ -203,7 +216,8 @@ func withSession(v any, c Conversation) any {
 // tested is a test's or a detection's tiny request body for p as it goes
 // out: the extra fields, on a session of the test's own, then what the
 // backend adjusts; ctx carries the same session, for the headers Sign
-// puts on it.
+// puts on it. The conversation names no subagent, so ${subagentId} in an
+// extra body value goes out filled with "".
 func (p Provider) tested(ctx context.Context, body string) (context.Context, []byte) {
 	c := OwnConversation("magpie-test-")
 	return WithConversation(ctx, c), p.Prepare(p.WithExtraBody([]byte(body), c))

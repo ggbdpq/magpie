@@ -4464,8 +4464,10 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 		betas, body = s.serverReview(p, asked, body)
 	}
 	// the conversation ${sessionId} and ${threadId} stand for in the
-	// user's own fields and headers for the provider (conversation.go)
-	conv := provider.Conversation{Session: cmp.Or(sessionOf(in), conversationID(in, body))}
+	// user's own fields and headers for the provider (conversation.go);
+	// its Subagent is the request's Claude Code subagent, for
+	// ${subagentId} in an extra body value (yetone/magpie#2937)
+	conv := provider.Conversation{Session: cmp.Or(sessionOf(in), conversationID(in, body)), Subagent: subOf(in)}
 	if p.AsksThread() {
 		conv.Thread = threadOf(in, body)
 	}

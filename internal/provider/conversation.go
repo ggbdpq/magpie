@@ -33,8 +33,10 @@ import (
 const ThreadPlaceholder = "${threadId}"
 
 // Conversation is what ${sessionId} and ${threadId} stand for in a
-// request: Thread "" is the session's own thread.
-type Conversation struct{ Session, Thread string }
+// request: Thread "" is the session's own thread. Subagent is the Claude
+// Code subagent the request is of, "" on the conversation's own turns;
+// only extraBody's ${subagentId} takes it (extrabody.go).
+type Conversation struct{ Session, Thread, Subagent string }
 
 type conversationCtxKey struct{}
 

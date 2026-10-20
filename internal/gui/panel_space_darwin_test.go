@@ -45,11 +45,19 @@ func init() {
 		fmt.Printf("panel space: "+format+"\n", a...)
 		os.Exit(1)
 	}
-	waitFor := func(what string, ok func() bool) {
+	// waitsFor gives the AppKit side its room: it polls until ok, up to
+	// five seconds, a loaded machine's share.
+	waitsFor := func(ok func() bool) bool {
 		for deadline := time.Now().Add(5 * time.Second); !ok(); time.Sleep(20 * time.Millisecond) {
 			if time.Now().After(deadline) {
-				fail("timed out waiting until %s", what)
+				return false
 			}
+		}
+		return true
+	}
+	waitFor := func(what string, ok func() bool) {
+		if !waitsFor(ok) {
+			fail("timed out waiting until %s", what)
 		}
 	}
 	check := func(how string) {
@@ -79,7 +87,10 @@ func init() {
 		// active key, a plain titled one either (#2450). A click on the
 		// icon is input, which this test can't make, so where a plain one
 		// isn't made key the check can't tell.
-		if !application.InvokeSyncWithResult(w.IsFocused) {
+		// Under load AppKit makes the panel key later than the fixed wait
+		// above allows, so the key status is waited for, not read once
+		// (#2986).
+		if !waitsFor(func() bool { return application.InvokeSyncWithResult(w.IsFocused) }) {
 			if application.InvokeSyncWithResult(sessionKeysPanels) {
 				fail("%s: the panel shown doesn't take the keyboard", how)
 			}

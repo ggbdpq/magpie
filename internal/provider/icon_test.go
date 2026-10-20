@@ -289,3 +289,46 @@ func TestGuardClientThroughLocalProxy(t *testing.T) {
 		t.Fatalf("the proxy was asked for a private site: %v", asked)
 	}
 }
+
+// Protective, green before (#2593): with Clash's TUN fake-ip or Surge's
+// enhanced mode on, the resolver answers every name into 198.18.0.0/15,
+// and through a proxy on this computer the fetch works only if the proxy
+// is asked for the site's NAME — a CONNECT by a pinned fake-IP address
+// fails there, since the proxy resolves it where magpie can't see. The
+// guard judges the name before the proxy is asked, the proxy's own
+// address is dialed as it is, and the CONNECT line carries the name. This
+// locks behavior that already works, so a later change that pins the
+// address (as the gateway's image fetch once did) fails here first.
+func TestGuardClientFakeIPThroughLoopbackProxyKeepsName(t *testing.T) {
+	was := lookupIPAddr
+	lookupIPAddr = func(_ context.Context, _ string) ([]net.IPAddr, error) {
+		// what a fake-ip resolver answers for every name (#252)
+		return []net.IPAddr{{IP: net.ParseIP("198.18.7.11")}}, nil
+	}
+	t.Cleanup(func() { lookupIPAddr = was })
+
+	var connect string
+	proxy := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodConnect {
+			connect = r.Host // authority form: name:port
+		}
+		rw.WriteHeader(http.StatusOK)
+	}))
+	defer proxy.Close()
+	pu, _ := url.Parse(proxy.URL)
+	dt := http.DefaultTransport.(*http.Transport)
+	old := dt.Proxy
+	dt.Proxy = http.ProxyURL(pu)
+	t.Cleanup(func() { dt.Proxy = old })
+
+	// The fetch ends in an error on purpose: the test proxy opens the
+	// tunnel and forwards nowhere, so the TLS handshake inside it fails.
+	// What is locked is what reached the proxy.
+	req, _ := http.NewRequest(http.MethodGet, "https://icon.example/logo.png", nil)
+	if _, err := guardClient().Do(req); err == nil {
+		t.Fatal("a fetch through a CONNECT-only test proxy was expected to fail")
+	}
+	if connect != "icon.example:443" {
+		t.Fatalf("the proxy was not asked for the name: %q", connect)
+	}
+}

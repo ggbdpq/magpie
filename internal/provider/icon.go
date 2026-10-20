@@ -120,11 +120,18 @@ func guardClient() *http.Client {
 	return &c
 }
 
+// lookupIPAddr is where the icon guard resolves a host; tests point it at
+// a fake-IP answer to stand for Clash TUN's (#252), as the gateway's
+// lookupIP is for its guard.
+var lookupIPAddr = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return net.DefaultResolver.LookupIPAddr(ctx, host)
+}
+
 // publicHost checks a site's answers with the same rules as publicDial,
 // for a fetch the proxy will make. A name that doesn't resolve
 // here is left to the proxy, which may be the only way to reach it.
 func publicHost(ctx context.Context, host string) error {
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	ips, err := lookupIPAddr(ctx, host)
 	if err != nil {
 		return nil
 	}
@@ -185,7 +192,7 @@ func publicDial(ctx context.Context, dial func(context.Context, string, string) 
 	if err != nil {
 		return nil, err
 	}
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	ips, err := lookupIPAddr(ctx, host)
 	if err != nil {
 		return nil, err
 	}

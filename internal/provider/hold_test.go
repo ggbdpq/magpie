@@ -305,6 +305,8 @@ func TestCursorKeychainReadOnce(t *testing.T) {
 // and a move written meanwhile, even one read from the file as it was
 // before, is seen at once.
 func TestHoldReadsMigrationsOnce(t *testing.T) {
+	defer func(d time.Duration) { heldFor = d }(heldFor)
+	heldFor = time.Minute                    // a loaded machine's pause between reads isn't the change
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // a run starts from no files, not the last run's
 	defer Hold()()
 	if Moved("held-sub") {

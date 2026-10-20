@@ -477,19 +477,22 @@ func anyCase(w string) *regexp.Regexp {
 
 // Mask swaps what o covers in s for placeholders, and says how many.
 func Mask(s string, o Options) (string, int) {
-	return mask(s, withModel(o, []string{s}), placeholder)
+	return mask(s, withModel(o, []string{s}), placeholder, false)
 }
 
 // Preview is Mask with nothing remembered: each value goes as the
 // placeholder it would have, which isn't kept for Restore or as a value
 // seen before (known.go).
 func Preview(s string, o Options) string {
-	out, _ := mask(s, withModel(o, []string{s}), tag)
+	out, _ := mask(s, withModel(o, []string{s}), tag, false)
 	return out
 }
 
-// mask swaps what o covers in s for what put makes of each value.
-func mask(s string, o Options, put func(kind, v string) string) (string, int) {
+// mask swaps what o covers in s for what put makes of each value. jsonText
+// is for a string that holds JSON of its own (a tool call's arguments): it
+// is read by the vendor after another round of unescaping, so there a value
+// may not start at a backslash.
+func mask(s string, o Options, put func(kind, v string) string, jsonText bool) (string, int) {
 	if len(s) < 3 {
 		return s, 0
 	}
@@ -543,7 +546,7 @@ func mask(s string, o Options, put func(kind, v string) string) (string, int) {
 			if len(r.groups) > 0 {
 				took := false
 				for g, kind := range r.groups {
-					if a, b := m[2*g+2], m[2*g+3]; a >= 0 && r.takes(s, a, b, r.groupOK[g]) {
+					if a, b := m[2*g+2], m[2*g+3]; a >= 0 && r.takes(s, a, b, r.groupOK[g], jsonText) {
 						found = append(found, span{a, b, kind, r.by()})
 						took = true
 					}
@@ -571,7 +574,7 @@ func mask(s string, o Options, put func(kind, v string) string) (string, int) {
 				}
 				ok = nil
 			}
-			if r.takes(s, a, b, ok) {
+			if r.takes(s, a, b, ok, jsonText) {
 				found = append(found, span{a, b, r.kind, r.by()})
 			}
 		}
@@ -685,13 +688,28 @@ func lowerASCII(s string) string {
 }
 
 // takes says s[a:b] is a value r masks: nothing it may not touch beside
-// it, and its checks pass.
-func (r rule) takes(s string, a, b int, ok func(string) bool) bool {
+// it, and its checks pass. jsonText is for a string that holds JSON of its
+// own, read after another round of unescaping.
+func (r rule) takes(s string, a, b int, ok func(string) bool, jsonText bool) bool {
 	if b <= a {
 		return false
 	}
 	if r.bound != "" && (a > 0 && strings.IndexByte(r.bound, s[a-1]) >= 0 || b < len(s) && strings.IndexByte(r.bound, s[b]) >= 0) {
 		return false
+	}
+	// nor, there, a backslash: a match that starts at one starts inside an
+	// escape (a string's \n, its n read as the match's first letter), and
+	// masked, that backslash would stand before the placeholder, and the
+	// JSON would no longer parse (#3022). An even run of them (a \\ of a
+	// Windows path) escapes itself, and what follows goes as before.
+	if jsonText {
+		c := 0
+		for i := a - 1; i >= 0 && s[i] == '\\'; i-- {
+			c++
+		}
+		if c%2 == 1 {
+			return false
+		}
 	}
 	if ok != nil && !ok(s[a:b]) {
 		return false

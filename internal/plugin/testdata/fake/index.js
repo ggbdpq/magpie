@@ -142,7 +142,9 @@ export const FakePlugin = async ({ client }) => ({
           // `grok login` opens its own on macOS and Windows
           opened: inputs.team === "cli-opened",
           callback: async (code) =>
-            (process.env.FAKE_SIGNIN && (await fetch(process.env.FAKE_SIGNIN + "/token").catch(() => {})), code === "good")
+            code === "wait"
+              ? new Promise(() => {}) // a sign-in that never finishes, for a sign-in that runs out of time first
+              : (process.env.FAKE_SIGNIN && (await fetch(process.env.FAKE_SIGNIN + "/token").catch(() => {})), code === "good")
               ? { type: "success", refresh: "r-" + (inputs.team ?? "none"), access: "stale", expires: 0, ...fakeWho(inputs.team) }
               : code === "expired"
                 ? { type: "failed", error: "the sign-in page expired" }

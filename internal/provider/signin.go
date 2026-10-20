@@ -47,6 +47,11 @@ const codexScopes = "openid profile email offline_access api.connectors.read api
 // signInTimeout is how long a sign-in waits for the browser.
 var signInTimeout = 10 * time.Minute
 
+// SignInTimeout is how long a sign-in waits for the browser: the command
+// line's plugin sign-in waits on the same clock the window's does, and
+// says the same thing when it runs out.
+func SignInTimeout() time.Duration { return signInTimeout }
+
 // devicePollFloor is the least a device sign-in (Copilot, Factory, ZCode)
 // waits between asking whether the user is done, whatever interval the
 // vendor gave, 0 among them. A var: the tests' fakes give 0, and a second

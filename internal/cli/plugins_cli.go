@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/middleware"
@@ -496,7 +495,7 @@ func pluginLogin(ctx context.Context, name, method string) error {
 			}
 			code = strings.TrimSpace(line)
 		}
-		wait, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		wait, cancel := context.WithTimeout(ctx, provider.SignInTimeout())
 		defer cancel()
 		if a.Method != "code" && provider.PluginPastesCallback(pp.ID, a.URL) {
 			// a browser on another computer (magpie on a server or in
@@ -520,6 +519,11 @@ func pluginLogin(ctx context.Context, name, method string) error {
 			}()
 		}
 		if saved, err = plugin.Finish(wait, a.Session, code); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				// the sign-in ran out of time, as the window's says when
+				// its does: the deadline itself is no words for a user
+				err = errors.New("the sign-in timed out; start it again")
+			}
 			return err
 		}
 	}

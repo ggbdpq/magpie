@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -94,6 +95,42 @@ func TestPluginLoginReadsUsageAfresh(t *testing.T) {
 	login()
 	if q := provider.LoginUsage(ctx, "fakeco")["team@fake"]; q.Error != "" || q.Plan != "Fake Pro" {
 		t.Fatalf("signed in again, but the usage is the old sign-in's: %+v", q)
+	}
+}
+
+// magpie plugin login, out of time while the plugin still waits for its
+// browser sign-in, says so the way the window's sign-in does, rather than
+// letting the deadline reach the user as a bare "context deadline
+// exceeded" (#3083).
+func TestPluginLoginSaysTimedOut(t *testing.T) {
+	ctx := fakeCoHome(t)
+	noBrowser(t)
+	// the browser's way (2), Home (1), and a code whose sign-in the plugin
+	// never finishes: the sign-in's clock runs out first
+	piped(t, "1", "wait")
+	wait, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := said(t, func() error { return pluginLogin(wait, "fakeco", "2") }); err == nil {
+		t.Fatal("a sign-in past its time ended in nothing")
+	} else if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("the clock ran out and magpie said %q; want it timed out", err)
+	} else if strings.Contains(err.Error(), "context deadline") {
+		t.Fatalf("the deadline itself reached the user: %q", err)
+	}
+}
+
+// An error of the plugin's own, not the clock's, reaches the user as it
+// came: the sign-in's words are for timeouts alone.
+func TestPluginLoginKeepsAPluginErrorAsItCame(t *testing.T) {
+	ctx := fakeCoHome(t)
+	noBrowser(t)
+	// the browser's way (2), Home (1), and the code the page shows, which
+	// its page says has expired
+	piped(t, "1", "expired")
+	if _, err := said(t, func() error { return pluginLogin(ctx, "fakeco", "2") }); err == nil {
+		t.Fatal("an expired code signed in")
+	} else if !strings.Contains(err.Error(), "the sign-in page expired") {
+		t.Fatalf("the plugin's own error was rewritten: %q", err)
 	}
 }
 

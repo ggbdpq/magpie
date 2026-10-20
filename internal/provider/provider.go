@@ -684,6 +684,10 @@ func withPicks(a, pk Provider) Provider {
 	a.MaxConcurrency, a.PinUpstream = pk.MaxConcurrency, pk.PinUpstream
 	a.AccountConcurrency, a.QueueLimit, a.QueueWait = pk.AccountConcurrency, pk.QueueLimit, pk.QueueWait
 	a.MaxRPM = pk.MaxRPM
+	// and how long its keys and accounts sit out of quota and while they
+	// keep failing, or that they don't at all (#3076: a rest-cap set on a
+	// provider the agent is signed in to never reached its accounts)
+	a.QuotaRest, a.QuotaResetAt, a.RestCap = pk.QuotaRest, pk.QuotaResetAt, pk.RestCap
 	// the extra body fields written for it, which a ChatGPT account's
 	// requests take (WithExtraBody, magpie-releases#18)
 	a.ExtraBody = pk.ExtraBody

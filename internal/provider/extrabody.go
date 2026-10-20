@@ -16,6 +16,11 @@ package provider
 //     magpie derives from the conversation's first user message — the same
 //     for every turn of it. A fixed string would put every session on one
 //     cache key.
+//   - ${subagentId} in a string value is the Claude Code subagent the
+//     request is of (x-claude-code-agent-id), "" on the conversation's
+//     own turns, which never send the header. "${sessionId}:${subagentId}"
+//     gives a relay one prompt_cache_key per subagent, where ${sessionId}
+//     alone carries every subagent's turns on one key (yetone/magpie#2937).
 //   - The fields that carry the conversation, or that magpie must decide
 //     for routing and streaming to work (ExtraBodyReserved), can't be set:
 //     a save naming one is refused, and one written into the file by hand
@@ -88,6 +93,10 @@ func (p Provider) extraBodyTakes() (owned []string, ok bool) {
 // conversation's id.
 const SessionPlaceholder = "${sessionId}"
 
+// SubagentPlaceholder is what a string value of extraBody writes for the
+// Claude Code subagent a request is of, "" on the conversation's own turns.
+const SubagentPlaceholder = "${subagentId}"
+
 // extraName is a field's name without its "!", and whether it is forced.
 func extraName(k string) (string, bool) {
 	n, forced := strings.CutPrefix(strings.TrimSpace(k), "!")
@@ -140,8 +149,9 @@ func cleanExtraBody(e ExtraBody) ExtraBody {
 
 // WithExtraBody is body with the provider's extra fields merged in, as the
 // package's comment says; session is the conversation's id for
-// ${sessionId}. A body that isn't a JSON object goes as it came.
-func (p Provider) WithExtraBody(body []byte, session string) []byte {
+// ${sessionId}, subagent the Claude Code subagent for ${subagentId}.
+// A body that isn't a JSON object goes as it came.
+func (p Provider) WithExtraBody(body []byte, session, subagent string) []byte {
 	owned, takes := p.extraBodyTakes()
 	if len(p.ExtraBody) == 0 || !takes {
 		return body
@@ -167,7 +177,7 @@ func (p Provider) WithExtraBody(body []byte, session string) []byte {
 		if d.Decode(&v) != nil {
 			continue
 		}
-		m[n], changed = withSession(v, session), true
+		m[n], changed = withSession(v, session, subagent), true
 	}
 	if !changed {
 		return body
@@ -181,19 +191,19 @@ func (p Provider) WithExtraBody(body []byte, session string) []byte {
 	return bytes.TrimSuffix(out.Bytes(), []byte("\n"))
 }
 
-// withSession is v with ${sessionId} in its strings, at any depth, as
-// session.
-func withSession(v any, session string) any {
+// withSession is v with ${sessionId} and ${subagentId} in its strings, at
+// any depth, as session and subagent.
+func withSession(v any, session, subagent string) any {
 	switch x := v.(type) {
 	case string:
-		return strings.ReplaceAll(x, SessionPlaceholder, session)
+		return strings.ReplaceAll(strings.ReplaceAll(x, SessionPlaceholder, session), SubagentPlaceholder, subagent)
 	case map[string]any:
 		for k, e := range x {
-			x[k] = withSession(e, session)
+			x[k] = withSession(e, session, subagent)
 		}
 	case []any:
 		for i, e := range x {
-			x[i] = withSession(e, session)
+			x[i] = withSession(e, session, subagent)
 		}
 	}
 	return v
@@ -203,5 +213,5 @@ func withSession(v any, session string) any {
 // out: the extra fields, on a session of the test's own, then what the
 // backend adjusts.
 func (p Provider) tested(body string) []byte {
-	return p.Prepare(p.WithExtraBody([]byte(body), "magpie-test-"+strings.ToLower(rand.Text()[:12])))
+	return p.Prepare(p.WithExtraBody([]byte(body), "magpie-test-"+strings.ToLower(rand.Text()[:12]), ""))
 }

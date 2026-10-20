@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -765,7 +766,7 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 			break
 		}
 	}
-	provider := openCodeKept(path, func() any { return magpieProviderJSONAt("opencode", id, at.gw()) })
+	provider := openCodeKept(path, openCodeValue(at, path, id))
 	opts := func(key string) func(map[string]string) []Option {
 		return func(cur map[string]string) []Option {
 			return append(ownOptions(auth, cur[key]), viaMagpie(id, magpieID+"/")...)
@@ -804,8 +805,25 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 			if !usesMagpie(get("model"), get("small_model")) {
 				return ""
 			}
-			return wiringOff(name, path, func(k string) (string, bool) { return edit.GetJSON(path, "provider."+magpieID+".options."+k) },
-				"baseURL", at.v1(), "apiKey", openCodeKeyAt(id, at.gw()))
+			opt := func(k string) (string, bool) {
+				v, ok := edit.GetJSON(path, "provider."+magpieID+".options."+k)
+				if k != "apiKey" {
+					return v, ok
+				}
+				// a reference to a variable is the key the agent sends,
+				// as OpenCode reads it (envRefKey); one magpie can't see
+				// is unknown, never drift
+				key, ref, known := envRefKey(v, openCodeEnvRef)
+				switch {
+				case ref == "":
+					return v, ok
+				case known:
+					return key, true
+				default:
+					return at.gwKey(), true
+				}
+			}
+			return wiringOff(name, path, opt, "baseURL", at.v1(), "apiKey", openCodeKeyAt(id, at.gw()))
 		},
 		Sync: func() error {
 			// a model of magpie's chosen, but its provider gone from the
@@ -833,6 +851,28 @@ func openCodeKeyAt(id, gw string) string {
 	return keyAt(gw)
 }
 
+// openCodeEnvRef is an apiKey that is one reference to a variable, which
+// OpenCode expands from its environment as it loads the config ({env:VAR},
+// packages/core/src/config/variable.ts, from process.env; the other form
+// it takes there, {file:path}, magpie leaves as it is).
+var openCodeEnvRef = regexp.MustCompile(`^\{env:([^}]+)\}$`)
+
+// openCodeValue is magpie's provider block, as it is now, for an
+// OpenCode-shaped agent (id) whose config is at path, with a reference to
+// a variable the user put in its apiKey kept (envRefKept).
+func openCodeValue(at place, path, id string) func() any {
+	return func() any {
+		v := magpieProviderJSONAt("opencode", id, at.gw())
+		m, _ := v.(map[string]any)
+		o, _ := m["options"].(map[string]any)
+		if k, ok := o["apiKey"].(string); ok {
+			raw, _ := edit.GetJSON(path, "provider."+magpieID+".options.apiKey")
+			o["apiKey"] = envRefKept(raw, k, openCodeEnvRef)
+		}
+		return v
+	}
+}
+
 // openCodeRef is the value that makes the OpenCode config at path (agent
 // id's, whose catalog magpie's provider there lists) send model v. One of
 // magpie's goes to a provider of the file's own that already sends it to
@@ -852,7 +892,7 @@ func openCodeRefAt(at place, path, id, v string) (string, error) {
 	if own := ownGatewayProvider(path, ref, at.v1()); own != "" {
 		return own + "/" + ref, nil
 	}
-	provider := openCodeKept(path, func() any { return magpieProviderJSONAt("opencode", id, at.gw()) })
+	provider := openCodeKept(path, openCodeValue(at, path, id))
 	return v, edit.SetJSON(path, edit.KV{Path: "provider." + magpieID, Value: provider()})
 }
 

@@ -23,6 +23,7 @@ package agent
 import (
 	"encoding/json"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -57,6 +58,12 @@ type droidEntry struct {
 	// told otherwise, so this is always written
 	NoImageSupport bool `json:"noImageSupport"`
 }
+
+// droidEnvRef is an apiKey that is one reference to a variable, which droid
+// expands from its environment as it reads the settings
+// (docs.factory.com, Custom Models: "apiKey supports environment variable
+// references using ${VAR_NAME} syntax").
+var droidEnvRef = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$`)
 
 // droidEntries are magpie's custom models as the catalog is now.
 func droidEntries() []droidEntry { return droidEntriesAt(gateway.URL()) }
@@ -163,15 +170,20 @@ func droidIn(at place) *Agent {
 	setModels := func(with bool) error {
 		var ms []any
 		var had bool
+		// keys are the apiKeys the file's magpie entries hold now, a
+		// reference to a variable among them staying (envRefKept)
+		keys := map[string]string{}
 		for _, c := range droidCustoms(path, droidModels) {
 			if strings.HasPrefix(c.id, droidID) {
 				had = true
+				keys[c.id] = gjson.GetBytes(c.raw, "apiKey").String()
 				continue
 			}
 			ms = append(ms, c.raw)
 		}
 		if with {
 			for _, e := range droidEntries() {
+				e.APIKey = envRefKept(keys[e.ID], e.APIKey, droidEnvRef)
 				ms = append(ms, e)
 			}
 		} else if !had {
@@ -237,8 +249,24 @@ func droidIn(at place) *Agent {
 			if r.Get("provider").String() == "anthropic" {
 				base = at.gw()
 			}
-			return wiringOff("Droid", path, func(k string) (string, bool) { g := r.Get(k); return g.String(), g.Exists() },
-				"baseUrl", base, "apiKey", at.gwKey())
+			return wiringOff("Droid", path, func(k string) (string, bool) {
+				g := r.Get(k)
+				if k != "apiKey" {
+					return g.String(), g.Exists()
+				}
+				// a reference to a variable is the key droid sends, as
+				// droid reads it (envRefKey); one magpie can't see is
+				// unknown, never drift
+				key, name, known := envRefKey(g.String(), droidEnvRef)
+				switch {
+				case name == "":
+					return g.String(), g.Exists()
+				case known:
+					return key, true
+				default:
+					return at.gwKey(), true
+				}
+			}, "baseUrl", base, "apiKey", at.gwKey())
 		},
 		Fields: []Field{{
 			Key: "model", Label: "model",

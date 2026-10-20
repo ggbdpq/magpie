@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/yetone/magpie/internal/access"
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/gateway"
 )
 
@@ -80,4 +82,41 @@ func gatewayKey(want string) bool {
 // with a key of his own was said not to go through magpie).
 func keyHolds(v, want string) bool {
 	return v == want || v != "" && gatewayKey(want) && gatewayTakes(v)
+}
+
+// envRefKey is the key an agent sends where its config holds v: a value
+// that is one reference to a variable of the environment's — Droid's
+// "${VAR}" (docs.factory.com, Custom Models) or OpenCode's {env:VAR}
+// (packages/core/src/config/variable.ts), which the agent expands from its
+// environment as it loads the config — is the variable's value, read from
+// this machine's environment, where those agents read it too. name is the
+// variable, "" when v is no such reference. known is false when the
+// variable isn't set here: one only the agent's own shell sets, which
+// magpie can't tell from one holding another key, so it is unknown, never
+// drift (#3040).
+func envRefKey(v string, ref *regexp.Regexp) (key, name string, known bool) {
+	m := ref.FindStringSubmatch(v)
+	if m == nil {
+		return v, "", false
+	}
+	if val, ok := appdir.LookupEnv(m[1]); ok {
+		return val, m[1], true
+	}
+	return "", m[1], false
+}
+
+// envRefKept is the key magpie writes where its own is want and the file
+// holds v: a reference to a variable the user put there stays, when the
+// key it names reaches magpie (keyHolds) or magpie can't see it; one
+// naming a key the gateway doesn't take is magpie's key again, as a value
+// with more than the one reference in it (#3040).
+func envRefKept(v, want string, ref *regexp.Regexp) string {
+	key, name, known := envRefKey(v, ref)
+	if name == "" {
+		return want
+	}
+	if !known || keyHolds(key, want) {
+		return v
+	}
+	return want
 }

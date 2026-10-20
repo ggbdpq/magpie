@@ -457,15 +457,24 @@ func TestShellEnvRealFish(t *testing.T) {
 func TestAskShellProfileExecsOrHangs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// The budget a machine this busy still answers within is the one
+	// production asks with; the old 1s here was smaller than a busy
+	// machine takes to start the shell (issue #3049: red at load ~440).
 	old := shellAsk
-	shellAsk = time.Second
+	shellAsk = 5 * time.Second
 	t.Cleanup(func() { shellAsk = old })
 	for name, interactive := range map[string]string{
+		// slow: slower than the budget, as a profile that is too slow
+		// to come up interactively is (sleep 4 would now be asked
+		// within the budget and answer the first ask).
 		"exec": "exec /bin/cat",
-		"slow": "sleep 4",
+		"slow": "sleep 6",
 	} {
 		sh := filepath.Join(home, name)
-		testenv.Program(t, sh, "#!/bin/sh\ncase \"$1\" in -i*) "+interactive+";; esac\n"+
+		// The login ask itself is delayed (sleep 2): slower than the old
+		// 1s budget this test asked with, well within the one production
+		// asks with, as a busy machine's shell is (#3049).
+		testenv.Program(t, sh, "#!/bin/sh\ncase \"$1\" in -i*) "+interactive+";; -l*) sleep 2;; esac\n"+
 			"PATH=/from/login:$PATH\n[ \"$MAGPIE_SHELL_PROBE\" = 1 ] && PATH=/told:$PATH\neval \"$2\"\n")
 		p, vars := askShell(sh)
 		dirs := filepath.SplitList(p)

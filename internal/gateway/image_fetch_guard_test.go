@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -251,5 +252,188 @@ func TestPrivateDialerRefusesPrivateAddresses(t *testing.T) {
 	}
 	if hits.Load() != 0 {
 		t.Fatal("the private service was asked")
+	}
+}
+
+// A fake-IP resolver (Clash TUN, Surge enhanced) answers every name with
+// an address in RFC 2544's benchmarking range, and an explicit loopback
+// proxy carries the connection to the real host. Pinning the address
+// there sends the proxy an address it can't route: the report's own
+// comparison shows CONNECT by name succeeding while the same CONNECT by
+// fake-IP failed (#2593, h4rk8s). With a name, a loopback proxy and every
+// answer inside 198.18.0.0/15, the proxy is given the name, and the
+// address checks still run on what the name resolved to.
+func TestFakeIPThroughALoopbackProxyKeepsTheName(t *testing.T) {
+	fresh(t)
+	var mu sync.Mutex
+	var asked []string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		asked = append(asked, r.URL.String()+" Host="+r.Host)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(pngBytes)
+	}))
+	t.Cleanup(proxy.Close)
+	st := settings.Load()
+	st.Proxy = proxy.URL
+	if err := settings.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	resolveTo(t, map[string]string{
+		"fake.test":  "198.18.5.1",
+		"mixed.test": "198.18.5.1",
+		"real.test":  "93.184.216.34",
+	})
+	// a name answering with a fake-IP and a real one is not the fake-IP
+	// resolver's answer alone: it stays pinned, as any name's does
+	was := lookupIP
+	lookupIP = func(_ context.Context, host string) ([]netip.Addr, error) {
+		if host == "mixed.test" {
+			return []netip.Addr{netip.MustParseAddr("198.18.5.1"), netip.MustParseAddr("93.184.216.34")}, nil
+		}
+		return was(context.Background(), host)
+	}
+	t.Cleanup(func() { lookupIP = was })
+
+	// the name is what the proxy is given, and the request is read
+	req, _ := http.NewRequest("GET", "http://fake.test/img.png", nil)
+	resp, err := publicClient.Do(req)
+	if err != nil {
+		t.Fatalf("a fake-IP name through a loopback proxy: %v", err)
+	}
+	resp.Body.Close()
+	if a := seenAsks(&mu, asked); len(a) != 1 || !strings.Contains(a[0], "fake.test") || strings.Contains(a[0], "198.18") {
+		t.Fatalf("the proxy was asked %q", a)
+	}
+
+	// an https:// request keeps the name too, so the proxy's CONNECT is by
+	// name and TLS's SNI is the name
+	asked = nil
+	req, _ = http.NewRequest("GET", "https://fake.test/img.png", nil)
+	if resp, err := publicClient.Do(req); err == nil {
+		resp.Body.Close()
+	}
+	if a := seenAsks(&mu, asked); len(a) != 1 || !strings.Contains(a[0], "fake.test") || strings.Contains(a[0], "198.18") {
+		t.Fatalf("https: the proxy was asked %q", a)
+	}
+
+	// a mixed answer is not the fake-IP resolver's alone: a real address
+	// beside the fake ones is refused, as it is with no proxy at all, and
+	// the proxy is not asked
+	asked = nil
+	req, _ = http.NewRequest("GET", "http://mixed.test/img.png", nil)
+	if resp, err := publicClient.Do(req); !errors.Is(err, errPrivateAddress) {
+		if err == nil {
+			resp.Body.Close()
+		}
+		t.Fatalf("a mixed answer: %v, want the private-address refusal", err)
+	}
+	if a := seenAsks(&mu, asked); len(a) != 0 {
+		t.Fatalf("a mixed answer reached the proxy: %q", a)
+	}
+
+	// a name at a real address through the same proxy keeps the pin, as
+	// before
+	asked = nil
+	req, _ = http.NewRequest("GET", "http://real.test/img.png", nil)
+	if resp, err := publicClient.Do(req); err == nil {
+		resp.Body.Close()
+	}
+	if a := seenAsks(&mu, asked); len(a) != 1 || !strings.Contains(a[0], "93.184.216.34") {
+		t.Fatalf("a real answer: the proxy was asked %q", a)
+	}
+}
+
+// seenAsks copies what a fake proxy was asked, holding its lock.
+func seenAsks(mu *sync.Mutex, asked []string) []string {
+	mu.Lock()
+	defer mu.Unlock()
+	return append([]string(nil), asked...)
+}
+
+// The fake-IP exception is the loopback proxy's alone: a name whose
+// answers are in the benchmarking range is still refused through a
+// non-loopback proxy, through no proxy, and when the URL is the literal
+// address.
+func TestFakeIPIsNotAnExceptionElsewhere(t *testing.T) {
+	fresh(t)
+	resolveTo(t, map[string]string{"fake.test": "198.18.5.1"})
+	setProxy := func(t *testing.T, v string) {
+		t.Helper()
+		was := settings.Load()
+		st := was
+		st.Proxy = v
+		if err := settings.Save(st); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { settings.Save(was) })
+	}
+
+	// no proxy at all: a fake-IP answer is refused, as it always was
+	setProxy(t, "direct")
+	for name, u := range map[string]string{
+		"no proxy":            "http://fake.test/img.png",
+		"the literal address": "http://198.18.5.1/img.png",
+	} {
+		req, _ := http.NewRequest("GET", u, nil)
+		_, err := publicClient.Do(req)
+		if !errors.Is(err, errPrivateAddress) {
+			t.Errorf("%s: %v, want the private-address refusal", name, err)
+		}
+	}
+
+	// a literal address is not a name a resolver answered: even through a
+	// loopback proxy it stays refused
+	var mu sync.Mutex
+	var asked []string
+	loop := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		asked = append(asked, r.URL.String())
+		mu.Unlock()
+		w.Write(pngBytes)
+	}))
+	t.Cleanup(loop.Close)
+	setProxy(t, loop.URL)
+	req, _ := http.NewRequest("GET", "http://198.18.5.1/img.png", nil)
+	_, err := publicClient.Do(req)
+	if !errors.Is(err, errPrivateAddress) {
+		t.Errorf("a fake-IP literal through a loopback proxy: %v, want the private-address refusal", err)
+	}
+	if a := seenAsks(&mu, asked); len(a) != 0 {
+		t.Errorf("a fake-IP literal reached the loopback proxy: %q", a)
+	}
+}
+
+// fakeIPProxy is the exception's predicate alone: a name, a proxy on this
+// computer, and every answer inside 198.18.0.0/15. Each part is what
+// keeps the exception from reaching anything else.
+func TestFakeIPProxyPredicate(t *testing.T) {
+	fake := []netip.Addr{netip.MustParseAddr("198.18.5.1")}
+	real := []netip.Addr{netip.MustParseAddr("93.184.216.34")}
+	both := append(append([]netip.Addr(nil), fake...), real...)
+	loop := &url.URL{Scheme: "http", Host: "127.0.0.1:7890"}
+	far := &url.URL{Scheme: "http", Host: "203.0.113.9:3128"}
+	named := &url.URL{Scheme: "http", Host: "proxy.corp:3128"}
+	for _, c := range []struct {
+		name  string
+		host  string
+		addrs []netip.Addr
+		proxy *url.URL
+		want  bool
+	}{
+		{"a fake-IP name through a loopback proxy", "fake.test", fake, loop, true},
+		{"the same with [::1]", "fake.test", fake, &url.URL{Scheme: "http", Host: "[::1]:7890"}, true},
+		{"no proxy", "fake.test", fake, nil, false},
+		{"a proxy elsewhere", "fake.test", fake, far, false},
+		{"a proxy named, not addressed", "fake.test", fake, named, false},
+		{"a real answer", "real.test", real, loop, false},
+		{"a mixed answer", "mixed.test", both, loop, false},
+		{"an address literal", "198.18.5.1", fake, loop, false},
+		{"no addresses", "empty.test", nil, loop, false},
+	} {
+		if got := fakeIPProxy(c.host, c.addrs, c.proxy); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
 	}
 }

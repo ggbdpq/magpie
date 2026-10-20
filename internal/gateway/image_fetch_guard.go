@@ -195,6 +195,37 @@ func publicAddr(a netip.Addr) bool {
 	return true
 }
 
+// fakeIPRange is RFC 2544's benchmarking range, which Clash's TUN mode with
+// fake-ip and Surge's enhanced mode answer every name with while the TUN or
+// the proxy carries the connection to the real host (#252, #2593). No
+// machine on the user's network sits in it.
+var fakeIPRange = netip.MustParsePrefix("198.18.0.0/15")
+
+// fakeIPProxy is a name that resolves only into fakeIPRange, through a
+// proxy on this computer: the fake-IP resolver's own answer, carried by
+// the proxy. Pinning the address would hand the proxy one it can't route
+// (a CONNECT by fake-IP fails where the name's succeeds, #2593), so the
+// name goes to the proxy instead and it resolves the destination itself.
+// Every other shape keeps the pin: an address literal, any real answer
+// beside the fake ones, a proxy elsewhere, no proxy at all.
+func fakeIPProxy(host string, addrs []netip.Addr, proxy *url.URL) bool {
+	if proxy == nil || host == "" {
+		return false
+	}
+	if _, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")); err == nil {
+		return false // the URL named an address, not a name
+	}
+	if ip := net.ParseIP(proxy.Hostname()); ip == nil || !ip.IsLoopback() {
+		return false
+	}
+	for _, a := range addrs {
+		if !fakeIPRange.Contains(a.Unmap()) {
+			return false
+		}
+	}
+	return len(addrs) > 0
+}
+
 // guardDialer dials only addresses ok allows, checked on the address the
 // socket is about to connect to.
 func guardDialer(ok func(netip.Addr) bool) *net.Dialer {
@@ -247,11 +278,17 @@ func (pt publicTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	allow := allowFor(pt.also)
 	named := allow.host(host, port)
+	// a fake-IP resolver's answer through a loopback proxy is let in: the
+	// proxy resolves the name itself (fakeIPProxy says why and when)
+	byName := fakeIPProxy(host, addrs, proxy)
 	for _, a := range addrs {
-		if !named && !allow.addr(a) {
+		if !byName && !named && !allow.addr(a) {
 			return nil, errPrivateAddress
 		}
 	}
+	// a fake-IP resolver's answer through a loopback proxy: the name goes
+	// on to the proxy, which resolves it (fakeIPProxy); every other shape
+	// keeps the pin
 	var tc *tls.Config
 	if upstreamTLS != nil {
 		tc = upstreamTLS.Clone()
@@ -274,7 +311,13 @@ func (pt publicTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}).DialContext
 	}
 	out := req.Clone(req.Context())
-	out.URL.Host = net.JoinHostPort(addrs[0].Unmap().String(), port)
+	if byName {
+		// the name, as the caller wrote it: the proxy's CONNECT and TLS's
+		// SNI both keep it
+		out.URL.Host = net.JoinHostPort(host, port)
+	} else {
+		out.URL.Host = net.JoinHostPort(addrs[0].Unmap().String(), port)
+	}
 	out.Host = req.Host
 	if out.Host == "" {
 		out.Host = req.URL.Host
@@ -282,8 +325,9 @@ func (pt publicTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// a plain http:// URL through an HTTP proxy is sent to it whole, its
 	// host taken from Host: the proxy would resolve the name again, so it
 	// is given the address instead (a site that serves only by name won't
-	// answer it; https://, and any URL through SOCKS, keep the name)
-	if proxy != nil && req.URL.Scheme == "http" && (proxy.Scheme == "http" || proxy.Scheme == "https") {
+	// answer it; https://, and any URL through SOCKS, keep the name) —
+	// unless it is a fake-IP name the loopback proxy must resolve itself
+	if !byName && proxy != nil && req.URL.Scheme == "http" && (proxy.Scheme == "http" || proxy.Scheme == "https") {
 		out.Host = out.URL.Host
 	}
 	return t.RoundTrip(out)

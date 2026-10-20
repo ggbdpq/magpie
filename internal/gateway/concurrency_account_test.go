@@ -162,11 +162,19 @@ func TestQueueFullAndWaitedOut(t *testing.T) {
 	within(t, "b queued", func() bool { return lane().Waiting == 1 })
 
 	// the queue full: c turned away at once, as OpenAI says a 429
-	began := time.Now()
 	g.send(context.Background(), "/v1/chat/completions", "slow/m", "c")
 	r := g.reply()
-	if r.tag != "c" || r.status != 429 || r.header.Get("Retry-After") == "" || time.Since(began) > 900*time.Millisecond {
+	if r.tag != "c" || r.status != 429 || r.header.Get("Retry-After") == "" {
 		t.Fatalf("c = %+v, want an immediate 429 with Retry-After", r)
+	}
+	// "immediate" by the lane's state, not the wall clock (#3061): c was
+	// answered before b left the queue — b still waits and the vendor was
+	// asked once, for a alone
+	if l := lane(); l.Waiting != 1 {
+		t.Fatalf("lane after c = %+v, want b still in the queue when c's 429 arrived", l)
+	}
+	if got := v.seen(); len(got) != 1 {
+		t.Fatalf("vendor saw %v, want a alone", got)
 	}
 	var oe struct {
 		Error struct{ Message, Type string } `json:"error"`

@@ -116,10 +116,28 @@ func TestPluginPicksComeBackWithTheirList(t *testing.T) {
 	}
 
 	answers <- full
+	// a list that left nothing out is asked no sooner than the hour: the
+	// window only checks that. That the picks came back with the list is
+	// waited for after it, not assumed to land within it: the loop
+	// applies the list when it gets to it, later than any fixed delay on
+	// a loaded machine (one run at load ~400 read the picks still set
+	// aside), so the state is waited on, the window kept to its own check
 	select {
 	case <-asked:
 		t.Fatal("asked again soon after a list that left nothing out")
 	case <-time.After(200 * time.Millisecond):
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(25 * time.Millisecond) {
+		p, err = Find("our-free-model")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.Equal(p.Models, []string{"pool-a", "pool-b", "qoder/claude-x", "kiro/claude-y"}) && len(p.Delisted) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			break // the assertion below reports the state it saw last
+		}
 	}
 	p, err = Find("our-free-model")
 	if err != nil {

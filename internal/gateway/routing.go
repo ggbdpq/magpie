@@ -265,6 +265,10 @@ var (
 	// answer ("切换其他模型", "switch to the other models"): its limit is
 	// the model's, and the model alone rests
 	otherModels = regexp.MustCompile(`(?i)switch(?:ing)? to (?:the )?other models?|切换(?:到)?其他模型`)
+	// modelCooling is a relay saying the credentials it pools cooled down
+	// for one named model: gpt-load's "All credentials for model model-a
+	// are cooling down via provider upstream" (#3039)
+	modelCooling = regexp.MustCompile(`(?i)credentials for model .{0,200}cooling down`)
 	// clineFreeLimit: Cline's refusal of a free model whose day's allowance
 	// is used up, 429 "Daily free limit reached on model deepseek/deepseek-
 	// v4-flash. Try again in 23h 59m", as its own clients read it (cline/
@@ -1224,6 +1228,13 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	// a ZCode Start Plan trial entry ended or spent is that entry's: the
 	// account's GLM Coding Plan models still answer (#3661)
 	if why == failQuota && zcodeTrialRefused(c, status, body) {
+		id = c.restID()
+	}
+	// a relay's 429 that names the model whose credentials cooled down is
+	// that model's: its siblings on the same key still answer upstream,
+	// and the model's own sentence rests with the model, not on every
+	// sibling's refusal (#3039)
+	if (why == failQuota || why == failRate) && modelCooling.Match(wordsOf(body)) {
 		id = c.restID()
 	}
 	// out of credit, or of a quota, on a model that costs credits where

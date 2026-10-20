@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"net/http"
 	"strconv"
 	"testing"
@@ -312,5 +313,53 @@ func TestSmartFiveHoursAlone(t *testing.T) {
 	share["w"] = weekly(time.Hour)
 	if got := restsOf(route(p, []candidate{acct("e"), acct("w")}, "m", provider.Chat)); got != "s#w s#e " {
 		t.Fatalf("a week renewing within the hour first: %s", got)
+	}
+}
+
+// A relay's 429 that names the model whose credentials cooled down is
+// that model's rest: its siblings on the same key still answer upstream,
+// and none of them is told the model's sentence (#3039, gpt-load's "All
+// credentials for model model-a are cooling down via provider upstream",
+// Retry-After an hour). Resting the key benched every sibling for that
+// hour without one being asked.
+func TestModelCoolingDownRestsTheModelOnly(t *testing.T) {
+	old := allowances
+	defer func() { allowances = old }()
+	fresh(t)
+	allowances = func(string) map[string]provider.Allowance {
+		return map[string]provider.Allowance{}
+	}
+	key := func(model string) candidate {
+		return candidate{p: provider.Provider{ID: "relay", Key: "sk-relay"}, model: model, rest: "relay"}
+	}
+	s := &Server{}
+	header := http.Header{}
+	header.Set("Retry-After", "3597")
+	refused := []byte(`{"error":{"message":"All credentials for model model-a are cooling down via provider upstream (last error: usage_limit_reached: The usage limit has been reached)"}}`)
+
+	a := key("model-a")
+	r := s.restAfter(a, 429, header, refused)
+	if r.Key != a.restID() || r.Model != a.model {
+		t.Fatalf("model-a's cooling-down rested %+v (model %q), not the model alone", r, r.Model)
+	}
+	if _, ok := restOf(key("model-b").restID()); ok {
+		t.Fatal("model-a cooling down rested model-b")
+	}
+	if _, ok := restOf(key("model-b").restKey()); ok {
+		t.Fatal("model-a cooling down rested the whole key")
+	}
+	// the model's own sentence is the model's rest's to keep
+	if kept, _ := restOf(a.restID()); !bytes.Contains([]byte(kept.said), []byte("model-a")) {
+		t.Fatalf("model-a's rest keeps %q", kept.said)
+	}
+
+	// an account-level cool-down that names no model rests the key: the
+	// model-scoped branch is for wordings that name one
+	restingUntil.Lock()
+	restingUntil.m, restingUntil.note = map[string]time.Time{}, map[string]Rest{}
+	restingUntil.Unlock()
+	whole := key("model-b")
+	if r := s.restAfter(whole, 429, header, []byte(`{"error":{"message":"All credentials are cooling down via provider upstream"}}`)); r.Key != whole.restKey() {
+		t.Fatalf("an account-level cool-down rested %+v, want the key", r)
 	}
 }

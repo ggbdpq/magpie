@@ -174,12 +174,18 @@ func apiGet(u string) ([]byte, int, bool, error) {
 		return nil, 0, token, fmt.Errorf("couldn't reach GitHub: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, resp.StatusCode, token, fmt.Errorf("couldn't read GitHub's answer: %w", err)
+	}
 	if e, ok := limitedBy(resp, body, token); ok {
 		return nil, resp.StatusCode, token, e
 	}
 	if resp.StatusCode == 304 && cached {
 		return had.body, 200, token, nil
+	}
+	if resp.StatusCode == 200 && len(body) == 0 {
+		return nil, resp.StatusCode, token, fmt.Errorf("GitHub answered nothing")
 	}
 	if et := resp.Header.Get("ETag"); resp.StatusCode == 200 && et != "" {
 		etags.Lock()

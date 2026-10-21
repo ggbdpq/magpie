@@ -182,3 +182,29 @@ func check(t *testing.T) map[string]SkillCheck {
 	}
 	return m
 }
+
+// A GitHub answer cut off on the way, or an empty one, is said so, not
+// read as a list that couldn't be understood (#3045).
+func TestAPIGetShortAnswer(t *testing.T) {
+	sandbox(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		w.Write([]byte(`{"tree": [`))
+		w.(http.Flusher).Flush() // the answer's head arrives, its body doesn't
+		panic(http.ErrAbortHandler)
+	}))
+	defer srv.Close()
+	if _, _, _, err := apiGet(srv.URL); err == nil {
+		t.Error("a cut-short answer wasn't noticed")
+	} else if !strings.Contains(err.Error(), "couldn't read GitHub's answer") {
+		t.Errorf("said: %v", err)
+	}
+
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer empty.Close()
+	if _, _, _, err := apiGet(empty.URL); err == nil {
+		t.Error("an empty answer wasn't noticed")
+	} else if !strings.Contains(err.Error(), "GitHub answered nothing") {
+		t.Errorf("said: %v", err)
+	}
+}

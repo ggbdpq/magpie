@@ -296,7 +296,10 @@ func latestRTK() (string, error) {
 	var r struct {
 		Tag string `json:"tag_name"`
 	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("couldn't read GitHub's answer: %w", err)
+	}
 	if err := json.Unmarshal(body, &r); err != nil {
 		return "", err
 	}

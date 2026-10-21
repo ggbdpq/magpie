@@ -36,6 +36,13 @@ const (
 		`{"type":"text","text":"<system-reminder>\n</system-reminder>"}]}]}`
 )
 
+// A background task's completion beside the results (#3020): in the system
+// message 2.1.296+ sends, and as 2.1.296 sent one, a user message of its own.
+var (
+	ccTaskNotificationSystem = hookCallStart + `{"role":"system","content":[{"type":"text","text":` + quote(taskNotification) + `}]}]}`
+	ccTaskNotificationOwn    = hookCallStart + `{"role":"user","content":` + quote(taskNotification) + `}]}`
+)
+
 // A hook's notices and the token count after a tool's results are Claude
 // Code's, not a message of the user's: the results go on in their run with
 // nothing written to its Claude Code as the user's, which told its model
@@ -61,6 +68,33 @@ func TestClaudeUsersMessageAmongHookNoticesGoesOnAlone(t *testing.T) {
 	_, said, _ := continuing(t, cc296HooksAndUser)
 	if len(said) != 1 || said[0] != "also tell me the date" {
 		t.Fatalf("Claude Code was written %q, want the user's words alone", said)
+	}
+}
+
+// A background task's <task-notification> rides with the results the way
+// the notices do (#3020): 2.1.303 sends it in the system message beside
+// them; 2.1.296 sent it as a text of its own. It is not the user's words,
+// but the run's model is to hear of the task: a request that carries it
+// alone tells a run started anew it whole, so the run kept for the results
+// hears it too.
+func TestClaudeTaskNotificationGoesOnWithTheResults(t *testing.T) {
+	for name, body := range map[string]string{"in the system message": ccTaskNotificationSystem, "a message of its own": ccTaskNotificationOwn} {
+		t.Run(name, func(t *testing.T) {
+			_, said, _ := continuing(t, body)
+			if len(said) != 1 || !strings.Contains(said[0], "<task-notification>") {
+				t.Fatalf("Claude Code was written %q, want the task-notification", said)
+			}
+		})
+	}
+}
+
+// A run started anew is told the notification with the conversation, as it
+// is told every message (#3020): the run kept for the results is the one
+// that lost it.
+func TestClaudePromptToldTheTaskNotification(t *testing.T) {
+	got := promptText(t, parsed(t, ccTaskNotificationSystem))
+	if !strings.Contains(got, "<task-notification>") {
+		t.Fatalf("the notification isn't told a run started anew:\n%s", got)
 	}
 }
 

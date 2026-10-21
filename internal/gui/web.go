@@ -64,6 +64,71 @@ var webReexec atomic.Bool
 // browser's cookie still opens the page (#111).
 const webRunKey = "MAGPIE_WEB_RUNKEY"
 
+// WebAddr is where the page listens unless told: beside the gateway, whose
+// address the agents point at and which the page never takes from it.
+const WebAddr = "127.0.0.1:3430"
+
+// webListen listens for the page on addr — beside the gateway when addr is
+// the gateway's own address: one port holds one listener, and the gateway
+// keeps it, the agents pointing there, while a page on it would only ever
+// be taken by gateway.ServedBy and gateway.Taken for another magpie's,
+// which this one then waits for for as long as it lives, and the agents'
+// paths answer the page's sign-in (#3209). The page goes where it sits
+// beside the gateway anyway (WebAddr), or, that taken or the gateway's
+// too, on a free port of its own, and says so.
+func webListen(addr string) (net.Listener, error) {
+	beside, move := pageBeside(addr)
+	if !move {
+		return net.Listen("tcp", addr)
+	}
+	ln, err := net.Listen("tcp", beside)
+	if err != nil {
+		// that one is taken too: the same host on a port of the page's own
+		host, _, _ := net.SplitHostPort(beside)
+		ln, err = net.Listen("tcp", net.JoinHostPort(host, "0"))
+	}
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("magpie web: %s is the gateway's own address, so the page is on %s", addr, ln.Addr())
+	return ln, nil
+}
+
+// pageBeside says where the page listens instead of addr, and whether it
+// must: the same host on the page's port beside the gateway, when addr
+// names the gateway's port on hosts both listeners would take.
+func pageBeside(addr string) (string, bool) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", false
+	}
+	gwHost, gwPort, err := net.SplitHostPort(gateway.Addr())
+	if err != nil || port != gwPort || !bothTake(host, gwHost) {
+		return "", false
+	}
+	_, beside, err := net.SplitHostPort(WebAddr)
+	if err != nil || beside == gwPort {
+		beside = "0" // the gateway is on the page's own port: one of the page's own, then
+	}
+	return net.JoinHostPort(host, beside), true
+}
+
+// bothTake says whether two listen hosts take the same requests: equal,
+// either of them on every interface, or the same address. A host that
+// isn't an address (a name) is taken as overlapping: the page going
+// beside the gateway does no harm there, the two fighting over one port
+// does.
+func bothTake(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ai, bi := net.ParseIP(a), net.ParseIP(b)
+	if ai == nil || bi == nil {
+		return true
+	}
+	return ai.IsUnspecified() || bi.IsUnspecified() || ai.Equal(bi)
+}
+
 // StartWeb serves the page on addr (host:port), as the given version of
 // magpie, which keeps itself up to date as the app does. Every request needs the
 // key the link carries, taken once into a cookie other sites' pages can't
@@ -79,7 +144,7 @@ func StartWeb(addr, version string) (*Web, error) {
 	if fixed {
 		keep = webCookieAge
 	}
-	ln, err := net.Listen("tcp", addr)
+	ln, err := webListen(addr)
 	if err != nil {
 		return nil, err
 	}

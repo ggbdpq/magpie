@@ -14,7 +14,7 @@ import (
 )
 
 // webAddr is where `magpie web` listens unless told: beside the gateway.
-const webAddr = "127.0.0.1:3430"
+const webAddr = gui.WebAddr
 
 // webCmd: magpie web [--addr host:port] [--lan] [--no-open] [--gateway]
 // [--tls-cert <file> --tls-key <file>] —

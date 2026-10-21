@@ -285,6 +285,17 @@ type Served struct {
 	Serves  string // how it was started: app, tray, web, serve or tui; "" from one that doesn't say
 }
 
+// RefusedProbe says a status and body are the gateway's own refusal of a
+// request that came without an enabled gateway key. A gateway listening on
+// the network answers this computer's probe of it with that too (#1677):
+// the probe asks for MAGPIE_ADDR's address and leaves by it, so it isn't
+// loopback and is asked for the key. A refusal means something answers and
+// speaks of a magpie gateway key, so the gateway is up; another service's
+// 401 doesn't, and isn't one.
+func RefusedProbe(status int, body []byte) bool {
+	return status == http.StatusUnauthorized && bytes.Contains(body, []byte("magpie gateway key"))
+}
+
 // ServedBy asks the address which magpie answers there. Another magpie can
 // keep the port after this one is updated (a magpie serve left running, a
 // second copy, one that didn't quit), and every agent's request is then
@@ -307,6 +318,9 @@ func ServedBy() Served {
 		Serves  string `json:"serves"`
 	}
 	if decodeJSON(b, &info) != nil || info.Name != "magpie" {
+		if RefusedProbe(res.StatusCode, b) {
+			return Served{Running: true}
+		}
 		return Served{Running: bytes.Contains(b, []byte(`"magpie"`)), Window: bytes.Contains(b, []byte(`"window":true`))}
 	}
 	return Served{Running: true, Window: info.Window, Version: info.Version, Pid: info.Pid, Serves: info.Serves}

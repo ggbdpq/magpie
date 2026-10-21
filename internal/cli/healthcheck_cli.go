@@ -14,9 +14,11 @@ import (
 )
 
 // healthcheck: magpie healthcheck — exits 0 when a magpie gateway answers
-// at its address (MAGPIE_ADDR, else the port in Settings' Gateway address on 127.0.0.1,
-// 3425 unless set), for a container's
-// HEALTHCHECK, which has no curl to ask it with.
+// at its address (MAGPIE_ADDR, else the port in Settings' Gateway address on
+// 127.0.0.1, 3425 unless set), for a container's
+// HEALTHCHECK, which has no curl to ask it with. A gateway listening on the
+// network answers a probe from its own machine without the key with its
+// refusal of one (#1677), and that refusal says it is up.
 func healthcheck() error {
 	c := &http.Client{Timeout: 3 * time.Second}
 	res, err := c.Get(gateway.URL() + "/")
@@ -25,6 +27,9 @@ func healthcheck() error {
 	}
 	defer res.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+	if gateway.RefusedProbe(res.StatusCode, b) {
+		return nil
+	}
 	if res.StatusCode != http.StatusOK || !bytes.Contains(b, []byte(`"magpie"`)) {
 		return fmt.Errorf("%s answers %s, not as a magpie gateway", gateway.URL(), res.Status)
 	}

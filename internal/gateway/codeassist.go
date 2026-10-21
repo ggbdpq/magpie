@@ -794,6 +794,13 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 					out["type"] = "array"
 				}
 			}
+			if out["items"] != nil && out["type"] != "array" {
+				// items rides on an array only: a type that folds to
+				// something else, as ["string","array"] does to string,
+				// leaves it stray and Antigravity turns the turn away
+				// over it (#3121, #3173)
+				delete(out, "items")
+			}
 			if req, ok := out["required"].([]any); ok {
 				// required names only the properties there are
 				props, _ := out["properties"].(map[string]any)

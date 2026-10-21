@@ -175,12 +175,28 @@ func (t *nsTidy) carries(b []byte) bool {
 
 // call names a function_call to a namespaced function by its name and
 // namespace, or a call to a tool renamed for a ChatGPT account by the
-// agent's name, and reports whether it was one.
+// agent's name, and reports whether it was one. A call whose namespace
+// the upstream said itself (a vendor asked as Codex sends it, #3183)
+// needs no naming, only the word that its arguments are not sealed: Codex
+// reads a namespaced call without the empty list as sealed, and the
+// plain-text task would reach its subagent as ciphertext.
 func (t *nsTidy) call(it map[string]any) bool {
-	if it == nil || it["namespace"] != nil || it["type"] != "function_call" && it["type"] != "custom_tool_call" {
+	if it == nil || it["type"] != "function_call" && it["type"] != "custom_tool_call" {
 		return false
 	}
 	name, _ := it["name"].(string)
+	if ns, _ := it["namespace"].(string); ns != "" {
+		for _, q := range t.named {
+			if q.Namespace == ns && q.Name == name {
+				if _, ok := it["encrypted_function_args"]; !ok {
+					it["encrypted_function_args"] = []any{}
+					return true
+				}
+				break
+			}
+		}
+		return false
+	}
 	if n, ok := t.back[name]; ok {
 		it["name"] = n
 		return true

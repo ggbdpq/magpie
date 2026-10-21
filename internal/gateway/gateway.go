@@ -5670,9 +5670,11 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	body = xaiBody(p, proto, body)
 	// a Grok subscription is given Codex's namespaced functions flat
 	// (grokBody), and Zed's plugin likewise (ZedBody); a call to one goes
-	// back under its namespace (#404)
+	// back under its namespace (#404). Any vendor asked as Codex sends it
+	// has its namespaced calls read by Codex: one without the empty
+	// encrypted_function_args list reads as sealed (#3183)
 	var named map[string]nsTool
-	if proto == provider.Responses && p.Account != nil && (p.Account.Agent == "grok" || p.PluginProvider() == "grok" || p.PluginProvider() == "zed") {
+	if proto == provider.Responses {
 		named = namespacedIn(body)
 	}
 	// a ChatGPT account is given a declared tool whose name its backend
@@ -6231,6 +6233,13 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			if tidy != nil {
 				out = tidy.write(out)
 			}
+			// spaces before written: a whole reply (no sse) is held by the
+			// first filter that takes it, and the call's namespace must be
+			// worded for Codex before the text calls are read out of the
+			// message items (#3183)
+			if spaces != nil {
+				out = spaces.write(out)
+			}
 			if written != nil {
 				out = written.write(out)
 			}
@@ -6239,9 +6248,6 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			}
 			if search != nil {
 				out = search.write(out)
-			}
-			if spaces != nil {
-				out = spaces.write(out)
 			}
 			// crArgs before ints: ints runs on every reply now and holds
 			// one that came whole to its own flush, which crArgs, after it,

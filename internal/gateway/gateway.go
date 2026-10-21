@@ -4029,6 +4029,15 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 		}
 		provider.SawClient(provider.ClientCodex, seen)
 	}
+	// a billion-context proxy put in front of the provider (#3052) knows a
+	// cooperative plugin's session by its x-bili- headers, which go on as
+	// the agent sent them: the plugin's name, the conversation and the
+	// context window it serves. None of them is a key.
+	for k, vs := range in {
+		if biliHeader(k) {
+			req.Header[k] = slices.Clone(vs)
+		}
+	}
 	if provider.OpenCodeURL(req.URL.String()) {
 		// as OpenCode itself sends it, which Zen's free tier asks for,
 		// with the conversation's own session, which Zen and Go route and
@@ -4169,6 +4178,13 @@ func codexClientHeader(k string) bool {
 		return true
 	}
 	return codexHeader(k)
+}
+
+// biliHeader is one of the headers a billion-context (bili) proxy put in
+// front of the provider asks a cooperative plugin by: x-bili-plugin, its
+// conversation and its context window, all x-bili- prefixed and none a key.
+func biliHeader(k string) bool {
+	return strings.HasPrefix(strings.ToLower(k), "x-bili-")
 }
 
 // passthrough relays a request the provider understands as-is, with the

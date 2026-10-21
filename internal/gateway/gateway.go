@@ -5699,6 +5699,36 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		pending = pending[:0]
 		atLine = true
 	}
+	if sse {
+		write = func(b []byte) (int, error) {
+			if len(pending) > 0 {
+				nb := make([]byte, 0, len(pending)+len(b))
+				nb = append(nb, pending...)
+				nb = append(nb, b...)
+				b, pending = nb, pending[:0]
+			}
+			if i := bytes.LastIndexByte(b, '\n'); i >= 0 {
+				pending = append(pending, b[i+1:]...)
+				b = b[:i+1]
+			} else {
+				pending = append(pending, b...)
+				b = b[:0]
+			}
+			if len(pending) > 1<<20 {
+				// a line that outgrew any event is no event's data any
+				// more: it goes as it came, held no longer, where the
+				// sniffer gives up on one this long for the same reason
+				atLine = false
+				w.Write(pending)
+				pending = pending[:0]
+			}
+			if len(b) > 0 {
+				atLine = b[len(b)-1] == '\n'
+				return w.Write(b)
+			}
+			return 0, nil
+		}
+	}
 	// apart is what goes before an event magpie appends: a blank line,
 	// after the line still pending if the upstream's last write stopped
 	// inside one
@@ -5893,6 +5923,15 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// reading it dies on its JSON before the error is reached
 			dropHalf()
 			w.Write(append(apart(), streamFailure(proto, failed)...))
+			if proto == provider.Chat && rerr != nil && rerr != io.EOF {
+				// a Chat stream the upstream severed ends on [DONE] too: a
+				// client that reads to it stops there and says the error it
+				// read, instead of waiting on a connection that only
+				// closes (#3197). One that ended cleanly ends at the error,
+				// as a cut reply is not to end as if whole
+				// (TestGeminiCompatRelayEndedShort).
+				w.Write([]byte("data: [DONE]\n\n"))
+			}
 			if f != nil {
 				f.Flush()
 			}

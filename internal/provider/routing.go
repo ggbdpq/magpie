@@ -530,7 +530,7 @@ func Allowances(agent string) map[string]Allowance {
 			if c.seen == nil {
 				c.seen = map[string]reading{}
 			}
-			var renewed []string
+			var renewed, restarts []string
 			for user, a := range all {
 				key := agent + "/" + strings.ToLower(user)
 				if c.renewed[key] > began {
@@ -540,8 +540,13 @@ func Allowances(agent string) map[string]Allowance {
 					at = time.Time{}
 					continue
 				}
-				if was, ok := c.seen[key]; ok && a.renewedFrom(was.a, was.at, share, now) {
-					renewed = append(renewed, user)
+				if was, ok := c.seen[key]; ok {
+					if a.renewedFrom(was.a, was.at, share, now) {
+						renewed = append(renewed, user)
+					}
+					if a.startedAgain(was.a, was.at, share, now) {
+						restarts = append(restarts, user)
+					}
 				}
 				c.seen[key] = reading{a, now}
 			}
@@ -558,6 +563,9 @@ func Allowances(agent string) map[string]Allowance {
 			// again), and before those waiting for them are let go
 			for _, user := range renewed {
 				tellRenewed(agent, user)
+			}
+			for _, user := range restarts {
+				tellStarted(agent, user)
 			}
 			close(done)
 		}()
@@ -598,13 +606,32 @@ var renewedHooks struct {
 	fs []func(agent, user string)
 }
 
+// OnStarted has f told as OnRenewed is, and by the same tellings, but
+// only when a window stands started again in fact: a reading finding one
+// it was full in full no more with its reset gone by, or standing a new,
+// later cycle, or a reset spent on them. What a vendor itself gave the
+// time of waits for that, not for a reading that merely finds its window
+// less than full while the vendor's own word stands (#2718).
+func OnStarted(f func(agent, user string)) {
+	startedHooks.Lock()
+	startedHooks.fs = append(startedHooks.fs, f)
+	startedHooks.Unlock()
+}
+
+var startedHooks struct {
+	sync.Mutex
+	fs []func(agent, user string)
+}
+
 // renewedNow tells those OnRenewed asked, and forgets the account's
 // allowance as last read: its windows are not known till read again, and
 // what holds an account at a share of them (a cap, credits not spent)
-// holds it no more.
+// holds it no more. Those OnStarted asked are told too: a reset spent is
+// a window started again in fact.
 func renewedNow(agent, user string) {
 	forgetAllowance(agent, user)
 	tellRenewed(agent, user)
+	tellStarted(agent, user)
 }
 
 // tellRenewed tells those OnRenewed asked.
@@ -612,6 +639,16 @@ func tellRenewed(agent, user string) {
 	renewedHooks.Lock()
 	fs := renewedHooks.fs
 	renewedHooks.Unlock()
+	for _, f := range fs {
+		f(agent, user)
+	}
+}
+
+// tellStarted tells those OnStarted asked.
+func tellStarted(agent, user string) {
+	startedHooks.Lock()
+	fs := startedHooks.fs
+	startedHooks.Unlock()
 	for _, f := range fs {
 		f(agent, user)
 	}

@@ -535,27 +535,54 @@ func (r Rest) asksAt(now time.Time) time.Time {
 }
 
 // renewed lifts the rests of a subscription account whose windows were
-// just started again (a Codex reset spent, or a reading finding a window
-// it was full in full no more): out of quota no longer. Only its rests out
-// of quota, or failed with a window full ("window"), are lifted; one for a
-// rate limit, its credit or a verification stays. Told agent "", it is a
-// key (provider.KeyAllowanceID) whose windows a reading found full no
+// just started again, as a reading of them (Allowances) finds one it was
+// full in full no more: out of quota no longer. Only its rests out of
+// quota, or failed with a window full ("window"), are lifted, and of
+// them only what no vendor gave the time of: a refusal's own word
+// ("resets", "retry-after") stands till a window truly starts again
+// (restarted), or a reset is spent — not till a reading merely finds the
+// window less than full, which the vendor's usage can say while its own
+// refusal stands, and lifted on that the account was tried and refused
+// again every few minutes till its reset (#2718). One for a rate limit,
+// its credit or a verification stays. Told agent "", it is a key
+// (provider.KeyAllowanceID) whose windows a reading found full no
 // more — its limit raised, or its usage reset — and its rest out of them
 // is lifted; a key's other rests aren't noted by it.
 func renewed(agent, user string) {
+	liftRests(agent, user, false)
+}
+
+// restarted lifts what a reading's word alone may not: the rests the
+// vendor itself gave the time of. Told as renewed is, when a window
+// stands started again in fact, or a reset was spent.
+func restarted(agent, user string) {
+	liftRests(agent, user, true)
+}
+
+// liftRests lifts an account's rests out of quota, or of a window read
+// full: those no vendor timed by renewed's word alone, and those it did
+// only by restarted's.
+func liftRests(agent, user string, vendorTill bool) {
 	restingUntil.Lock()
 	defer restingUntil.Unlock()
 	now := time.Now()
 	for k, r := range restingUntil.note {
-		if r.agent == agent && strings.EqualFold(r.user, user) && (r.Why == failQuota || r.By == "window") {
-			delete(restingUntil.m, k)
-			delete(restingUntil.note, k)
-			liftedLocked(k, now)
+		if r.agent != agent || !strings.EqualFold(r.user, user) || r.Why != failQuota && r.By != "window" {
+			continue
 		}
+		if vendorTill != (r.By == "resets" || r.By == "retry-after") {
+			continue
+		}
+		delete(restingUntil.m, k)
+		delete(restingUntil.note, k)
+		liftedLocked(k, now)
 	}
 }
 
-func init() { provider.OnRenewed(renewed) }
+func init() {
+	provider.OnRenewed(renewed)
+	provider.OnStarted(restarted)
+}
 
 // staleAllowance is provider.StaleAllowance, swapped in tests.
 var staleAllowance = provider.StaleAllowance

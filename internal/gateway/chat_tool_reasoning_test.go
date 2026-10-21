@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -51,6 +52,54 @@ const toolTurnsNoReasoning = `{"model":"%s","stream":false,"tools":[{"type":"fun
 	{"role":"assistant","content":null,"tool_calls":[{"id":"call_3","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning":"OpenRouter's field."},
 	{"role":"tool","tool_call_id":"call_3","content":"12:02"}]}`
 
+// deepseekAliasSerde answers as the self-hosted DeepSeek engine of #3165
+// does: its serde reads reasoning_content as an alias of reasoning, so a
+// message carrying both turns the whole request away.
+func deepseekAliasSerde(body []byte) (int, string) {
+	var q struct {
+		Messages []map[string]json.RawMessage `json:"messages"`
+	}
+	json.Unmarshal(body, &q)
+	for i, m := range q.Messages {
+		if _, echoed := m["reasoning"]; !echoed {
+			continue
+		}
+		if _, injected := m["reasoning_content"]; injected {
+			return 400, `{"code":"json_parse_error","message":"deepseek: Failed to deserialize the JSON body into the target type: messages[` + strconv.Itoa(i) + `]: duplicate field ` + "`reasoning`" + ` at line 1 column 70565","param":null,"type":"invalid_request_error"}`
+		}
+	}
+	return 0, ""
+}
+
+// A Chat request relayed as it came to a DeepSeek engine that streams its
+// thinking in `reasoning` (#3165): the client echoes that field back, and
+// the replay of a tool turn would put reasoning_content beside it, which
+// such a serde takes apart ("duplicate field `reasoning`"). The thinking
+// moves into reasoning_content instead: it is carried once, and a message
+// that echoed reasoning_content of its own loses the `reasoning` left
+// beside it.
+func TestChatToolTurnReasoningCarriedOnce(t *testing.T) {
+	f := &fake{t: t, reply: chatWholeOK, ctype: "application/json", refuse: deepseekAliasSerde}
+	up := setup(t, provider.Chat, f)
+	chatProvider(t, up.URL, provider.Provider{ID: "dsflash", Models: []string{"deepseek-v4.1-flash"}})
+	code, body := postTo(t, New(), "/v1/chat/completions", `{"model":"dsflash/deepseek-v4.1-flash","stream":false,"messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":null,"tool_calls":[`+timeCall+`],"reasoning":"Thinking about the time."},
+		{"role":"tool","tool_call_id":"call_1","content":"12:00"},
+		{"role":"assistant","content":null,"tool_calls":[{"id":"call_2","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning_content":"Once more.","reasoning":"Echoed."},
+		{"role":"tool","tool_call_id":"call_2","content":"12:01"},
+		{"role":"assistant","content":"It is 12:01.","reasoning":"Reply thinking."}]}`)
+	if code != 200 || f.calls != 1 {
+		t.Fatalf("%d after %d calls: %s", code, f.calls, body)
+	}
+	ms := sentMessages(t, f.got)
+	sameJSON(t, ms[1], `{"role":"assistant","content":null,"tool_calls":[`+timeCall+`],"reasoning_content":"Thinking about the time."}`)
+	sameJSON(t, ms[2], `{"role":"tool","tool_call_id":"call_1","content":"12:00"}`)
+	sameJSON(t, ms[3], `{"role":"assistant","content":null,"tool_calls":[{"id":"call_2","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning_content":"Once more."}`)
+	sameJSON(t, ms[4], `{"role":"tool","tool_call_id":"call_2","content":"12:01"}`)
+	sameJSON(t, ms[5], `{"role":"assistant","content":"It is 12:01.","reasoning_content":"Reply thinking."}`)
+}
+
 func chatProvider(t *testing.T, up string, p provider.Provider) {
 	t.Helper()
 	p.Name, p.Key, p.Chat = p.ID, "k", up+"/v1"
@@ -62,8 +111,10 @@ func chatProvider(t *testing.T, up string, p provider.Provider) {
 // A Chat request relayed as it came to a DeepSeek model, here behind
 // OpenCode Go whose host doesn't say DeepSeek, gives every tool call
 // without reasoning_content one, so DeepSeek takes it (#1462). The
-// thinking a turn has keeps it, one sent in another field goes there too,
-// and every other message goes as it was sent.
+// thinking a turn has keeps it, one sent in another field moves there —
+// carried once, since a DeepSeek-style serde reading both names into one
+// field takes the message apart (#3165) — and every other message goes as
+// it was sent.
 func TestChatToolTurnWithoutReasoningRelayed(t *testing.T) {
 	f := &fake{t: t, reply: chatWholeOK, ctype: "application/json", refuse: deepseekRefuseToolTurns}
 	up := setup(t, provider.Chat, f)
@@ -84,7 +135,7 @@ func TestChatToolTurnWithoutReasoningRelayed(t *testing.T) {
 		sameJSON(t, ms[1], `{"role":"assistant","content":"Hello!"}`)
 		sameJSON(t, ms[3], `{"role":"assistant","content":null,"tool_calls":[`+timeCall+`],"reasoning_content":" "}`)
 		sameJSON(t, ms[5], `{"role":"assistant","content":null,"tool_calls":[{"id":"call_2","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning_content":"Once more."}`)
-		sameJSON(t, ms[7], `{"role":"assistant","content":null,"tool_calls":[{"id":"call_3","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning":"OpenRouter's field.","reasoning_content":"OpenRouter's field."}`)
+		sameJSON(t, ms[7], `{"role":"assistant","content":null,"tool_calls":[{"id":"call_3","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning_content":"OpenRouter's field."}`)
 		sameJSON(t, ms[4], `{"role":"tool","tool_call_id":"call_1","content":"12:00"}`)
 	}
 

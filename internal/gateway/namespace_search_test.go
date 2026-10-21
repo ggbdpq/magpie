@@ -25,7 +25,7 @@ func TestNamespacedCallKeepsArgsWhenSearchTakesOver(t *testing.T) {
 			return
 		}
 		b, _ := io.ReadAll(r.Body)
-		if !strings.Contains(string(b), `"collaboration__spawn_agent"`) {
+		if !strings.Contains(string(b), `"spawn_agent"`) {
 			http.Error(w, `{"error":{"message":"no spawn_agent: `+strings.ReplaceAll(string(b), `"`, `'`)+`"}}`, 400)
 			return
 		}
@@ -38,10 +38,10 @@ func TestNamespacedCallKeepsArgsWhenSearchTakesOver(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		io.WriteString(w, sse(
 			`data: {"type":"response.created","response":{"id":"r1","model":"m"}}`,
-			`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"collaboration__spawn_agent","arguments":""}}`,
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"spawn_agent","arguments":""}}`,
 			`data: {"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_1","delta":""}`,
 			`data: {"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_1","arguments":`+string(quoted)+`}`,
-			`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"collaboration__spawn_agent","arguments":`+string(quoted)+`,"status":"completed"}}`,
+			`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"spawn_agent","arguments":`+string(quoted)+`,"status":"completed"}}`,
 			`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[],"usage":{"input_tokens":5,"output_tokens":5}}}`,
 		))
 	}))

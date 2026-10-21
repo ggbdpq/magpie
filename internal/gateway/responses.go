@@ -256,6 +256,59 @@ func flatName(namespace, name string) string {
 	return provider.FlatName(namespace, name)
 }
 
+// offeredNames says what name each of a request's namespace tools goes to
+// the model under: its own, when no other tool in the request claims that
+// name — none at the top level, none in another namespace, no flat name,
+// none of the tool search served — and the flat namespace__name otherwise.
+// A model that knows a namespace's tools by their own names calls them so
+// (Muse Spark behind Cline turned a muse__-flat list away with
+// "undeclared_tool", #1448), the way Responses Lite already ships Codex's
+// own functions bare (liftAdditionalTools); a name two tools would fight
+// over keeps the flat form, which cuts a longer one to fit. The
+// conversation's earlier calls and an allowed_tools list read the same map
+// (offeredName), so a tool goes by one name the whole request through.
+func offeredNames(tools []rTool) map[string]string {
+	claimed := map[string]bool{} // a top-level tool's name, or a flat one
+	own := map[string]int{}      // namespace tools by their own name
+	names := map[string]string{} // namespace\x00name → the name offered
+	for _, t := range tools {
+		switch t.Type {
+		case "function", "custom":
+			claimed[t.Name] = true
+		case toolSearch:
+			if t.Execution == "client" {
+				claimed[t.Name] = true
+			}
+		case "namespace":
+			for _, nt := range t.Tools {
+				if nt.Type != "function" && nt.Type != "custom" {
+					continue
+				}
+				claimed[flatName(t.Name, nt.Name)] = true
+				own[nt.Name]++
+				names[t.Name+"\x00"+nt.Name] = nt.Name
+			}
+		}
+	}
+	for key, name := range names {
+		if !claimed[name] && own[name] == 1 && len(name) <= 64 {
+			continue
+		}
+		names[key] = flatName(key[:strings.IndexByte(key, 0)], name)
+	}
+	return names
+}
+
+// offeredName is a namespace tool's name as the model is offered it: by
+// offeredNames' word when the request carries the tool, the flat name it
+// always was when it doesn't (an earlier call for one since dropped).
+func offeredName(offered map[string]string, namespace, name string) string {
+	if n, ok := offered[namespace+"\x00"+name]; ok {
+		return n
+	}
+	return flatName(namespace, name)
+}
+
 type rRequest struct {
 	Model             string          `json:"model"`
 	Instructions      string          `json:"instructions,omitempty"`
@@ -318,6 +371,7 @@ func parseResponses(body []byte) (*Request, error) {
 		TopP: q.TopP, Stream: q.Stream, Parallel: q.ParallelToolCalls, Fast: q.ServiceTier == "priority" || q.ServiceTier == "ultrafast", Ultrafast: q.ServiceTier == "ultrafast", Tier: q.ServiceTier, CacheKey: q.PromptCacheKey, Include: q.Include,
 		ClientMetadata: sentRaw(q.ClientMetadata), AccessPrograms: q.AccessPrograms}
 	r.Text, r.Format = textFormat(sentRaw(q.Text))
+	offered := offeredNames(q.Tools)
 	if q.Reasoning != nil {
 		r.Effort = effortOf(q.Reasoning.Effort)
 		r.Thinking = true
@@ -378,13 +432,13 @@ func parseResponses(body []byte) (*Request, error) {
 			case it.Type == "function_call":
 				name := it.Name
 				if it.Namespace != "" {
-					name = flatName(it.Namespace, it.Name)
+					name = offeredName(offered, it.Namespace, it.Name)
 				}
 				r.Messages = append(r.Messages, Message{Role: "assistant", Parts: []Part{{Kind: ToolCall, ID: it.CallID, Name: name, Args: parseArgs(string(it.Arguments))}}})
 			case it.Type == "custom_tool_call":
 				name := it.Name
 				if it.Namespace != "" {
-					name = flatName(it.Namespace, it.Name)
+					name = offeredName(offered, it.Namespace, it.Name)
 				}
 				args, _ := json.Marshal(map[string]string{"input": it.Input})
 				r.Messages = append(r.Messages, Message{Role: "assistant", Parts: []Part{{Kind: ToolCall, ID: it.CallID, Name: name, Args: args}}})
@@ -466,15 +520,25 @@ func parseResponses(body []byte) (*Request, error) {
 		case "custom":
 			offer(i, Tool{Name: t.Name, Description: customDescription(t), Schema: customSchema}, nsTool{Name: t.Name, Custom: true})
 		case "namespace":
-			// offered flat, as few models know namespaces; a call is given
-			// its namespace back on the way out
+			// offered under each tool's own name when no other tool claims
+			// it, the flat namespace__name otherwise (offeredNames); a call
+			// is given its namespace back on the way out by either name
 			for _, nt := range t.Tools {
-				flat := flatName(t.Name, nt.Name)
+				name, ns := offeredName(offered, t.Name, nt.Name), nsTool{Namespace: t.Name, Name: nt.Name}
 				switch nt.Type {
 				case "function":
-					offer(i, Tool{Name: flat, Description: nt.Description, Schema: unsealed(nt.Parameters), Strict: nt.Strict != nil && *nt.Strict}, nsTool{Namespace: t.Name, Name: nt.Name})
+					offer(i, Tool{Name: name, Description: nt.Description, Schema: unsealed(nt.Parameters), Strict: nt.Strict != nil && *nt.Strict}, ns)
 				case "custom":
-					offer(i, Tool{Name: flat, Description: customDescription(nt), Schema: customSchema}, nsTool{Namespace: t.Name, Name: nt.Name, Custom: true})
+					ns.Custom = true
+					offer(i, Tool{Name: name, Description: customDescription(nt), Schema: customSchema}, ns)
+				default:
+					continue
+				}
+				if flat := flatName(t.Name, nt.Name); name != flat {
+					// the flat name is answered too: a model may say it
+					// anyway, as one behind a request relayed reshaped does
+					// (a Grok subscription's, grokBody)
+					r.Namespaced[flat] = ns
 				}
 			}
 		case toolSearch:
@@ -510,7 +574,7 @@ func parseResponses(body []byte) (*Request, error) {
 					switch {
 					case (tool.Type == "function" || tool.Type == "custom") && tool.Name != "":
 						if tool.Namespace != "" {
-							allowed[flatName(tool.Namespace, tool.Name)] = true
+							allowed[offeredName(offered, tool.Namespace, tool.Name)] = true
 						} else {
 							allowed[tool.Name] = true
 						}
@@ -526,8 +590,14 @@ func parseResponses(body []byte) (*Request, error) {
 					}
 				}
 				r.Tools = tools
-				for name := range r.Namespaced {
-					if !allowed[name] {
+				kept := map[string]bool{}
+				for _, tool := range r.Tools {
+					kept[tool.Name] = true
+				}
+				for name, ns := range r.Namespaced {
+					// a kept namespace tool stays answerable by its flat
+					// name too, as it was offered under its own (offeredNames)
+					if !allowed[name] && !(ns.Namespace != "" && kept[ns.Name]) {
 						delete(r.Namespaced, name)
 					}
 				}

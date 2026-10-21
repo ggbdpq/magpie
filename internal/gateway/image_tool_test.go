@@ -36,9 +36,10 @@ func noNamespaces(got *[]string, refuse bool) http.HandlerFunc {
 }
 
 // hasImageTool reports whether a request offers Codex's image tool, in its
-// namespace or flat as magpie translates it.
+// namespace, or under the name magpie offers it to the model by (its own
+// when no other tool claims it, the flat one otherwise).
 func hasImageTool(body string) bool {
-	return strings.Contains(body, `"type":"namespace"`) || strings.Contains(body, `"image_gen__imagegen"`)
+	return strings.Contains(body, `"type":"namespace"`) || strings.Contains(body, `"image_gen__imagegen"`) || strings.Contains(body, `"name":"imagegen"`)
 }
 
 // Codex on a magpie model offers its image tool, as #870 has it, in the

@@ -98,7 +98,7 @@ func TestParseResponsesAllowedNamespacedTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Tools) != 1 || r.Tools[0].Name != "collaboration__spawn_agent" || len(r.Namespaced) != 1 {
+	if len(r.Tools) != 1 || r.Tools[0].Name != "spawn_agent" || len(r.Namespaced) != 2 {
 		t.Fatalf("tools = %v, namespaced = %v", r.Tools, r.Namespaced)
 	}
 }

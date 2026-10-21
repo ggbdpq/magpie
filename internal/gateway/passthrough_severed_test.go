@@ -2,9 +2,14 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // postMessages sends an Anthropic Messages request to the gateway, as dsh's
@@ -89,6 +94,82 @@ func atLineEnd(t *testing.T, body string) {
 	if !strings.HasSuffix(body[:i], "\n\n") {
 		t.Fatalf("the error event began inside the event still pending: %q", body[max(0, i-60):i+len("event: error")])
 	}
+}
+
+// severedChat is severed for an upstream the client speaks Chat to, as Pi
+// does an OpenAI-compatible provider (#3197).
+func severedChat(t *testing.T, events ...string) {
+	t.Helper()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			panic("no hijacker")
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			panic(err)
+		}
+		defer conn.Close()
+		body := strings.Join(events, "")
+		fmt.Fprintf(buf, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\n\r\n", len(body)+100)
+		io.WriteString(buf, body)
+		buf.Flush()
+	}))
+	t.Cleanup(up.Close)
+	p := provider.Provider{ID: "up", Name: "UP", Key: "k", Models: []string{"m"}, Chat: up.URL + "/v1"}
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// chatEventsSevered asks a Chat relay of the severed upstream and fails
+// when any event it left the client is no JSON a client can read, or the
+// stream doesn't end error, then [DONE].
+func chatEventsSevered(t *testing.T) {
+	t.Helper()
+	code, body := post(t, "/v1/chat/completions", `{"model":"up/m","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", code, body)
+	}
+	readSSE(strings.NewReader(body), func(_, data string) error {
+		if data != "[DONE]" && json.Valid([]byte(data)) == false {
+			t.Fatalf("the severed stream left an event no client can read: %q", data)
+		}
+		return nil
+	})
+	i := strings.Index(body, "connection lost mid-reply")
+	if i < 0 {
+		t.Fatalf("the severed stream ended without the failure said: %s", body)
+	}
+	if !strings.Contains(body[i:], "data: [DONE]\n\n") {
+		t.Fatalf("the error event was not followed by [DONE]: %s", body[i:])
+	}
+}
+
+// A Chat stream the upstream severs inside a data line: what the client
+// has is half an event, and the blank line the relay's ending writes made
+// it one — Pi read its truncated JSON as "malformed server-sent event
+// JSON" and hung, the error event after it unread (#3197). The half line
+// never goes out, and the stream ends with the error and the [DONE] a
+// Chat client reads to.
+func TestPassthroughChatSeveredMidLine(t *testing.T) {
+	fresh(t)
+	severedChat(t,
+		`data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant"}}]}`+"\n\n",
+		`data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"hel"}}]}`+"\n\n",
+		`data: {"id":"c1","model":"m","cho`)
+	chatEventsSevered(t)
+}
+
+// One severed at a line's end keeps the line it finished: the event it
+// completes stands, and the error and [DONE] follow as events of their own.
+func TestPassthroughChatSeveredAtLineEnd(t *testing.T) {
+	fresh(t)
+	severedChat(t,
+		`data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant"}}]}`+"\n\n",
+		`data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"lo"}}]}`+"\n")
+	chatEventsSevered(t)
 }
 
 // A reply the loop guard cuts (cutLoop) while the client is mid-line ends

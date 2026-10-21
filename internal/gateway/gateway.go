@@ -4746,11 +4746,48 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	// client reads one event it can't parse where the protocol's error was
 	// meant (TestPassthroughStreamCutMidLine)
 	atLine := true
+	// pending is the line a stream's last read left unfinished. It is not
+	// the client's until its end: held here, given on when the stream ends
+	// cleanly, dropped when the read fails — the half event the old blank
+	// line closing made of it is what Pi read as "malformed server-sent
+	// event JSON" and hung on, the error event after it unread (#3197).
+	// A body that is no events goes through as it comes.
+	var pending []byte
 	write := func(b []byte) (int, error) {
 		if len(b) > 0 {
 			atLine = b[len(b)-1] == '\n'
 		}
 		return w.Write(b)
+	}
+	if sse {
+		write = func(b []byte) (int, error) {
+			if len(pending) > 0 {
+				nb := make([]byte, 0, len(pending)+len(b))
+				nb = append(nb, pending...)
+				nb = append(nb, b...)
+				b, pending = nb, pending[:0]
+			}
+			if i := bytes.LastIndexByte(b, '\n'); i >= 0 {
+				pending = append(pending, b[i+1:]...)
+				b = b[:i+1]
+			} else {
+				pending = append(pending, b...)
+				b = b[:0]
+			}
+			if len(pending) > 1<<20 {
+				// a line that outgrew any event is no event's data any
+				// more: it goes as it came, held no longer, where the
+				// sniffer gives up on one this long for the same reason
+				atLine = false
+				w.Write(pending)
+				pending = pending[:0]
+			}
+			if len(b) > 0 {
+				atLine = b[len(b)-1] == '\n'
+				return w.Write(b)
+			}
+			return 0, nil
+		}
 	}
 	// apart is what goes before an event magpie appends: a blank line,
 	// after the line still pending if the upstream's last write stopped
@@ -4862,6 +4899,19 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	if phases != nil {
 		write(phases.flush())
 	}
+	// what a stream's last read left of a line: a clean end hands it on
+	// as when the stream went through as it came, a failed one drops it —
+	// half an event is nothing a client can read (#3197)
+	if len(pending) > 0 {
+		if rerr == nil || rerr == io.EOF {
+			atLine = pending[len(pending)-1] == '\n'
+			w.Write(pending)
+			if f != nil {
+				f.Flush()
+			}
+		}
+		pending = nil
+	}
 	if sse {
 		sniff.drain()
 	}
@@ -4904,10 +4954,20 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			failed = p.Name + ": " + errEndedShort.Error()
 		}
 		if failed != "" {
-			// what is appended begins after a blank line: the event still
-			// pending is left to stand, and the failure is read as an
-			// event of its own (TestPassthroughStreamEndsOnLineEnd)
+			// what is appended begins after a blank line: the line the
+			// upstream finished stands as the event it completed, and the
+			// failure is read as an event of its own
+			// (TestPassthroughStreamEndsOnLineEnd)
 			w.Write(append(apart(), streamFailure(proto, failed)...))
+			if proto == provider.Chat && rerr != nil && rerr != io.EOF {
+				// a Chat stream the upstream severed ends on [DONE] too: a
+				// client that reads to it stops there and says the error it
+				// read, instead of waiting on a connection that only
+				// closes (#3197). One that ended cleanly ends at the error,
+				// as a cut reply is not to end as if whole
+				// (TestGeminiCompatRelayEndedShort).
+				w.Write([]byte("data: [DONE]\n\n"))
+			}
 			if f != nil {
 				f.Flush()
 			}

@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -623,72 +622,85 @@ func TestGrokCallsGiveIntegersOnEveryProtocol(t *testing.T) {
 	}
 }
 
-// A model magpie names otherwise but sends upstream as a Grok model is
-// Grok's too.
-func TestGrokCallsByUpstreamName(t *testing.T) {
-	c := integralCases(t)[0]
-	fresh(t)
-	up := httptest.NewServer(responsesCall(c.tool, c.args, []string{c.args}))
-	defer up.Close()
-	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Models: []string{"x-ai/grok-4.6"}, Responses: up.URL + "/v1"}); err != nil {
-		t.Fatal(err)
-	}
-	for _, stream := range []bool{true, false} {
-		checkResponses(t, c, askGrok(t, "/v1/responses", codexShellTurn("relay/x-ai/grok-4.6", stream)), stream)
+// Another vendor's model writes whole floats too (#3152: muse-spark's
+// tool_search limit 8.0, which Codex turns away as "invalid number"): a
+// model nobody calls Grok reaches the client with integers, relayed on
+// every protocol and translated from Chat, deltas and done alike. The
+// edges case in integralCases holds the look-alikes that stay as written:
+// 2500.5, 2.50, 2.5e3, 1.0e3, the string "4000.0".
+func TestOtherModelsCallsGetCodexIntegers(t *testing.T) {
+	for _, c := range integralCases(t) {
+		pieces := someCuts(c.args)["by byte"]
+		for _, stream := range []bool{true, false} {
+			for _, rc := range []struct {
+				path, body string
+				up         http.HandlerFunc
+				p          provider.Provider
+			}{
+				{"/v1/responses", codexShellTurn("relay/gpt-5.5", stream), responsesCall(c.tool, c.args, pieces), provider.Provider{Responses: "/v1"}},
+				{"/v1/chat/completions", chatShellTurn("relay/gpt-5.5", stream), chatCall(c.tool, c.args, pieces), provider.Provider{Chat: "/v1"}},
+				{"/v1/messages", messagesShellTurn("relay/gpt-5.5", stream), messagesCall(c.tool, c.args, pieces), provider.Provider{Anthropic: "/v1"}},
+			} {
+				fresh(t)
+				up := httptest.NewServer(rc.up)
+				p := rc.p
+				p.ID, p.Name, p.Key, p.Models = "relay", "relay", "k", []string{"gpt-5.5"}
+				if p.Responses != "" {
+					p.Responses = up.URL + p.Responses
+				}
+				if p.Chat != "" {
+					p.Chat = up.URL + p.Chat
+				}
+				if p.Anthropic != "" {
+					p.Anthropic = up.URL + p.Anthropic
+				}
+				if err := provider.Save(p); err != nil {
+					t.Fatal(err)
+				}
+				check := func(where string, got []byte) {
+					t.Helper()
+					switch rc.path {
+					case "/v1/responses":
+						checkResponses(t, c, got, stream)
+					case "/v1/chat/completions":
+						c.check(t, where, chatRead(t, got, stream))
+					case "/v1/messages":
+						c.check(t, where, messagesRead(t, got, stream))
+					}
+				}
+				check(rc.path+map[bool]string{true: " stream", false: ""}[stream], askGrok(t, rc.path, rc.body))
+				up.Close()
+			}
+
+			fresh(t)
+			chat := httptest.NewServer(chatCall(c.tool, c.args, pieces))
+			if err := provider.Save(provider.Provider{ID: "relay", Name: "relay", Key: "k", Models: []string{"gpt-5.5"}, Chat: chat.URL + "/v1"}); err != nil {
+				t.Fatal(err)
+			}
+			for where, got := range responsesRead(t, askGrok(t, "/v1/responses", codexShellTurn("relay/gpt-5.5", stream)), stream) {
+				c.check(t, "translated "+where, got)
+			}
+			chat.Close()
+		}
 	}
 }
 
-// Another vendor's model is not Grok's: the same call reaches the client
-// as it came, relayed byte for byte, and translated with its floats.
-func TestOnlyGrokCallsGetIntegers(t *testing.T) {
-	c := rollout(t, "grok_4_6_exec_command.jsonl")
-	pieces := []string{c.Arguments[:60], c.Arguments[60:]}
+// #3152: a model that is not Grok's writes tool_search's limit as a whole
+// float, and Codex turns the call away before it runs ("invalid number";
+// omitting limit is the reporter's proof the MCP servers were fine).
+// Relayed Responses, streamed in deltas or whole, the client reads 8.
+func TestToolSearchWholeFloatLimitGivesCodexIntegers(t *testing.T) {
+	c := integralCase{name: "tool_search limit 8.0", tool: "tool_search",
+		args: `{"query":"exa web search","limit":8.0}`,
+		want: map[string]string{"query": `"exa web search"`, "limit": "8"}}
 	for _, stream := range []bool{true, false} {
-		for _, rc := range []struct {
-			path, body string
-			up         http.HandlerFunc
-			p          provider.Provider
-		}{
-			{"/v1/responses", codexShellTurn("relay/gpt-5.5", stream), responsesCall(c.Name, c.Arguments, pieces), provider.Provider{Responses: "/v1"}},
-			{"/v1/chat/completions", chatShellTurn("relay/gpt-5.5", stream), chatCall(c.Name, c.Arguments, pieces), provider.Provider{Chat: "/v1"}},
-			{"/v1/messages", messagesShellTurn("relay/gpt-5.5", stream), messagesCall(c.Name, c.Arguments, pieces), provider.Provider{Anthropic: "/v1"}},
-		} {
-			fresh(t)
-			up := httptest.NewServer(rc.up)
-			p := rc.p
-			p.ID, p.Name, p.Key, p.Models = "relay", "relay", "k", []string{"gpt-5.5"}
-			if p.Responses != "" {
-				p.Responses = up.URL + p.Responses
-			}
-			if p.Chat != "" {
-				p.Chat = up.URL + p.Chat
-			}
-			if p.Anthropic != "" {
-				p.Anthropic = up.URL + p.Anthropic
-			}
-			if err := provider.Save(p); err != nil {
-				t.Fatal(err)
-			}
-			// what the relay itself answers
-			direct := httptest.NewRecorder()
-			rc.up(direct, httptest.NewRequest("POST", rc.path, strings.NewReader(strings.Replace(rc.body, "relay/gpt-5.5", "gpt-5.5", 1))))
-			if got := askGrok(t, rc.path, rc.body); !bytes.Equal(got, direct.Body.Bytes()) {
-				t.Fatalf("%s stream %v:\n%s\nwant\n%s", rc.path, stream, got, direct.Body)
-			}
-			up.Close()
-		}
-
 		fresh(t)
-		chat := httptest.NewServer(chatCall(c.Name, c.Arguments, pieces))
-		if err := provider.Save(provider.Provider{ID: "relay", Name: "relay", Key: "k", Models: []string{"gpt-5.5"}, Chat: chat.URL + "/v1"}); err != nil {
+		up := httptest.NewServer(responsesCall(c.tool, c.args, someCuts(c.args)["by byte"]))
+		defer up.Close()
+		if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Models: []string{"muse-spark-1.3-contributor"}, Responses: up.URL + "/v1"}); err != nil {
 			t.Fatal(err)
 		}
-		for where, got := range responsesRead(t, askGrok(t, "/v1/responses", codexShellTurn("relay/gpt-5.5", stream)), stream) {
-			if got != c.Arguments {
-				t.Fatalf("stream %v: %s translated %q, want %q", stream, where, got, c.Arguments)
-			}
-		}
-		chat.Close()
+		checkResponses(t, c, askGrok(t, "/v1/responses", codexShellTurn("relay/muse-spark-1.3-contributor", stream)), stream)
 	}
 }
 

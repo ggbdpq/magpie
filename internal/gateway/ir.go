@@ -318,10 +318,6 @@ type Request struct {
 	// and the conversation sent before stay as they were, so its prompt
 	// cache does (#2660). Every other upstream gets them in tools.
 	LoadedInPlace bool
-	// Grok is set when the model asked is one of Grok's, whose calls'
-	// arguments reach the client with their zero fractions dropped
-	// (grok_integral.go).
-	Grok bool
 	// CR is set when the model asked is one of the glm-5.3-flash* routes
 	// whose replicas stitch CR into a call's arguments (#4256): the
 	// arguments reach the client with the stitched CR dropped

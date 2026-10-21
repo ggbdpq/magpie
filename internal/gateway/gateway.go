@@ -5425,10 +5425,10 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	if named != nil {
 		spaces = &nsTidy{named: named, sse: sse}
 	}
-	// a Grok model's 2500.0 in a call's arguments, which Codex turns away
-	// (grok_integral.go, #1431); any other model's reply goes as it came
+	// a model's 2500.0 in a call's arguments, which Codex turns away
+	// (grok_integral.go, #1431, #3152: Grok's models and muse-spark alike)
 	var ints *intTidy
-	if (proto == provider.Responses || proto == provider.Chat || proto == provider.Anthropic) && (grokModel(model) || grokModel(upstream)) {
+	if proto == provider.Responses || proto == provider.Chat || proto == provider.Anthropic {
 		ints = &intTidy{proto: proto, sse: sse}
 	}
 	// a glm-5.3-flash* replica's CR stitched into a call's argument
@@ -5513,11 +5513,14 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			if spaces != nil {
 				out = spaces.write(out)
 			}
-			if ints != nil {
-				out = ints.write(out)
-			}
+			// crArgs reads the arguments' text as the upstream wrote it;
+			// a line ints has re-encoded says its CRs as \r escapes, which
+			// crTidy's byte scan would miss
 			if crArgs != nil {
 				out = crArgs.write(out)
+			}
+			if ints != nil {
+				out = ints.write(out)
 			}
 			if sigs != nil {
 				out = sigs.write(out)
@@ -5546,11 +5549,11 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	// what's held at the end goes through the filters after the one
 	// that held it
 	sign := func(b []byte) []byte {
-		if ints != nil {
-			b = ints.write(b)
-		}
 		if crArgs != nil {
 			b = crArgs.write(b)
+		}
+		if ints != nil {
+			b = ints.write(b)
 		}
 		if sigs != nil {
 			b = sigs.write(b)
@@ -5583,15 +5586,20 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	if spaces != nil {
 		write(sign(spaces.flush()))
 	}
-	if ints != nil {
-		b := ints.flush()
+	if crArgs != nil {
+		b := crArgs.flush()
+		if ints != nil {
+			// ints holds a whole reply until its own drain below, so the
+			// tail ints has not seen goes through it here first
+			b = ints.write(b)
+		}
 		if sigs != nil {
 			b = sigs.write(b)
 		}
 		write(out(b))
 	}
-	if crArgs != nil {
-		b := crArgs.flush()
+	if ints != nil {
+		b := ints.flush()
 		if sigs != nil {
 			b = sigs.write(b)
 		}
@@ -6792,12 +6800,12 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 			}
 		}
 	}
-	// a Grok model's 2500.0 in a call's arguments, which Codex turns away
-	// (grok_integral.go, #1431)
-	request.Grok = grokServed(wiresOf(r.Context()), p, model)
 	// a glm-5.3-flash* replica's CR stitched into a call's arguments
 	// (tool_args_cr.go, #4256)
 	request.CR = glmServed(wiresOf(r.Context()), p, model)
+	// a model's 2500.0 in a call's arguments, which Codex turns away, is
+	// rewritten at the encoder and at render (grok_integral.go, #1431,
+	// #3152)
 	if from == provider.Anthropic {
 		// Claude Code's auto mode classifier, on a model that reasons
 		// whatever it is told (#250)
@@ -7275,10 +7283,10 @@ func encoder(proto provider.Protocol, w *sseWriter, r *Request, usage ...*Usage)
 	if len(usage) > 0 && usage[0] != nil {
 		enc = &usageEncoder{streamEncoder: enc, usage: usage[0]}
 	}
-	if r.Grok {
-		// outside usageEncoder, which reads its encoder's reply id
-		enc = &wholeEncoder{streamEncoder: enc}
-	}
+	// a model's whole floats in a call's arguments reach the client as
+	// integers (grok_integral.go, #1431, #3152), outside usageEncoder,
+	// which reads its encoder's reply id
+	enc = &wholeEncoder{streamEncoder: enc}
 	if r.CR {
 		enc = &crEncoder{streamEncoder: enc}
 	}
@@ -7305,9 +7313,9 @@ func makeEncoder(proto provider.Protocol, w *sseWriter, r *Request) streamEncode
 
 func render(proto provider.Protocol, res Result, r *Request) []byte {
 	model := r.Model
-	if r.Grok {
-		res = wholeResult(res)
-	}
+	// a model's whole floats in a call's arguments reach the client as
+	// integers (grok_integral.go, #1431, #3152)
+	res = wholeResult(res)
 	if r.CR {
 		res = crResult(res)
 	}

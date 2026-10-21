@@ -77,7 +77,7 @@ func TestCodexCustomToolsTranslated(t *testing.T) {
 	for _, tl := range up.Tools {
 		names = append(names, tl.Function.Name)
 	}
-	if want := "exec wait collaboration__spawn_agent"; strings.Join(names, " ") != want {
+	if want := "exec wait spawn_agent"; strings.Join(names, " ") != want {
 		t.Fatalf("tools %v, want %s\n%s", names, want, f.got)
 	}
 	exec := up.Tools[0].Function
@@ -133,14 +133,19 @@ func TestCodexCustomToolNamespaced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Tools) != 2 || r.Tools[0].Name != "mcp__pad__write" || r.Tools[1].Name != "apply_patch" || strings.Contains(r.Tools[0].Description, "grammar") {
+	// a custom tool in a namespace of its own goes to the model under its
+	// own name (#1448), and its call comes back under the namespace by
+	// either name it may be called
+	if len(r.Tools) != 2 || r.Tools[0].Name != "write" || r.Tools[1].Name != "apply_patch" || strings.Contains(r.Tools[0].Description, "grammar") {
 		t.Fatalf("tools: %+v", r.Tools)
 	}
-	item := callTo(map[string]any{"type": "function_call", "call_id": "c", "arguments": `{"input":"x"}`}, "mcp__pad__write", r.Namespaced)
-	if item["type"] != "custom_tool_call" || item["name"] != "write" || item["namespace"] != "mcp__pad" || item["input"] != "x" {
-		t.Fatalf("namespaced call: %v", item)
+	for _, called := range []string{"write", "mcp__pad__write"} {
+		item := callTo(map[string]any{"type": "function_call", "call_id": "c", "arguments": `{"input":"x"}`}, called, r.Namespaced)
+		if item["type"] != "custom_tool_call" || item["name"] != "write" || item["namespace"] != "mcp__pad" || item["input"] != "x" {
+			t.Fatalf("namespaced call by %q: %v", called, item)
+		}
 	}
-	item = callTo(map[string]any{"type": "function_call", "call_id": "c", "arguments": `*** Begin Patch`}, "apply_patch", r.Namespaced)
+	item := callTo(map[string]any{"type": "function_call", "call_id": "c", "arguments": `*** Begin Patch`}, "apply_patch", r.Namespaced)
 	if item["type"] != "custom_tool_call" || item["input"] != "*** Begin Patch" || item["namespace"] != nil {
 		t.Fatalf("plain call: %v", item)
 	}

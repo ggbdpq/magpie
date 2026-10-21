@@ -79,14 +79,19 @@ func TestAdditionalToolsTranslated(t *testing.T) {
 		names = append(names, tl.Name)
 	}
 	// apply_patch, a custom tool, is offered as a function taking its input
-	if want := "tool_search shell apply_patch mcp__probe__read"; strings.Join(names, " ") != want {
+	if want := "tool_search shell apply_patch read"; strings.Join(names, " ") != want {
 		t.Fatalf("tools %v, want %s", names, want)
 	}
 	if !r.Namespaced["apply_patch"].Custom {
 		t.Fatalf("apply_patch not custom: %+v", r.Namespaced)
 	}
-	if r.Namespaced["mcp__probe__read"] != (nsTool{Namespace: "mcp__probe", Name: "read"}) {
+	if r.Namespaced["read"] != (nsTool{Namespace: "mcp__probe", Name: "read"}) {
 		t.Fatalf("namespace lost: %+v", r.Namespaced)
+	}
+	// the flat name is answered too, so a call under it comes back by the
+	// namespace all the same
+	if r.Namespaced["mcp__probe__read"] != (nsTool{Namespace: "mcp__probe", Name: "read"}) {
+		t.Fatalf("flat name lost: %+v", r.Namespaced)
 	}
 	if r.System != "You are Codex." {
 		t.Fatalf("system %q", r.System)

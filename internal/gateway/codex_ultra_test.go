@@ -208,7 +208,7 @@ func TestCopilotUltraSubagentWithWebSearch(t *testing.T) {
 	}
 	// made again for Copilot, not relayed: its tools flat, the search
 	// magpie's
-	if lead, _ := json.Marshal(c.last(t)["tools"]); !strings.Contains(string(lead), `"collaboration__spawn_agent"`) || strings.Contains(string(lead), `"encrypted"`) {
+	if lead, _ := json.Marshal(c.last(t)["tools"]); !strings.Contains(string(lead), `"spawn_agent"`) || strings.Contains(string(lead), `"encrypted"`) {
 		t.Fatalf("lead's tools to Copilot: %s", lead)
 	}
 	var call map[string]any

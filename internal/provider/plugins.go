@@ -343,7 +343,9 @@ func pluginProvider(pp plugin.Provider, l pluginLogin) Provider {
 		// them (#404): the plugin's own rewrite would leave them out; and
 		// a plain agent_message goes as the user's message, as the plugin
 		// itself sends it from 0.1.11. A lone tool_choice "none" stays,
-		// for the plugin to read (grokPluginBody, #3110)
+		// and so does a tool_choice object Grok's backend doesn't take (an
+		// allowed_tools names the client's tools), for the plugin to read
+		// (grokPluginBody, #3110, #3153)
 		a.body = grokPluginBody
 	}
 	if pp.ID == "zed" {

@@ -146,6 +146,79 @@ func TestSearchedConversationCompactsOnAnAccount(t *testing.T) {
 	}
 }
 
+// protectingUpstream is a custom API-key provider's Responses endpoint as
+// the reporter's answered (issue #3161): a request whose input replays a
+// web_search_call nothing declares gets HTTP 200 and a stream whose only
+// event is a response.failed naming "response protection is unavailable";
+// with the web_search tool declared, or with no search replayed, it
+// replies. It keeps the bodies it was sent, and speaks for the provider
+// the way setup does, its URL on the Responses API alone.
+func protectingUpstream(t *testing.T) *[][]byte {
+	t.Helper()
+	noRests()
+	t.Cleanup(noRests)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	var mu sync.Mutex
+	got := &[][]byte{}
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		*got = append(*got, b)
+		mu.Unlock()
+		var q struct {
+			Input []struct {
+				Type string `json:"type"`
+			} `json:"input"`
+			Tools []map[string]any `json:"tools"`
+		}
+		json.Unmarshal(b, &q)
+		searched, declared := false, false
+		for _, it := range q.Input {
+			searched = searched || it.Type == "web_search_call"
+		}
+		for _, tl := range q.Tools {
+			declared = declared || tl["type"] == "web_search"
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if searched && !declared {
+			io.WriteString(w, "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"upstream_error\",\"message\":\"response protection is unavailable\",\"type\":\"internal_error\"}}}\n\n")
+			return
+		}
+		io.WriteString(w, sse(
+			`data: {"type":"response.created","response":{"id":"resp_1","model":"m1"}}`,
+			`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Summary."}]}}`,
+			`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":9,"output_tokens":2}}}`))
+	}))
+	t.Cleanup(up.Close)
+	p := provider.Provider{ID: "fake", Name: "Fake", Key: "k", Models: []string{"m1"}, Responses: up.URL + "/v1"}
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// #3161 (Codex CLI 0.163.0 on a custom API-key provider): the same plain
+// compaction summary, relayed to the provider's own Responses endpoint,
+// reaches it with the search replayed and nothing declared. The relay
+// declares the search as the account's own paths do, and the upstream
+// replies.
+func TestSearchedConversationCompactsOnACustomProvider(t *testing.T) {
+	got := protectingUpstream(t)
+	code, body := post(t, "/v1/responses", `{"model":"fake/m1","stream":true,"store":false,"tools":[],"tool_choice":"auto","parallel_tool_calls":false,"input":[`+
+		searchedHistory+`,{"type":"message","role":"user","content":[{"type":"input_text","text":"You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task."}]}]}`)
+	if code != 200 || strings.Contains(body, "response protection") || !strings.Contains(body, "response.completed") {
+		t.Fatalf("status %d: %s", code, body)
+	}
+	tools, _, choice, _ := sentTools(t, (*got)[len(*got)-1])
+	if len(tools) != 1 || tools[0] != "web_search" || choice != "none" {
+		t.Errorf("sent tools %v, tool_choice %v: want the web_search tool and none", tools, choice)
+	}
+	if !strings.Contains(string((*got)[len(*got)-1]), `"external_web_access":false`) {
+		t.Errorf("the declared search may fetch live: %s", (*got)[len(*got)-1])
+	}
+}
+
 // Codex's remote compaction of a magpie model on the ChatGPT accounts:
 // the backend writes the summary from the history as it came, once,
 // rather than refusing it and leaving magpie to ask again as text.
@@ -271,5 +344,35 @@ func TestUnsearchedConversationUnchanged(t *testing.T) {
 		if sent := (*got)[len(*got)-1]; string(sent) != in {
 			t.Errorf("relayed changed:\n%s\n%s", in, sent)
 		}
+	}
+}
+
+// The same holds on a custom provider's own Responses endpoint: a
+// conversation that didn't search is relayed with no tool added.
+func TestUnsearchedConversationUnchangedOnACustomProvider(t *testing.T) {
+	got := protectingUpstream(t)
+	in := `{"model":"fake/m1","stream":true,"store":false,"tools":[],"tool_choice":"auto","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`
+	if code, body := post(t, "/v1/responses", in); code != 200 {
+		t.Fatalf("status %d: %s", code, body)
+	}
+	tools, _, choice, _ := sentTools(t, (*got)[len(*got)-1])
+	if len(tools) != 0 || choice != "auto" {
+		t.Errorf("unsearched relayed with tools %v, tool_choice %v", tools, choice)
+	}
+}
+
+// A turn with Codex's function tools but not web search (search turned
+// off since the conversation searched) keeps its tools callable as asked
+// on a custom provider's own Responses endpoint, as on an account's.
+func TestSearchedConversationFunctionToolsOnACustomProvider(t *testing.T) {
+	got := protectingUpstream(t)
+	code, body := post(t, "/v1/responses", `{"model":"fake/m1","stream":true,"store":false,"tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}}],"tool_choice":"auto","input":[`+
+		searchedHistory+`,{"type":"message","role":"user","content":[{"type":"input_text","text":"Go on."}]}]}`)
+	if code != 200 || strings.Contains(body, "response protection") {
+		t.Fatalf("status %d: %s", code, body)
+	}
+	tools, _, choice, _ := sentTools(t, (*got)[len(*got)-1])
+	if strings.Join(tools, ",") != "function,web_search" || choice != "auto" {
+		t.Errorf("sent tools %v, tool_choice %v", tools, choice)
 	}
 }

@@ -4198,6 +4198,16 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// for other backends (#1758)
 			break
 		}
+		// a replayed web search the request declares no tool for, an
+		// upstream that protects its replies answers with HTTP 200 and a
+		// failed response on the stream (#3161), as the ChatGPT backend
+		// refused one (#1270): an account's own body asks with the
+		// declaration already (codexBody), so this is for a provider of
+		// the user's own, and before the Lite item is lifted into the
+		// tools an upstream other than OpenAI is asked with
+		if p.Account == nil {
+			body = provider.DeclareSearch(body, false)
+		}
 		// Responses Lite's tools, as an input item, go as OpenAI takes them
 		// only to OpenAI (#350)
 		if (p.Account == nil || p.Account.Agent != "codex") && !strings.HasSuffix(p.Host(), "openai.com") {

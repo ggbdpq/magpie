@@ -268,10 +268,6 @@ type Request struct {
 	// and the conversation sent before stay as they were, so its prompt
 	// cache does (#2660). Every other upstream gets them in tools.
 	LoadedInPlace bool
-	// Grok is set when the model asked is one of Grok's, whose calls'
-	// arguments reach the client with their zero fractions dropped
-	// (grok_integral.go).
-	Grok bool
 }
 
 // nsTool is a tool as a Responses client knows it: by its namespace and its

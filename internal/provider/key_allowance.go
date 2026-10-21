@@ -142,7 +142,10 @@ func readKeyAllowance(p Provider, id string, gen int) {
 		return // forgotten while it was read: read again
 	}
 	e.loading, e.at = false, now
-	renewed := err == nil && e.keep(allowanceOf(ws, now), SpentShareOf(p.Routing), now)
+	var renewed, started bool
+	if err == nil {
+		renewed, started = e.keep(allowanceOf(ws, now), SpentShareOf(p.Routing), now)
+	}
 	if err == nil {
 		r.at, r.seq = now, seq
 		e.read = r
@@ -155,16 +158,26 @@ func readKeyAllowance(p Provider, id string, gen int) {
 	if renewed {
 		tellRenewed("", id)
 	}
+	if started {
+		tellStarted("", id)
+	}
 }
 
 // keep has the key go by a, read at now, and says whether a window it
 // was full in (at share, as routing counts it full) is full no more, or
-// till sooner: its limit raised, its usage reset, or the window started
-// again.
-func (e *keyAllowance) keep(a Allowance, share float64, now time.Time) (renewed bool) {
-	was := e.a.Full("", share, now)
+// till sooner — its limit raised, its usage reset, or the window started
+// again — and whether one stands started again in fact, its reset gone
+// by or a new, later cycle (what the vendor itself timed waits for,
+// #2718).
+func (e *keyAllowance) keep(a Allowance, share float64, now time.Time) (renewed, started bool) {
+	old, wasAt := e.a, e.at
+	was := old.Full("", share, now)
 	e.a, e.at = a, now
-	return was.After(a.Full("", share, now))
+	if was.After(a.Full("", share, now)) {
+		renewed = true
+	}
+	started = a.startedAgain(old, wasAt, share, now)
+	return renewed, started
 }
 
 // keyWindows asks the vendor for p's key's windows, as the key's card
@@ -229,10 +242,13 @@ func noteKeyAllowance(p Provider, ws []QuotaWindow, now time.Time) {
 		e = &keyAllowance{}
 		c.m[id] = e
 	}
-	renewed := e.keep(allowanceOf(ws, now), SpentShareOf(p.Routing), now)
+	renewed, started := e.keep(allowanceOf(ws, now), SpentShareOf(p.Routing), now)
 	c.Unlock()
 	if renewed {
 		tellRenewed("", id)
+	}
+	if started {
+		tellStarted("", id)
 	}
 }
 

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -557,5 +558,39 @@ func TestURLKind(t *testing.T) {
 		if got := URLKind(u); got != want {
 			t.Errorf("URLKind(%q) = %q, want %q", u, got, want)
 		}
+	}
+}
+
+// A gateway shared on the network answers this computer's probe of it with
+// its own refusal of a keyless request: the probe asks for the address
+// MAGPIE_ADDR names (the gateway's own, when it listens on one interface's
+// address), and leaves by it, so it isn't loopback and needs the key.
+// ServedBy is to find the gateway running there all the same (#1677): the
+// tui took the gateway a magpie web held for gone and went on trying to
+// serve it every 15s, and healthcheck said no gateway answered. Nothing at
+// the address is still nothing.
+func TestServedByFindsAGatewayOnTheNetwork(t *testing.T) {
+	fresh(t)
+	if err := settings.Save(settings.Settings{LAN: true}); err != nil {
+		t.Fatal(err)
+	}
+	sv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.RemoteAddr = "192.168.1.9:5000" // the probe comes from the address it asked for, not loopback
+		lanGuard(New().Handler()).ServeHTTP(w, r)
+	}))
+	defer sv.Close()
+	t.Setenv("MAGPIE_ADDR", strings.TrimPrefix(sv.URL, "http://"))
+	if s := ServedBy(); !s.Running {
+		t.Fatalf("a shared gateway's refusal of a keyless probe: %+v", s)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	free := ln.Addr().String()
+	ln.Close()
+	t.Setenv("MAGPIE_ADDR", free)
+	if s := ServedBy(); s.Running {
+		t.Fatalf("nothing answering: %+v", s)
 	}
 }

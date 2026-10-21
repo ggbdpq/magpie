@@ -538,7 +538,12 @@ func piModelJSON(m catalog.Model, gw string, native bool) map[string]any {
 	switch {
 	case !native:
 	case slices.Contains(m.APIs, string(provider.Responses)):
+		// strict left out of a tool of a turn asked there is taken as a
+		// strict-mode schema, every property required, optional ones
+		// filled (#3055): pi-ai says strict: false on an ordinary tool
+		// only when the model's compat says so
 		e["api"] = "openai-responses"
+		e["compat"] = map[string]any{"supportsStrictMode": true}
 	case slices.Contains(m.APIs, string(provider.Anthropic)):
 		e["api"], e["baseUrl"] = "anthropic-messages", gw
 		if gateway.AdaptiveThinking(m.ID) {

@@ -1338,9 +1338,13 @@ type dshPiModel struct {
 // pi-ai asks a model for a thinking budget unless forceAdaptiveThinking is
 // set, and a Claude that thinks only adaptively turns a budget away. Z.ai's
 // GLM-5.2 and GLM-5.3 are told so too: a budget can't ask them for max
-// (dshKindConfig).
+// (dshKindConfig). On OpenAI's Responses API supportsStrictMode has pi-ai
+// say strict: false on an ordinary tool: with strict left out the API
+// normalizes a tool's schema as a strict-mode one, where every property is
+// required, and a tool's optional parameters come back filled (#3055).
 type dshPiCompat struct {
 	ForceAdaptiveThinking bool `yaml:"forceAdaptiveThinking,omitempty"`
+	SupportsStrictMode    bool `yaml:"supportsStrictMode,omitempty"`
 }
 
 // dshAPIs are the wire protocols of llm-pi-ai's (pi-ai's api names) a route
@@ -1557,11 +1561,20 @@ func dshKindConfig(k dshKind, models []catalog.Model, api, gw string) dshPiRoute
 			e.Input = []string{"text"}
 		}
 		_, e.ReasoningEfforts = dshModelLevels(m.Efforts)
+		// each switch is magpie's own, put as magpie has it now: a user's
+		// hand-set one of the same name says what magpie writes again says
+		switch {
 		// pi-ai's budget path clamps max to high (16384), so a model that
 		// takes adaptive thinking with its level (Z.ai's GLM-5.3) is asked
 		// adaptively too: pi-ai then sends the level itself, max as max
-		if api == "anthropic-messages" && (gateway.AdaptiveThinking(m.ID) || gateway.AdaptiveWithEffort(m.ID)) {
+		case api == "anthropic-messages" && (gateway.AdaptiveThinking(m.ID) || gateway.AdaptiveWithEffort(m.ID)):
 			e.Compat = &dshPiCompat{ForceAdaptiveThinking: true}
+		case api == "openai-responses":
+			// by the api the route stands on (the one the user picked in
+			// dsh's Models page kept), not by its name: a tool of a turn
+			// asked there with strict left out has every property taken as
+			// required, its optional ones filled (#3055)
+			e.Compat = &dshPiCompat{SupportsStrictMode: true}
 		}
 		r.Models = append(r.Models, e)
 	}

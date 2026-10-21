@@ -261,6 +261,12 @@ func claudeSignIn(t *testing.T, home string, expiry time.Time) string {
 		// what magpie must not clobber when it writes a refreshed token back
 		"mcpOAuth": map[string]any{"plugin:slack:slack|x": map[string]any{"serverName": "Slack"}},
 	})
+	// A run let go by an earlier test that reads the sign-in between this
+	// test's forget (claudeHome) and this write caches that there is none,
+	// and that miss is served for the cache's TTL: the account went
+	// unlisted mid-package (#3174). What this test wrote is what a read
+	// serves.
+	forgetClaudeCredential()
 	return path
 }
 

@@ -373,6 +373,23 @@ func desktopTierTurn(asked string) string {
 	return DesktopTiers()[t]
 }
 
+// desktopTierAsked says asked is the model the user picked for one of
+// Desktop's tiers. That pick is tagged is_family_default, so it is
+// Desktop's own small_fast and the titles it asks for carry the pick's id;
+// the pick is the user's choice of what small work runs on (#3264,
+// Anarcadia), not the first id with haiku in it Desktop picks when no tier
+// is picked — that one, and every other title, still follows the session's
+// model, whose first token otherwise misses the title's timeout.
+func desktopTierAsked(asked string) bool {
+	id := strings.TrimSuffix(asked, "[1m]")
+	for _, t := range DesktopTiers() {
+		if t != "" && t == id {
+			return true
+		}
+	}
+	return false
+}
+
 // desktopNames are the names Claude Desktop is shown entries by, in order:
 // as the agents' lists name them (provider.Labels, the Provider in model
 // names setting: on, every name with its provider's after it; own, a name
@@ -447,7 +464,10 @@ func isClaudeDesktop(r *http.Request) bool {
 // the user picked. A small tool-less request (a title's max_tokens is 200,
 // a turn's tens of thousands) for a model whose id reads as Claude's, and
 // any request for a model magpie doesn't serve, goes to that model instead,
-// so a chat the user started on a Claude model of their own stays on it. It is
+// so a chat the user started on a Claude model of their own stays on it —
+// unless that model is one the user picked for a tier (desktopTierAsked):
+// then it goes as asked, for the pick is what the tier was picked to run
+// (#3264). It is
 // kept on disk, so a title asked for before the first turn after a restart
 // goes there too; before any turn at all it goes to desktopDefault.
 var desktopPicked struct {
@@ -498,7 +518,7 @@ func desktopTurn(asked string, body []byte, byClaudeCode, bySubagent bool) strin
 	if byClaudeCode {
 		aside = desktopTitle(body)
 	}
-	title := !tools && aside && desktopAccepts(asked)
+	title := !tools && aside && desktopAccepts(asked) && !desktopTierAsked(asked)
 	gone := unserved(asked)
 	if gone && !title {
 		if m := servedBeside(asked, picked); m != "" {

@@ -1155,8 +1155,17 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 			r.askAt = now.Add(fallbackCooldown)
 		}
 	}
-	restingUntil.m[id] = r.Until
-	restingUntil.note[id] = r
+	// a failure answering while a longer rest still stands doesn't shorten
+	// it (#3289, wjq990112): a 429 resting for the minute it starts at used
+	// to replace the half-hour rest a 402 out of credit had taken a moment
+	// before, and the account was asked again as soon as it ended, refused,
+	// and rested again, round after round. Whichever rest ends later
+	// stands, as a slow start's does here, and a rest narrowed to a model
+	// keeps the longer of the two
+	if until, ok := restingUntil.m[id]; !ok || !until.After(r.Until) {
+		restingUntil.m[id] = r.Until
+		restingUntil.note[id] = r
+	}
 	restingUntil.Unlock()
 	if unread && id == c.restKey() && id != c.restID() {
 		narrowing.Add(1)

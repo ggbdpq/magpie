@@ -32,7 +32,7 @@ func (p Provider) Available() []catalog.Model {
 	if p.DecideOnly() {
 		return p.decideModels()
 	}
-	ms := p.available()
+	ms := p.withoutUserKinds(p.available())
 	if p.Decides() {
 		// a gateway's Jev among its chat models, with its window and input
 		ms = slices.Clone(ms)
@@ -43,6 +43,36 @@ func (p Provider) Available() []catalog.Model {
 		}
 	}
 	return ms
+}
+
+// withoutUserKinds leaves out the models the user said make images or videos
+// (settings' ModelKinds, SetModelKind): said so, they are no models to talk
+// to, so they leave the chat list itself — the editor's chips, the agents'
+// lists (Exposed) and the gateway's all follow. A flag was not enough
+// (#2071: a relay's omni_flash-10s, marked "Video model", carried Films
+// nowhere read and kept its seat in every one of those). A model the user
+// said nothing of keeps its vendor's word; the marks are read only where
+// they can be taken (MarksKinds), so a provider that no longer takes them
+// keeps none.
+func (p Provider) withoutUserKinds(ms []catalog.Model) []catalog.Model {
+	if !p.MarksKinds() || len(ms) == 0 {
+		return ms
+	}
+	s := heldSettings()
+	if len(s.ModelKinds) == 0 {
+		return ms
+	}
+	marked := false
+	for _, m := range ms {
+		if modelKindIn(s, p.ID, m.ID) != "" {
+			marked = true
+			break
+		}
+	}
+	if !marked {
+		return ms
+	}
+	return slices.DeleteFunc(slices.Clone(ms), func(m catalog.Model) bool { return modelKindIn(s, p.ID, m.ID) != "" })
 }
 
 func (p Provider) available() []catalog.Model {
@@ -1446,6 +1476,10 @@ func (p Provider) Exposed() []catalog.Model {
 		byID[m.ID] = m
 	}
 	pick := func(ids []string) []catalog.Model {
+		// a model the user said makes images or videos stays out, picked
+		// or not: the user's word beats the pick, or Exposed would build
+		// the marked model again as an unlisted one (#2071)
+		ids = slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return p.ModelKind(id) != "" })
 		var unlisted []catalog.Model
 		for _, id := range ids {
 			if _, ok := byID[id]; !ok {

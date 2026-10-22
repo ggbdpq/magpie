@@ -72,11 +72,13 @@ func (p Provider) KindModels(kind string) []string {
 	return slices.DeleteFunc(out, func(m string) bool { return !p.hasKindable(m) })
 }
 
-// hasKindable is whether p has model: one it serves to chat with, or one
-// its fetched list has that it leaves out of those, as making images or
-// videos.
+// hasKindable is whether p has model: one it serves to chat with, one of
+// its picks (Exposed builds an unlisted pick it has, so a pick is had
+// however its list stands, and one the user said makes images or videos is
+// out of that list, #2071), or one its fetched list has that it leaves out
+// of those, as making images or videos.
 func (p Provider) hasKindable(model string) bool {
-	if p.serves(model) {
+	if p.serves(model) || slices.Contains(p.Models, model) {
 		return true
 	}
 	all, _ := catalog.LiveAll(p.ID)

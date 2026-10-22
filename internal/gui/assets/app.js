@@ -9255,6 +9255,7 @@ function drawEditor(p, presetID) {
     }
     ed.append(...field(t("Models"), renderModels(p), ""));
     if (p.drawIds?.length) ed.append(...renderDrawers(p));
+    if (p.videoIds?.length) ed.append(...renderVideomakers(p));
     // a subscription's window too: Codex's backend says 272K for models
     // that take 872K (#120)
     const cx = input(draft.contexts || "", t("e.g. 128k · or gpt-6=1m, comma separated"));
@@ -9718,6 +9719,7 @@ function drawEditor(p, presetID) {
   // add page for one where they must type them
   else if (pr?.id === "azure") ed.append(...field(t("Models"), el("div", "hint azure-models", t("No need to type them: once added, magpie lists the deployments this key can call. Type a deployment's name as a model id only if that list can't be fetched.")), ""));
   if (p?.drawIds?.length) ed.append(...renderDrawers(p));
+  if (p?.videoIds?.length) ed.append(...renderVideomakers(p));
   {
     // the window agents are told a model has, over what the vendor or
     // models.dev says: one for all of them, and model=size for one
@@ -10939,7 +10941,6 @@ function renderModels(p) {
   // doesn't (shen-joe, #1399: a relay's video model turned away as one
   // that can't make videos): staged as its API is, made with the Save
   const kindNow = (id) => draft.modelPrefs?.[id]?.kind ?? p.models.find((m) => m.id === id)?.kind ?? "";
-  const KIND_NAMES = { "": "Auto", image: "Image model", video: "Video model" };
   const pickKind = (c, id) => {
     const m = p.models.find((x) => x.id === id) || { id };
     const opts = [{ v: "", name: "Auto", note: "As its vendor's model list and its name say" },
@@ -11691,13 +11692,82 @@ function renderModels(p) {
   return box;
 }
 
+// KIND_NAMES: what a model makes, as the user says it (#1399), by its
+// saved or staged kind
+const KIND_NAMES = { "": "Auto", image: "Image model", video: "Video model" };
+// kindSaid: what a model is said to make now, as staged in the editor's
+// draft, else as saved. A marked model is out of the chat chips (#2071),
+// so its saved kind is read from p.kinds
+const kindSaid = (p, id) => draft.modelPrefs?.[id]?.kind ?? p.kinds?.[id] ?? "";
+// kindBadge: the badge a marked chip wears, saying what the user said it
+// makes, right-click to change
+const kindBadge = (p, id) => {
+  const k = kindSaid(p, id);
+  const tag = el("span", "badge mkind-tag", t(k === "video" ? "video" : "image"));
+  tag.title = t("{kind}, as you said; right-click to change", { kind: t(KIND_NAMES[k]) });
+  return tag;
+};
+// sayKind: the menu of a marked chip in the image or video area — what the
+// model makes, said again where the model now sits (#2071: out of the chat
+// chips, its way back to Auto is here): staged as a chat chip's kind is,
+// made with the Save
+function sayKind(c, p, id) {
+  const opts = [{ v: "", name: "Auto", note: "As its vendor's model list and its name say" },
+    { v: "image", name: "Image model", note: "Draws at the provider's images API (/images/generations), listed under Image generation" },
+    { v: "video", name: "Video model", note: "Makes videos at the provider's videos API (POST /videos, then GET /videos/<id>)" }];
+  openProtoMenu(c, opts, kindSaid(p, id), (v) => {
+    if (v === kindSaid(p, id)) return;
+    const prefs = draft.modelPrefs = draft.modelPrefs || {};
+    prefs[id] = prefs[id] || {};
+    if (v === (p.kinds?.[id] || "")) delete prefs[id].kind; else prefs[id].kind = v;
+    if (!Object.keys(prefs[id]).length) delete prefs[id];
+    const badge = c.querySelector(".mkind-tag");
+    if (badge) badge.remove();
+    if (kindSaid(p, id)) c.append(kindBadge(p, id));
+    status(t(v === "video" ? "{model} makes videos once saved" : v === "image" ? "{model} draws images once saved" : "{model} makes what its vendor's list says once saved", { model: id }), "ok");
+  }, "What this model makes", "model-kind-menu");
+}
+// a marked chip's right-click: its kind alone, the menu a chat chip carries
+// the rest of (testing, its API)
+const kindMenu = (c, p, id) => {
+  c.oncontextmenu = (e) => {
+    e.preventDefault();
+    const again = agentMenu?.anchor === c || protoMenu?.anchor === c;
+    closeAgentMenu();
+    closeProtoMenu();
+    if (again) return;
+    sayKind(c, p, id);
+  };
+};
 // renderDrawers: the provider's image models. Agents don't chat with them,
 // so they aren't among its Models; they are listed to say they are there,
-// and one is picked in Settings → Images.
+// and one is picked in Settings → Images. One the user said draws (#1399)
+// sits here too since it left the chat list (#2071), its chip right-clicked
+// to say its kind again
 function renderDrawers(p) {
   const chips = el("div", "mchips");
-  for (const id of p.drawIds) chips.append(el("span", "mchip ro", id));
+  for (const id of p.drawIds) {
+    const c = el("span", "mchip", id);
+    if (p.kinds?.[id]) {
+      c.append(kindBadge(p, id));
+      kindMenu(c, p, id);
+    } else c.classList.add("ro");
+    chips.append(c);
+  }
   return field(t("Image models"), chips, t("Agents don't chat with these, so they aren't among its models: the one that draws is picked in Settings → Images."));
+}
+// renderVideomakers: the models the user said make videos (#1399), listed
+// apart since they left the chat list (#2071): requests go to the
+// provider's videos API, and a chip is right-clicked to say its kind again
+function renderVideomakers(p) {
+  const chips = el("div", "mchips");
+  for (const id of p.videoIds || []) {
+    const c = el("span", "mchip", id);
+    c.append(kindBadge(p, id));
+    kindMenu(c, p, id);
+    chips.append(c);
+  }
+  return field(t("Video models"), chips, t("Agents don't chat with these: requests for one go to the provider's videos API."));
 }
 
 // renderRouting: how the gateway spreads requests over the keys or

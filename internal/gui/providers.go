@@ -238,8 +238,16 @@ type providerJSON struct {
 	Exposed   int         `json:"exposed"`           // how many reach the agents
 	Draws     int         `json:"draws,omitempty"`   // how many of its models draw images (gateway.Drawers)
 	DrawIDs   []string    `json:"drawIds,omitempty"` // those models' ids, listed apart in its editor
-	Unlisted  bool        `json:"unlisted"`          // its models serve only through routing groups
-	NoModels  bool        `json:"noModels"`          // Select none: none of its models served (#1818)
+	// VideoIDs are the models the user said make videos (#1399), listed
+	// apart in its editor since they left the chat list (#2071): requests
+	// go to the provider's videos API
+	VideoIDs []string `json:"videoIds,omitempty"`
+	// Kinds are what the user said a model makes, by model id: a marked
+	// model's chip in the image or video area says its kind again by
+	// right-click, there being no chat chip for it any more (#2071)
+	Kinds    map[string]string `json:"kinds,omitempty"`
+	Unlisted bool              `json:"unlisted"` // its models serve only through routing groups
+	NoModels bool              `json:"noModels"` // Select none: none of its models served (#1818)
 	// Groups are the routing groups ("group/<id>") each of its models is
 	// in, by model id: what an unlisted one is still used through, and the
 	// editor names those in none
@@ -815,6 +823,21 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 		out.DrawIDs = append(out.DrawIDs, m.ID)
 	}
 	out.Draws = len(out.DrawIDs)
+	// what the user said its models make (#1399): the video ones are listed
+	// apart too, now they have left the chat list (#2071), and every marked
+	// one's kind goes beside it for its area chip to say again by
+	// right-click
+	out.Kinds = map[string]string{}
+	for _, id := range p.KindModels(provider.KindImage) {
+		out.Kinds[id] = provider.KindImage
+	}
+	for _, id := range p.KindModels(provider.KindVideo) {
+		out.Kinds[id] = provider.KindVideo
+		out.VideoIDs = append(out.VideoIDs, id)
+	}
+	if len(out.Kinds) == 0 {
+		out.Kinds = nil
+	}
 	if t, ok := p.Listed(); ok {
 		out.Fetched = &t
 	}

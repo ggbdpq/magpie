@@ -210,6 +210,16 @@ func pluginTierOn(provider string, m plugin.Model, tier string) bool {
 func pluginCatalog(pp plugin.Provider) []catalog.Model {
 	out := make([]catalog.Model, 0, len(pp.Models))
 	for _, m := range pp.Models {
+		// a model that gives nothing to talk with leaves the list here, as
+		// the catalog's own do: the chat chips, the agents' lists and the
+		// gateway's all build on it (#3279: a Google AI Studio account's
+		// gemini-embedding-001 and TTS sat in them). Its plugin's kinds
+		// carry a "text": false as nothing, so its embedding says nothing
+		// and is asked by its id alone; a TTS naming audio alone is asked
+		// by its outputs.
+		if catalog.Speechless(m.Outputs, m.ID, "embed", "-tts") {
+			continue
+		}
 		c := catalog.Model{
 			ID: m.ID, Name: m.Name, Provider: pp.ID, Released: m.Released,
 			APIs: []string{string(pluginProtocol(pp.ID, m))}, Images: m.Image,

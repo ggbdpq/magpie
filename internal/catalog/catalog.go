@@ -1376,25 +1376,35 @@ func unprofiled(b string) (string, bool) {
 	return "", false
 }
 
+// speechlessWords are the words in a model's id that name a maker of
+// nothing to talk with, whatever its list says of its outputs: models.dev
+// marks an embedding's outputs ["text"], so its list is no use there.
+var speechlessWords = []string{"embed", "-tts", "image", "audio", "-live", "robotics", "computer-use", "deep-research", "transcribe", "realtime", "moderation", "whisper", "dall-e", "sora"}
+
+// Speechless is whether a model gives nothing to talk with, as its list and
+// id say: its outputs name what it gives and text isn't among them (a TTS's
+// audio alone), or its id names one of words. A list naming no outputs says
+// nothing, and such a model is taken as one to talk with. The catalog's own
+// lists are judged against every word (textModel); a plugin's list against
+// two — the host passes a plugin's kinds on with a "text": false dropped
+// (#3279), so its embedding says nothing and is known by its id alone, and
+// a word of a maker a talking model's id may carry (audio) stays out of its
+// lot.
+func Speechless(outputs []string, id string, words ...string) bool {
+	if len(outputs) > 0 && !slices.Contains(outputs, "text") {
+		return true
+	}
+	id = strings.ToLower(id)
+	for _, w := range words {
+		if strings.Contains(id, w) {
+			return true
+		}
+	}
+	return false
+}
+
 func textModel(m mdModel) bool {
-	if len(m.Modalities.Output) > 0 {
-		text := false
-		for _, o := range m.Modalities.Output {
-			if o == "text" {
-				text = true
-			}
-		}
-		if !text {
-			return false
-		}
-	}
-	id := m.ID
-	for _, bad := range []string{"embed", "-tts", "image", "audio", "-live", "robotics", "computer-use", "deep-research", "transcribe", "realtime", "moderation", "whisper", "dall-e", "sora"} {
-		if strings.Contains(id, bad) {
-			return false
-		}
-	}
-	return true
+	return !Speechless(m.Modalities.Output, m.ID, speechlessWords...)
 }
 
 // draws is whether a models.dev row is a model that makes images: one

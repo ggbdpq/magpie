@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -54,7 +55,10 @@ func pluginReplyGateway(t *testing.T, vendor http.Handler) (string, string, *htt
 		return c, err
 	}
 	t.Cleanup(tr.CloseIdleConnections)
-	return gw.URL, pid + "/fake-1", &http.Client{Transport: tr, Timeout: 75 * time.Second}
+	// #3286: no fixed total deadline here: the callers time the reads by
+	// progress (pluginReplyComplete), which a loaded machine can outlast
+	// any fixed total of.
+	return gw.URL, pid + "/fake-1", &http.Client{Transport: tr}
 }
 
 func pluginReplyRequest(model string, stream bool) string {
@@ -66,6 +70,7 @@ type pluginPacedReader struct {
 	rate    int64
 	read    int64
 	started time.Time
+	alive   func() // a read that brought bytes: the idle guard resets here
 }
 
 func (p *pluginPacedReader) Read(b []byte) (int, error) {
@@ -74,6 +79,9 @@ func (p *pluginPacedReader) Read(b []byte) (int, error) {
 	}
 	n, err := p.r.Read(b)
 	p.read += int64(n)
+	if n > 0 && p.alive != nil {
+		p.alive()
+	}
 	if n > 0 && p.rate > 0 {
 		due := p.started.Add(time.Duration(p.read * int64(time.Second) / p.rate))
 		if wait := time.Until(due); wait > 0 {
@@ -104,17 +112,39 @@ func pluginReplyComplete(t *testing.T, size int, stream bool, rate int64) time.D
 		}
 	})
 	url, model, client := pluginReplyGateway(t, up)
+	// #3286: the client's deadline follows progress, not the wall clock. A
+	// loaded machine reads a 40MB stream slower than any fixed total
+	// (yetone's mac mini: the 75s Client.Timeout passed a transfer by at
+	// 36MB under -race at load ~190-280, while it went on reading); what
+	// ends a transfer is no progress. No wire bytes for idleTrip reds the
+	// test, wherever it sticks.
+	const idleTrip = 30 * time.Second
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	idle := time.AfterFunc(idleTrip, func() { cancel(fmt.Errorf("no wire bytes for %v", idleTrip)) })
+	defer idle.Stop()
+	// why carries the idle guard's word beside a read error's own.
+	why := func(err error) error {
+		if cause := context.Cause(ctx); cause != nil && !errors.Is(err, cause) {
+			return fmt.Errorf("%w (%v)", err, cause)
+		}
+		return err
+	}
 	start := time.Now()
-	res, err := client.Post(url+"/v1/chat/completions", "application/json", strings.NewReader(pluginReplyRequest(model, stream)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url+"/v1/chat/completions", strings.NewReader(pluginReplyRequest(model, stream)))
 	if err != nil {
 		t.Fatal(err)
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatal(why(err))
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 1024))
 		t.Fatalf("status %d: %s", res.StatusCode, b)
 	}
-	reader := &pluginPacedReader{r: res.Body, rate: rate}
+	reader := &pluginPacedReader{r: res.Body, rate: rate, alive: func() { idle.Reset(idleTrip) }}
 	got := sha256.New()
 	total := 0
 	if !stream {
@@ -124,7 +154,7 @@ func pluginReplyComplete(t *testing.T, size int, stream bool, rate int64) time.D
 			}
 		}
 		if err := json.NewDecoder(reader).Decode(&reply); err != nil {
-			t.Fatalf("JSON reply: %v", err)
+			t.Fatalf("JSON reply: %v", why(err))
 		}
 		if len(reply.Choices) != 1 {
 			t.Fatalf("JSON choices = %d, want 1", len(reply.Choices))
@@ -164,7 +194,7 @@ func pluginReplyComplete(t *testing.T, size int, stream bool, rate int64) time.D
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			t.Fatalf("SSE read after %d content bytes: %v", total, err)
+			t.Fatalf("SSE read after %d content bytes: %v", total, why(err))
 		}
 		if !done {
 			t.Fatalf("SSE ended without [DONE] after %d content bytes", total)

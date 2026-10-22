@@ -818,3 +818,13 @@ go test -tags nogui ./internal/provider -run 'TestGroup|TestCodexCreditsSwitch|T
 
 The gateway's `TestMain` gives the package a home of its own, so these tests
 never read real providers or accounts.
+
+A native SSE relay holds its unfinished line until the newline arrives. A clean
+end forwards that final line unchanged; a read failure discards it before adding
+the protocol error, so a severed JSON fragment cannot hide the error from the
+client (#3197). A severed Chat stream then ends with `[DONE]`; a clean but
+incomplete Gemini-compatible Chat reply retains its error-only ending.
+Lines exceeding the sniffer's 1 MiB bound pass through without buffering.
+Verification: `TestPassthroughChatSeveredMidLine`,
+`TestPassthroughChatSeveredAtLineEnd`, `TestPassthroughResponsesBigLastEvent`,
+`TestNativeStreamFailureAccounting`, `TestGeminiCompatRelayEndedShort`.

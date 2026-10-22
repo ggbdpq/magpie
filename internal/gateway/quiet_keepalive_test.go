@@ -191,12 +191,41 @@ func TestSilentHeldStreamStillFailsOver(t *testing.T) {
 func TestQuietKeptAliveOnlySoLong(t *testing.T) {
 	fresh(t)
 	quietFast(t)
-	keepaliveLongest = 200 * time.Millisecond
+	// #3287: 200ms of window sat within a loaded scheduler's reach (yetone's
+	// mac mini at load ~190-280: the watch's first look after the vendor's
+	// last word landed past the window, "0 keepalives in 3s"). A second is
+	// fifty looks at watchEvery's pace, and the vendor ends its silence on
+	// the client's first keepalive — state, not a pause — so the count's
+	// low side is by construction, and the 3s it would wait without one is
+	// the same failsafe the kept-alive tests run under.
+	keepaliveLongest = time.Second
 	was := translatedQuietLongest
-	translatedQuietLongest = 200 * time.Millisecond
+	translatedQuietLongest = time.Second // ABLATION PROBE: committed bound
 	t.Cleanup(func() { translatedQuietLongest = was })
-	never := make(chan struct{})
-	quietOn(t, "fixture", quietCreated+quietDelta("hel"), quietDelta("lo")+quietDone, never)
+	heard := make(chan struct{})
+	timedOut := new(atomic.Bool)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, quietCreated+quietDelta("hel"))
+		w.(http.Flusher).Flush()
+		select {
+		case <-heard:
+		case <-time.After(3 * time.Second):
+			timedOut.Store(true)
+		case <-r.Context().Done():
+			return
+		}
+		// five windows past the first keepalive, the silence is far over
+		// both bounds: a keeper that never stops rides the whole hold and
+		// cannot fit in the count below
+		time.Sleep(keepaliveLongest + 5*time.Second)
+		io.WriteString(w, quietDelta("lo")+quietDone)
+	}))
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{ID: "fixture", Name: "Fixture", Key: "k", Models: []string{"gpt-test"}, Responses: up.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
 	gw := httptest.NewServer(New().Handler())
 	t.Cleanup(gw.Close)
 	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json",
@@ -205,19 +234,21 @@ func TestQuietKeptAliveOnlySoLong(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body) // the vendor goes on after 3s
-	// counted from its first words, as readQuiet: the held stream's before
-	// them are kept for 200ms of their own
-	body := string(b)
+	// readQuiet closes heard at the body's first keepalive after "hel",
+	// counted from its first words: the held stream's before them are kept
+	// for a window of their own
+	body := readQuiet(resp.Body, heard, "hel")
 	i, j := strings.Index(body, "hel"), strings.Index(body, `"lo"`)
-	if i < 0 || j < i {
-		t.Fatalf("%q", body)
+	n := 0
+	if i >= 0 && j > i {
+		n = strings.Count(body[i:j], ": keepalive")
 	}
-	// 200ms at one each 40ms is 5, from each of the two keepers, the
-	// held stream's and the translated stream's, with room; one that
-	// never stopped sends ~75 in the 3s
-	if n := strings.Count(body[i:j], ": keepalive"); n == 0 || n > 16 {
-		t.Fatalf("%d keepalives in 3s, kept for 200ms: %q", n, body)
+	// one keepalive at least is the state the vendor waited on; inside the
+	// bounds the comments stop within a window (a handful of tens at
+	// keepaliveEvery's floor, both keepers riding the same ticks), while a
+	// keeper past its bound rides the whole hold, five windows long
+	if timedOut.Load() || i < 0 || j < i || n == 0 || n > 100 {
+		t.Fatalf("timed out %v: %d keepalives in the vendor's quiet, kept for %v: %q", timedOut.Load(), n, keepaliveLongest, body)
 	}
 }
 

@@ -2,10 +2,13 @@ package backup
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
+	mrand "math/rand"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -495,5 +498,165 @@ func TestRestorePluginsAndSignIn(t *testing.T) {
 	got.Plugins = nil
 	if _, err := Restore(got, All); err != nil || asked != nil {
 		t.Fatalf("an older backup asked to install %v (%v)", asked, err)
+	}
+}
+
+// A backup that seals small stays version 1, the plain seal an older
+// magpie opens: only one whose plain seal would run past what GitHub's
+// file API was seen taking is compressed away as version 2 (#2707
+// review).
+func TestSealStaysVersion1WhenSmall(t *testing.T) {
+	data, err := Seal(Bundle{Version: 1}, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var e envelope
+	if err := json.Unmarshal(data, &e); err != nil {
+		t.Fatal(err)
+	}
+	if e.Version != 1 {
+		t.Fatalf("a small backup sealed as version %d, want the plain version 1 an older magpie reads", e.Version)
+	}
+	if got, err := Open(data, "correct horse"); err != nil {
+		t.Fatal(err)
+	} else if got.Version != 1 {
+		t.Fatalf("opened as version %d", got.Version)
+	}
+}
+
+// sealedV2 is whatever bytes sealed in a version 2 envelope under pass:
+// the open path's tests build their own, GCM-valid, data.
+func sealedV2(t *testing.T, data []byte, pass string) []byte {
+	t.Helper()
+	e := envelope{Format: format, Version: 2, KDF: "pbkdf2-sha256", Iterations: iterations,
+		Salt: saltFor(pass), Nonce: make([]byte, 12)}
+	rand.Read(e.Nonce)
+	gcm, err := aead(pass, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Data = gcm.Seal(nil, e.Nonce, data, header(e))
+	out, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// A version 2 bundle that won't decompress is a bug or a damaged writer,
+// not a cut write (GCM had already authenticated the bytes) and not a
+// backup to rebuild over: its error is a plain one, never ErrCorrupt,
+// which a sync reads as its cue to replace the damaged file (#2707
+// review).
+func TestOpenDecompressFailureIsPlain(t *testing.T) {
+	_, err := Open(sealedV2(t, []byte("not gzip at all"), "correct horse"), "correct horse")
+	if err == nil {
+		t.Fatal("a sealed bundle that doesn't decompress opened")
+	}
+	if errors.Is(err, ErrCorrupt) {
+		t.Fatalf("a decompression failure read as ErrCorrupt, offered for rebuild: %v", err)
+	}
+	if errors.Is(err, ErrPassphrase) {
+		t.Fatalf("a decompression failure read as a wrong passphrase: %v", err)
+	}
+}
+
+// A decompressed bundle is read through a cap: a compressed file that
+// opens to more than any bundle magpie writes — a gzip bomb — is refused,
+// not read into memory (#2707 review).
+func TestOpenCapsTheDecompression(t *testing.T) {
+	var buf bytes.Buffer
+	zw, _ := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+	for range 300 {
+		zw.Write(make([]byte, 1<<20))
+	}
+	zw.Close()
+	_, err := Open(sealedV2(t, buf.Bytes(), "correct horse"), "correct horse")
+	if err == nil || !strings.Contains(err.Error(), "decompresses past") {
+		t.Fatalf("a 300 MiB bomb: %v, want the cap refusal", err)
+	}
+	if errors.Is(err, ErrCorrupt) {
+		t.Fatalf("the cap refusal read as ErrCorrupt: %v", err)
+	}
+}
+
+// A backup carrying the most a library may carry (maxCarriedAll, 32 MiB
+// of skill files) seals far smaller than the bundle reads: its plain seal
+// would run past what GitHub's file API was seen refusing (54.7 MiB;
+// magpie's own guard allows 64 MiB, and GitHub's real limit is
+// undocumented), so it is compressed, as version 2. The backup opens as
+// it was sealed, and one an older magpie sealed, plainly, still opens
+// here.
+func TestSealCompressesTheLibrary(t *testing.T) {
+	skill := func(name string, text, binary int) *library.CarriedSkill {
+		rng := mrand.New(mrand.NewSource(int64(len(name))))
+		files := map[string][]byte{}
+		files["SKILL.md"] = []byte(strings.Repeat("# "+name+"\n\nStep by step, do the thing. See the notes below.\n\n", text/64))
+		files["assets/template.bin"] = make([]byte, binary)
+		rng.Read(files["assets/template.bin"])
+		return &library.CarriedSkill{Name: name, Files: files}
+	}
+	// 8 skills of 4 MiB each: half documentation, half a binary template,
+	// the worst of what a library carries
+	var skills []*library.CarriedSkill
+	for i := range 8 {
+		skills = append(skills, skill(fmt.Sprintf("skill-%d", i), 2<<20, 2<<20))
+	}
+	b := Bundle{Version: 1, Library: &library.Bundle{Skills: skills}}
+	plain, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := Seal(b, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var e envelope
+	if err := json.Unmarshal(sealed, &e); err != nil {
+		t.Fatal(err)
+	}
+	if e.Version != 2 {
+		t.Fatalf("a 32 MiB library sealed as version %d, want the compressed version 2", e.Version)
+	}
+	if len(sealed) >= len(plain) {
+		t.Fatalf("a %d-byte library sealed to %d bytes, without compressing", len(plain), len(sealed))
+	}
+	// the size GitHub was seen refusing for its file API (#2707; the real
+	// limit is undocumented): the most a library may carry is expected to
+	// seal back below it
+	if len(sealed) >= 54<<20 {
+		t.Fatalf("a 32 MiB library sealed to %d bytes, past what GitHub's file API refuses", len(sealed))
+	}
+	got, err := Open(sealed, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back, err := json.Marshal(got); err != nil || !bytes.Equal(back, plain) {
+		t.Fatalf("the compressed backup opened as %d bytes, %v, not what was sealed", len(back), err)
+	}
+
+	// what an older magpie sealed: the bundle plain in a version 1 envelope
+	e = envelope{Format: format, Version: 1, KDF: "pbkdf2-sha256", Iterations: iterations,
+		Salt: saltFor("correct horse"), Nonce: make([]byte, 12)}
+	rand.Read(e.Nonce)
+	gcm, err := aead("correct horse", e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Data = gcm.Seal(nil, e.Nonce, plain, header(e))
+	old, err := json.MarshalIndent(e, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Open(old, "correct horse"); err != nil {
+		t.Fatalf("a plainly sealed backup no longer opens: %v", err)
+	} else if back, _ := json.Marshal(got); !bytes.Equal(back, plain) {
+		t.Fatal("the plainly sealed backup opened as another bundle")
+	}
+	e.Version = 3
+	if newer, err := json.Marshal(e); err != nil {
+		t.Fatal(err)
+	} else if _, err := Open(newer, "correct horse"); err == nil || !strings.Contains(err.Error(), "newer magpie") {
+		t.Fatalf("a version 3 envelope: %v, want the newer-magpie refusal", err)
 	}
 }

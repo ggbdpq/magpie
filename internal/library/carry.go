@@ -44,8 +44,11 @@ type CarriedSkill struct {
 // biggest once the skills come to maxCarriedAll. A skill's own files go
 // with it, its scripts and its templates (a PowerPoint template with its
 // pictures is several MB), but a sync reads at most 64 MiB of a backup
-// (davsync), and a skill's bytes are base64 twice in one (the bundle's
-// JSON, then the sealed envelope's): 32 MiB of files is about 57 MiB.
+// (davsync), and a skill's bytes are base64 in the bundle's JSON and
+// again in the sealed envelope's; past what GitHub's file API was seen
+// taking, the sealed data compresses, taking 32 MiB of files back to
+// about their own size. A library of mostly incompressible files may
+// still not fit GitHub, whose real limit is undocumented (#2707).
 const (
 	maxCarried    = 16 << 20
 	maxCarriedAll = 32 << 20

@@ -17,7 +17,14 @@ clone a working tree or synchronize arbitrary files.
   interprets `github://owner/repo[/prefix]`, with `Config.Branch` selecting a
   branch or using the repository's default.
 - [`backup.go`](../../internal/backup/backup.go) owns bundle contents and
-  sealing. Sync divides the setup into providers, settings, profiles, agents
+  sealing. A backup that seals small stays the plain version 1 an older
+  magpie opens; one whose plain seal would run past what GitHub's file API
+  was seen taking is compressed (envelope version 2), which an older magpie
+  refuses with its update message. Compression takes a library's files back
+  to about their own size, so a capped library is expected to fit GitHub,
+  but GitHub's real limit is undocumented and a library of mostly
+  incompressible files may still not fit.
+  Sync divides the setup into providers, settings, profiles, agents
   and library. Provider keys, agent models, library and usage have their own
   inclusion switches.
 - [`usage.go`](../../internal/davsync/usage.go) shares separately sealed usage
@@ -113,8 +120,14 @@ repository can keep the token. The branch is part of the sync state key.
   The initial write omits `branch` so GitHub creates its default branch; other
   conflicts and missing branches are not treated as an empty repository.
 - Large files are downloaded by blob SHA, preserving the version that was
-  read. Sync files are limited to 64 MiB. Usage listing fails at the Contents
-  API's 1,000-file limit rather than treating a truncated list as complete.
+  read. Sync files are limited to 64 MiB, but GitHub's file API takes less of
+  an upload than that: a write it refuses as too large says the file's size
+  and the backends a backup that big fits. Sealed backups compress when the
+  plain seal would be too big, which is expected to keep a full library
+  within what GitHub takes, but GitHub's real limit is undocumented and a
+  library of mostly incompressible files may still not fit. Usage listing
+  fails at the Contents API's 1,000-file limit rather than treating a
+  truncated list as complete.
 - A stale SHA or a racing initial creation returns `errChanged`. Other 422
   responses stay actionable errors. Authentication, permission and branch
   failures remain distinct from missing files. Rate limits use sync backoff.

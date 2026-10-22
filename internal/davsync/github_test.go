@@ -548,6 +548,22 @@ func TestGitHubFailures(t *testing.T) {
 			t.Fatalf("repository rules treated as a racing file creation: %v", err)
 		}
 	})
+	t.Run("file too large for GitHub's API", func(t *testing.T) {
+		f := newGithubFixture(t)
+		g, _ := newGitHub(githubConfig())
+		if err := g.prepare(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		f.mu.Lock()
+		f.status, f.message = 422, "Sorry, the file is too large to be processed. Consider creating/updating the file in a local clone and pushing it to GitHub."
+		f.mu.Unlock()
+		// the most the local guard lets through: GitHub takes less, and
+		// the refusal has to say so and where a backup this size fits (#2707)
+		_, err := g.put(context.Background(), make([]byte, 63<<20), "")
+		if err == nil || errors.Is(err, errChanged) || !strings.Contains(err.Error(), "takes less of an upload than the 64 MiB") {
+			t.Fatalf("GitHub's too-large refusal stayed the generic 422: %v", err)
+		}
+	})
 	t.Run("token cannot follow an external redirect", func(t *testing.T) {
 		f := newGithubFixture(t)
 		f.redirect = "https://outside.api.github.com/token"

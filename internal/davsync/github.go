@@ -305,6 +305,12 @@ func (g *github) commit(ctx context.Context, name string, data []byte, sha strin
 		if strings.Contains(string(body), `\"sha\" wasn't supplied`) {
 			return version{}, errChanged
 		}
+		// GitHub's file API takes less of an upload than the 64 MiB the
+		// guard above allows, so a file it refuses as too large is the
+		// size said, with where one that big fits (#2707)
+		if strings.Contains(strings.ToLower(string(body)), "too large") {
+			return version{}, fmt.Errorf("GitHub refused %s as too large (HTTP 422): GitHub's file API takes less of an upload than the 64 MiB magpie allows here, and this one is %d bytes; make what is shared smaller, or keep a backup this size on WebDAV or S3", name, len(data))
+		}
 		res.Body = io.NopCloser(bytes.NewReader(body))
 	}
 	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusCreated {

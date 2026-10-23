@@ -7616,7 +7616,8 @@ function modelPrefsOfDraft() {
 }
 
 // proxyPicker: one provider's proxy (#237): Settings', none or its own,
-// as proxyMode ("" global, "direct", "custom") and proxyURL
+// as proxyMode ("" global, "direct", "custom") and proxyURL. A SOCKS
+// login has fields of its own under the row (#3382), as Settings' has.
 const PROXY_HINT = {
   "": "Follows the proxy in Settings",
   direct: "Requests to it go direct, whatever the proxy in Settings",
@@ -7628,10 +7629,11 @@ function proxyPicker() {
   const addr = input(draft.proxyURL || "", "http://127.0.0.1:7890");
   addr.className = "proxy-url";
   addr.classList.toggle("off", draft.proxyMode !== "custom");
-  addr.oninput = () => { draft.proxyURL = addr.value; };
+  const login = proxyLoginRow(addr, (v) => { draft.proxyURL = v; });
   const seg = segs([["", t("Global proxy")], ["direct", t("Direct")], ["custom", t("Custom")]], draft.proxyMode || "", (v) => {
     draft.proxyMode = v;
     addr.classList.toggle("off", v !== "custom");
+    login.classList.toggle("off", v !== "custom");
     hint.textContent = t(PROXY_HINT[v]);
   });
   seg.classList.add("proxy-mode");
@@ -7640,7 +7642,7 @@ function proxyPicker() {
   // centred dialog would move under the pointer)
   const row = el("div", "proxy-row");
   row.append(seg, addr);
-  box.append(row, hint);
+  box.append(row, login, hint);
   return box;
 }
 
@@ -7990,7 +7992,8 @@ function proxyLines(items, hint, foldKeys) {
   draw();
   return box;
 }
-// proxyLine: one account's or key's line of proxyLines
+// proxyLine: one account's or key's line of proxyLines, a SOCKS login in
+// fields of its own under the address (#3382), as Settings' has
 function proxyLine(it) {
   const k = it.k;
   const cur = draft.accountProxies[k] || { mode: "", url: "" };
@@ -8002,15 +8005,16 @@ function proxyLine(it) {
   const addr = input(cur.url || "", "http://127.0.0.1:7890");
   addr.className = "proxy-url";
   addr.classList.toggle("off", cur.mode !== "custom");
-  addr.oninput = () => { draft.accountProxies[k] = { ...(draft.accountProxies[k] || { mode: "custom" }), url: addr.value }; };
+  const login = proxyLoginRow(addr, (v) => { draft.accountProxies[k] = { ...(draft.accountProxies[k] || { mode: "custom" }), url: v }; });
   const seg = segs([["", t("Provider's proxy")], ["direct", t("Direct")], ["custom", t("Custom")]], cur.mode || "", (v) => {
     draft.accountProxies[k] = { ...(draft.accountProxies[k] || {}), mode: v };
     addr.classList.toggle("off", v !== "custom");
+    login.classList.toggle("off", v !== "custom");
   });
   seg.classList.add("proxy-mode");
   const row = el("div", "proxy-row");
   row.append(seg, addr);
-  line.append(who, row);
+  line.append(who, row, login);
   return line;
 }
 // accountProxiesOfDraft is each account's own proxy as it is saved — the
@@ -12638,7 +12642,8 @@ function signInProxyLink(sub) {
   return b;
 }
 
-// signInProxyForm: a proxy typed in to sign in through.
+// signInProxyForm: a proxy typed in to sign in through, a SOCKS login in
+// fields of its own (#3382), as Settings' has.
 function signInProxyForm(sub) {
   const flow = signing;
   const form = el("form", "callback-form proxy-ask");
@@ -12650,15 +12655,18 @@ function signInProxyForm(sub) {
   const go = el("button", "text primary", t("Sign in through it"));
   go.type = "submit";
   go.disabled = !inp.value.trim();
-  inp.oninput = () => { flow.customProxy = inp.value; go.disabled = !inp.value.trim(); };
+  const login = proxyLoginRow(inp, (v) => { flow.customProxy = v; }, () => { go.disabled = !inp.value.trim(); });
+  // the fields' keys stay out of the sheet's, as the address's are
+  for (const f of login.querySelectorAll("input")) f.onkeydown = inp.onkeydown;
   const submit = (e) => {
     e.preventDefault();
-    if (signing !== flow || !inp.value.trim()) return;
-    signInThrough(sub, inp.value.trim());
+    const v = (flow.customProxy || "").trim();
+    if (signing !== flow || !v) return;
+    signInThrough(sub, v);
   };
   form.onsubmit = submit;
   go.onclick = submit;
-  form.append(inp, go);
+  form.append(inp, go, login);
   setTimeout(() => { if (inp.isConnected) inp.focus(NO_SCROLL); });
   return form;
 }
@@ -20706,6 +20714,51 @@ function proxyAddress(a, f, user, pass) {
   const enc = (t, l, e) => t === l && e !== undefined ? e : encodeURIComponent(t);
   const [, scheme = "", rest] = /^([a-z][\w+.-]*:\/\/)?(.*)$/is.exec(a);
   return scheme + enc(user, f.username, f.eu) + (pass ? ":" + enc(pass, f.password, f.ep) : "") + "@" + rest;
+}
+// proxyLoginRow is the login of a SOCKS proxy as fields of their own, for
+// the proxy rows outside Settings (#3382): proxyFields splits a pasted URL
+// the way Settings' own row does — its login lands in the fields, the box
+// keeps the address — and what the fields hold is joined back by
+// proxyAddress as it is typed, a field left as it was split keeping its
+// escapes, so setURL is handed the saved format (userinfo in the address),
+// the same address Settings would save for the same login. changed runs
+// after each change of the box; the row stays hidden till a SOCKS address
+// is in it, and the row's own pick dims it with its "off" class, its room
+// kept.
+function proxyLoginRow(addr, setURL, changed) {
+  const fields = {};
+  const auth = el("div", "proxy-auth proxy-login");
+  const username = input("", t("Username (optional)"));
+  const password = input("", t("Password (optional)"), "password");
+  for (const f of [username, password]) {
+    f.className = "proxy-credential";
+    f.setAttribute("aria-label", f.placeholder);
+  }
+  auth.append(username, password);
+  const join = () => {
+    let v = addr.value;
+    if (!auth.hidden) {
+      try {
+        v = proxyAddress(addr.value.trim(), fields, username.value, password.value);
+      } catch {} // a half-typed address is kept as it was typed
+    }
+    setURL(v);
+  };
+  const split = (quiet) => {
+    const parsed = proxyFields(addr.value.trim());
+    auth.hidden = !/^socks5h?:\/\//i.test(addr.value.trim());
+    if (parsed.username || parsed.password) {
+      Object.assign(fields, { username: parsed.username, password: parsed.password, eu: parsed.eu, ep: parsed.ep });
+      username.value = parsed.username;
+      password.value = parsed.password;
+      addr.value = parsed.address;
+    }
+    if (!quiet) { join(); if (changed) changed(); }
+  };
+  username.oninput = password.oninput = join;
+  addr.oninput = () => split();
+  split(true);
+  return auth;
 }
 function proxyDisplay(value) {
   // Also mask an older backend's proxyNow, and environment/system proxies.

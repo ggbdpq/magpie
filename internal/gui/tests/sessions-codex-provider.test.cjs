@@ -84,6 +84,18 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const calls = [];
       await page.route("**/*", serve(lang, calls));
       await page.goto("http://magpie.test/?view=providers");
+      // the nav still: under a full GUI run's load the header was still
+      // settling when the click set out, and the click waited out its whole
+      // 5s on a box that kept moving (#3360). The button's box reading the
+      // same 100ms apart says the nav is where the click will find it; the
+      // wait owns that settling budget, so the click's timeout doesn't.
+      await page.waitForFunction(() => {
+        const r = document.querySelector('#nav button[data-view="sessions"]').getBoundingClientRect();
+        const box = [r.x, r.y, r.width, r.height].join(",");
+        const was = window.__navBox;
+        window.__navBox = box;
+        return was === box;
+      }, null, { polling: 100, timeout: 15000 });
       await page.locator("#nav").getByRole("button", { name: w.nav, exact: true }).click();
       const view = page.locator("#view-sessions");
       const bar = view.locator(".sm-provider");

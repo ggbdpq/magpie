@@ -2176,10 +2176,18 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 		r.mu.Lock()
 		name = declaredName(r.names, name)
 		search := r.search != nil && name == r.searchName
+		// A call of the client's tool under the bare name its own
+		// instructions teach is the client's to answer: the run's Claude
+		// Code has none of the client's tools (--tools), so keeping the
+		// call only had Claude Code answer that the tool is missing, and
+		// the model gave up — the client was shown no tool_use, sent no
+		// result, and the turn ended at its first call having run nothing
+		// (#3373).
+		bare := !ok && r.tools[name]
 		r.mu.Unlock()
 		// magpie answers its own web search, as Claude Code does
 		// its WebSearch
-		if !ok || search {
+		if search || !(ok || bare) {
 			own[index] = true
 			return "", false
 		}

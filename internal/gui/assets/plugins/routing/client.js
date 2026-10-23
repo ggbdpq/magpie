@@ -1143,6 +1143,7 @@ function routingPage(part) {
   const playing = new Map(); // the routes being played → the gen playing each
   let rp = null;            // a replay playing: see replay
   let day = "", days = [], past = [], pastCut = false; // a kept day looked at ("" for live), the days kept, its routes
+  let tallies = null; // today's counts per account or key, from the history read (#3351); live only
   const src = () => rp ? rp.routes : routes; // the routes the stage plays from
   const LINGER = 12e3;      // how long an agent's last request stays on the stage
   let gen = 0, trips = [], waiters = [];
@@ -2434,6 +2435,7 @@ function routingPage(part) {
       days = res.days || [];
       noteAccounts(res.routes);
       if (d && d === day) { past = (res.routes || []).map(whole); pastCut = !!res.cut; }
+      else if (!d) tallies = res.tallies || null;
     } catch {}
     renderHist(); // shown once there are days, though none are live
   }
@@ -2992,6 +2994,17 @@ function routingPage(part) {
     // Group accounts by their identity, resolving each try in its own route.
     const keyOf = (w) => w.kind === "account" && w.who
       ? JSON.stringify([w.provider, w.who.trim().toLowerCase()]) : w.id;
+    // Live: the day's counts come with the history read the page already
+    // asks for (#3351) — the Usage page's own reading of the day, not the
+    // last few requests the gateway keeps. What that read cannot say (the
+    // readings its latest request was weighed by, one model resting alone)
+    // the kept requests below still do. A day looked at, or a purpose
+    // picked, counts its own list as before.
+    const seed = !day && !purpose.length && tallies && Object.keys(tallies).length ? tallies : null;
+    if (seed) for (const [k, x] of Object.entries(seed)) {
+      by.set(k, { w: x, tried: x.tried, ok: x.ok, fails: { ...x.fails }, last: x.last || 0,
+        rest: x.rest || null, restAt: x.restAt || 0, seen: 0, pos: 0, at: 0, models: new Set(x.models || []), mrests: new Map() });
+    }
     for (const r of [...rs].reverse()) { // oldest first, so the latest wins
       const candidates = new Map();
       r.order.forEach((w, i) => {
@@ -3011,10 +3024,14 @@ function routingPage(part) {
       for (const tr of r.tries) {
         const a = candidates.get(tr.id);
         if (!a || !tr.done || tr.fail === "canceled") continue; // the agent's doing, not its
-        a.tried++;
         const end = at(tr.start) + (tr.ms || 0);
-        if (tryOk(tr)) { a.ok++; a.last = Math.max(a.last, end); const m = tr.model || r.order.find((x) => x.id === tr.id)?.model; if (m) a.models.add(m); }
-        else a.fails[tr.fail || "other"] = (a.fails[tr.fail || "other"] || 0) + 1;
+        if (seed) { // counted from the day already; when it last answered is news all the same
+          if (tryOk(tr)) a.last = Math.max(a.last, end);
+        } else {
+          a.tried++;
+          if (tryOk(tr)) { a.ok++; a.last = Math.max(a.last, end); const m = tr.model || r.order.find((x) => x.id === tr.id)?.model; if (m) a.models.add(m); }
+          else a.fails[tr.fail || "other"] = (a.fails[tr.fail || "other"] || 0) + 1;
+        }
         const rm = tr.rest ? restModel(tr.rest, tr.model || r.order.find((x) => x.id === tr.id)?.model) : "";
         if (rm) modelRest(a, rm, tr.rest, end);
         else if (tr.rest && end >= a.restAt) { a.rest = tr.rest; a.restAt = end; }
@@ -3028,7 +3045,7 @@ function routingPage(part) {
     }
     const list = [...by.values()].sort((x, y) => (x.w.name || "").localeCompare(y.w.name || "") || x.w.provider.localeCompare(y.w.provider) || rankOf(x.w) - rankOf(y.w) || x.pos - y.pos);
     setText(actLabel, t("Accounts and keys"));
-    setText(actNote, t("over those requests"));
+    setText(actNote, t(!day && seed ? "over today's requests" : "over those requests"));
     // live, with a subscription account listed: a kept day's were weighed
     // by readings long gone, and a key has no allowance to read
     actRead.hidden = !!day || !list.some((a) => a.w.kind === "account");

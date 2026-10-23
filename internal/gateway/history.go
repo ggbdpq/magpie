@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,6 +58,11 @@ var history struct {
 	mu     sync.Mutex
 	pruned time.Time
 	counts map[string]counted // a day's file → its requests, as of its size
+	// the live page's tallies of a day, counted as of its files' sizes:
+	// counted again only once a file has grown since
+	talliedDay  string
+	talliedSize int64
+	tallies     map[string]Tally
 }
 
 type counted struct {
@@ -356,6 +362,152 @@ func readDay(path string, f func([]byte) bool) {
 			}
 		}
 	}
+}
+
+// Tally is one account or key's day, as the day's history tells it: how
+// often it was tried, answered and failed, its latest answer, the models
+// that answered, and how its latest try left it. The Routing page's
+// accounts and keys say these of a whole day (#3351), read from the
+// same files the Usage page reads, where counting the trace would say
+// only of the last few requests the gateway keeps. What the history
+// cannot say — the readings its latest request was weighed by, one model
+// resting alone — the page keeps from the trace.
+type Tally struct {
+	ID       string         `json:"id"` // what rests after a failure, as Weighed has it
+	Provider string         `json:"provider"`
+	Name     string         `json:"name,omitempty"`
+	Icon     string         `json:"icon,omitempty"`
+	Preset   string         `json:"preset,omitempty"`
+	Who      string         `json:"who,omitempty"`
+	Kind     string         `json:"kind"`
+	Agent    string         `json:"agent,omitempty"`
+	Plan     string         `json:"plan,omitempty"`
+	Model    string         `json:"model,omitempty"`
+	Routing  string         `json:"routing,omitempty"`
+	Rank     int            `json:"rank,omitempty"`
+	Tried    int            `json:"tried"`
+	OK       int            `json:"ok"`
+	Fails    map[string]int `json:"fails,omitempty"`
+	Last     int64          `json:"last,omitempty"` // ms, of its latest answer
+	Models   []string       `json:"models,omitempty"`
+	Rest     *Rest          `json:"rest,omitempty"`   // how its latest try left it
+	RestAt   int64          `json:"restAt,omitempty"` // ms, of when it did
+}
+
+// tallied is the part of a kept route the tallies read: json.Unmarshal
+// leaves the rest of the line alone.
+type tallied struct {
+	Time  time.Time `json:"time"`
+	Order []Weighed `json:"order"`
+	Tries []Try     `json:"tries"`
+}
+
+// tallyKey is what the page groups an account by: its provider and its
+// user, however it is weighed into a request (its sign-in may move); a
+// key or a provider by its own id.
+func tallyKey(w Weighed) string {
+	if w.Kind == "account" && w.Who != "" {
+		b, _ := json.Marshal([]string{w.Provider, strings.ToLower(strings.TrimSpace(w.Who))})
+		return string(b)
+	}
+	return w.ID
+}
+
+// DayTallies counts today's history per account or key, the Usage page's
+// own source. The counts ride on the history read the live page already
+// asks for, and are counted again only when a day's file has grown since:
+// a day long read stands until then, whatever the page asks.
+func DayTallies() map[string]Tally {
+	day := historyClock().Local().Format(dayForm)
+	history.mu.Lock()
+	defer history.mu.Unlock()
+	var total int64
+	files := []dayFile{}
+	for _, d := range historyFiles(HistoryDir()) {
+		if d.day == day {
+			files = append(files, d)
+			total += d.size
+		}
+	}
+	if history.talliedDay == day && history.talliedSize == total && history.tallies != nil {
+		return history.tallies
+	}
+	tallies := map[string]Tally{}
+	var rs []tallied
+	for _, d := range files {
+		readDay(d.path, func(line []byte) bool {
+			var r tallied
+			if json.Unmarshal(line, &r) == nil {
+				rs = append(rs, r)
+			}
+			return true
+		})
+	}
+	sort.Slice(rs, func(i, j int) bool { return rs[i].Time.Before(rs[j].Time) })
+	for _, r := range rs { // oldest first, so the latest wins
+		by := map[string]string{} // a try's seat → its tally
+		for _, w := range r.Order {
+			k := tallyKey(w)
+			a, ok := tallies[k]
+			if !ok {
+				a = Tally{ID: w.ID, Provider: w.Provider, Name: w.Name, Icon: w.Icon, Preset: w.Preset,
+					Who: w.Who, Kind: w.Kind, Agent: w.Agent, Plan: w.Plan, Model: w.Model, Routing: w.Routing, Rank: w.Rank}
+			}
+			// a rest on one model alone says nothing of the account (#1960),
+			// which answers its others; the page keeps that one from the trace
+			if w.Rest != nil && w.Rest.Model == "" {
+				if ms := r.Time.UnixMilli(); ms >= a.RestAt {
+					rest := *w.Rest
+					a.Rest, a.RestAt = &rest, ms
+				}
+			}
+			tallies[k] = a
+			by[w.ID] = k
+		}
+		for _, tr := range r.Tries {
+			k, ok := by[tr.ID]
+			if !ok || !tr.Done || tr.Fail == "canceled" { // the agent's doing, not its
+				continue
+			}
+			a := tallies[k]
+			end := tr.Start.UnixMilli() + tr.Millis
+			a.Tried++
+			if tr.Status < 400 && tr.Fail == "" {
+				a.OK++
+				if end > a.Last {
+					a.Last = end
+				}
+				m := tr.Model
+				if m == "" {
+					for _, w := range r.Order {
+						if w.ID == tr.ID {
+							m = w.Model
+							break
+						}
+					}
+				}
+				if m != "" && !slices.Contains(a.Models, m) {
+					a.Models = append(a.Models, m)
+				}
+			} else {
+				f := tr.Fail
+				if f == "" {
+					f = "other"
+				}
+				if a.Fails == nil {
+					a.Fails = map[string]int{}
+				}
+				a.Fails[f]++
+			}
+			if tr.Rest != nil && tr.Rest.Model == "" && end >= a.RestAt {
+				rest := *tr.Rest
+				a.Rest, a.RestAt = &rest, end
+			}
+			tallies[k] = a
+		}
+	}
+	history.talliedDay, history.talliedSize, history.tallies = day, total, tallies
+	return tallies
 }
 
 // HistoryRoute searches the request's day and its neighbours (the browser and

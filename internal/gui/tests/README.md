@@ -229,6 +229,14 @@ asked for and names the pill, with the bar held where it was; three days need
 no such pill; a window narrowed then widened fits again. Chromium and WebKit,
 in English, Chinese, Japanese and German.
 
+`routing-day-tallies.test.cjs` checks #3351: live, an account's row under
+Accounts and keys counts its day from the tallies the history read brings
+(the Usage page's own files), not the kept requests — an account in no
+request the gateway keeps still shows its day and its failures, the
+kept account says its day's twelve over the kept ten, and the note says
+the counts are today's. Chromium and WebKit, in English, Chinese,
+Traditional Chinese, Japanese and German.
+
 `dates-gui-lang.test.cjs` checks that dates and times read in the GUI's
 language, not the system's (#1843): English on a zh-CN browser, English on
 en-GB (the system's own English kept), and Chinese, Traditional Chinese,

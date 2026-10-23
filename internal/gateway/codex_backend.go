@@ -1487,6 +1487,13 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 			// (codex.out) and the Codex app is told without a restart
 			codexMayBeUsedUp(relayedAcct)
 		}
+	} else if said := codexStreamCut(res, sniff, began, r.Context()); said != "" {
+		// the stream's bytes stopped mid-reply, no failure said and no
+		// last event reached: the client still there hears it as the
+		// stream's failure, not a bare EOF to puzzle over, and the row
+		// says why instead of a clean 200 with no usage (#3377)
+		call.Status, call.Error = http.StatusBadGateway, said
+		streamError(w, provider.Responses, call.Model, call.Status, said)
 	}
 	end(call.Status, call.Error, uu.Input+uu.Output+uu.CacheRead+uu.CacheWrite, uu.Output)
 	call.Route = tr.ID
@@ -1787,6 +1794,23 @@ func codexSaidNothing(rest, model, who string, res *http.Response, msg []byte) (
 	return who + " answered " + what + " for " + model + " " + res.Status + said +
 		". " + model + " is one of Codex's own models, which goes to OpenAI, not to a provider in magpie; try again later, " +
 		"or pick one of magpie's models in Codex (provider/model, or set it in magpie's Agents view)", true
+}
+
+// codexStreamCut says when a relayed stream was cut mid-reply: an SSE reply
+// whose bytes stopped with no failure said and no last event reached, its
+// client still there to hear of it. Left alone the reply just ends: Codex
+// read a bare EOF, "stream disconnected before completion", and the row
+// recorded a clean 200 with nothing of why — every reply the ChatGPT
+// backend cut about two minutes in said nothing else for days (#3377).
+// The text carries how long the stream had gone, so a cut's fixed shape
+// shows in the log.
+func codexStreamCut(res *http.Response, sniff *usageSniffer, began time.Time, ctx context.Context) string {
+	if res.StatusCode >= 400 || !sniff.sse || sniff.failed != "" || sniff.whole() || ctx.Err() != nil {
+		return ""
+	}
+	return "OpenAI closed the stream " + time.Since(began).Round(time.Second).String() + " into the reply, " +
+		"before its last event: response.completed never came, and the usage with it. " +
+		"The reply is lost, and asking again sends the turn whole"
 }
 
 // routeOf is the id of the route a Codex relay opened, so the call it

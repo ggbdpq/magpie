@@ -148,6 +148,24 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       };
       const still = async (l, what, click) => {
         await reach(l);
+        // measured once the page is still: the row's top read the same 100ms
+        // apart (under load the list can still be settling when the wheel
+        // stops)
+        let was = await top(l);
+        for (;;) {
+          await page.waitForTimeout(100);
+          const y = await top(l);
+          if (y === was) break;
+          was = y;
+        }
+        // and told of the wheel: a busy machine tells the page of the reach's
+        // last wheel after the reader has moved on, and the page then holds
+        // the reader a wheel step short of where the page is — the click's
+        // guard puts the page back that step, and the pick reads as having
+        // moved it (#3294). One scroll event of the view's own gives the page
+        // its chance to put back what isn't the reader's before the page is
+        // measured; where the page was told already, it puts back nothing.
+        await page.evaluate(() => document.querySelector("#view-sessions").dispatchEvent(new Event("scroll")));
         const before = await top(l);
         await click();
         await page.waitForTimeout(250);

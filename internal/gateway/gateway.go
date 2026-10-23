@@ -5723,6 +5723,13 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	if proto == provider.Responses {
 		made = &reasoningTidy{sse: sse}
 	}
+	// a Messages upstream that counts only at its end sends message_start
+	// with "usage":{}, which a strict client turns away (usage_tidy.go,
+	// #3380); any other protocol's reply goes as it came
+	var usages *usageTidy
+	if proto == provider.Anthropic {
+		usages = &usageTidy{sse: sse}
+	}
 	// a model's 2500.0 in a call's arguments, which Codex turns away
 	// (grok_integral.go, #1431, #3152: Grok's models and muse-spark alike)
 	var ints *intTidy
@@ -5856,6 +5863,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			if spaces != nil {
 				out = spaces.write(out)
 			}
+			if usages != nil {
+				out = usages.write(out)
+			}
 			// crArgs before ints: ints runs on every reply now and holds
 			// one that came whole to its own flush, which crArgs, after it,
 			// would never see (#3152 beside #4256's glm-5.3-flash routes)
@@ -5895,6 +5905,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	// what's held at the end goes through the filters after the one
 	// that held it
 	sign := func(b []byte) []byte {
+		if usages != nil {
+			b = usages.write(b)
+		}
 		if crArgs != nil {
 			b = crArgs.write(b)
 		}
@@ -5934,6 +5947,22 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	}
 	if spaces != nil {
 		write(sign(spaces.flush()))
+	}
+	if usages != nil {
+		// not through sign: it holds what it is given back and hands the
+		// whole reply out only at its own flush, which has just happened
+		// here
+		b := usages.flush()
+		if crArgs != nil {
+			b = crArgs.write(b)
+		}
+		if ints != nil {
+			b = ints.write(b)
+		}
+		if sigs != nil {
+			b = sigs.write(b)
+		}
+		write(out(b))
 	}
 	if crArgs != nil {
 		b := crArgs.flush()

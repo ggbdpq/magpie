@@ -1372,6 +1372,11 @@ func copilot(home string) *Agent {
 		// folder says nothing of the CLI: its settings.json or the copilot
 		// command does (#1495)
 		dirShared: true,
+		// VS Code 1.143 ships a copilot launcher of its own in
+		// bin\copilot-shim in its install folder, which is on the user's
+		// PATH, and running it only asks for the CLI to be installed
+		// (#3269): a command of the editor's is not the CLI
+		binNot: editorLauncher,
 		Fields: []Field{{
 			Key: "model", Label: "model",
 			Get: jsonGet(path, "model"),
@@ -1403,6 +1408,31 @@ func copilot(home string) *Agent {
 				return static("low", "medium", "high", "xhigh")
 			},
 		}},
+	}
+}
+
+// editorLauncher reports whether bin is a launcher an editor ships beside
+// itself, not the CLI it is named after: an editor's install is told by the
+// product.json it keeps beside its program — in resources\app beside bin in
+// a Windows or Linux install, in the app folder that bin is in on a Mac, as
+// vscodeCodeBinary tells one. Only a copilot a user installed itself is the
+// CLI: npm's global folder, Homebrew's, winget's Links, scoop's shims, none
+// of which an editor keeps.
+func editorLauncher(bin string) bool {
+	dir, err := filepath.Abs(filepath.Dir(bin))
+	if err != nil {
+		return false
+	}
+	for {
+		if isFile(filepath.Join(dir, "product.json")) ||
+			isFile(filepath.Join(dir, "resources", "app", "product.json")) {
+			return true
+		}
+		if up := filepath.Dir(dir); up != dir {
+			dir = up
+			continue
+		}
+		return false
 	}
 }
 

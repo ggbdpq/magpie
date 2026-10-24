@@ -54,7 +54,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang));
       await page.goto("http://magpie.test/?view=providers");
-      await page.locator("#addProvider").click();
+      // the list is empty here, so the sheet opens by itself at boot (adding
+      // is set without a click), and the button stands aside (.away, out of
+      // hit-testing) while the sheet is in sight — go to the tile it shows,
+      // in whatever order those landed
       await page.locator("#addSheet .tile", { hasText: "Kimi Code" }).click();
       const d = page.locator("#modal .editor");
       const opts = d.locator(".segs.regions .opt");

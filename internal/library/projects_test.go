@@ -250,3 +250,42 @@ func TestRemoveSkillWhoseFolderIsGone(t *testing.T) {
 		t.Error("pdf still listed")
 	}
 }
+
+// #3510: a project whose folder was deleted outside magpie comes off the
+// list when it's removed: there's nothing of magpie's on disk to take
+// back, so the records of what it placed go with the entry, and the
+// removal says nothing failed. keep takes a gone project off the list as
+// it always did (#514).
+func TestRemoveProjectWhoseFolderIsGone(t *testing.T) {
+	_, proj := projectLib(t)
+	ok(t)(ProjectSkill(proj, "pdf", []string{"claude", "codex"}))
+	if v, _ := Read(nil); len(v.Projects) != 1 || len(v.Projects[0].Placed) == 0 {
+		t.Fatalf("projects: %+v", v.Projects)
+	}
+	if err := os.RemoveAll(proj); err != nil {
+		t.Fatal(err)
+	}
+	r, err := RemoveProject(proj, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Problems) != 0 {
+		t.Errorf("the removal said: %+v", r.Problems)
+	}
+	if v, _ := Read(nil); len(v.Projects) != 0 {
+		t.Errorf("projects: %+v", v.Projects)
+	}
+	if v, _ := Read(nil); len(v.Skills) != 2 {
+		t.Errorf("skills: %+v", v.Skills)
+	}
+
+	_, proj = projectLib(t)
+	ok(t)(ProjectSkill(proj, "docx", []string{"claude"}))
+	if err := os.RemoveAll(proj); err != nil {
+		t.Fatal(err)
+	}
+	ok(t)(RemoveProject(proj, true))
+	if v, _ := Read(nil); len(v.Projects) != 0 {
+		t.Errorf("kept projects: %+v", v.Projects)
+	}
+}

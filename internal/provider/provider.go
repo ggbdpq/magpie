@@ -961,9 +961,15 @@ func add(p Provider, once bool) (string, error) {
 	}
 	// the same key on the same host with the same headers is the one
 	// already here, not another: adding it twice would only split its usage.
-	// A copy the user asked for is taken (AddCopy).
+	// A copy the user asked for is taken (AddCopy). Two different presets
+	// on one host are two products of the vendor, not the one twice: one
+	// key of the account reaches both (OpenCode's Zen and Go, #3388).
+	np := normalize(p)
 	for _, h := range All() {
-		if once && h.Account == nil && sameProvider(h, normalize(p)) {
+		if once && h.Account == nil && sameProvider(h, np) {
+			if h.Preset != "" && np.Preset != "" && h.Preset != np.Preset {
+				continue
+			}
 			return "", fmt.Errorf("%s is already added with that key (%s); magpie provider key %s <key> changes its key", h.Name, h.ID, h.ID)
 		}
 	}

@@ -96,6 +96,13 @@ func kimiModelTables(path string, legacy bool, wrote map[string]map[string]strin
 		var caps []string
 		if len(m.Efforts) > 0 {
 			caps = append(caps, strconv.Quote("thinking"))
+			// a model with no none among its levels can't have its thinking
+			// turned off (Kimi's own k3.1-pro entries read always_thinking,
+			// and its upstream refuses a session run at off with a 400,
+			// #3399). kimi-cli has no word for it, as for tool_use.
+			if !legacy && !slices.Contains(m.Efforts, "none") {
+				caps = append(caps, strconv.Quote("always_thinking"))
+			}
 		}
 		if m.Images {
 			caps = append(caps, strconv.Quote("image_in"))

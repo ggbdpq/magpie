@@ -67,9 +67,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
             await page.locator(".proto-menu").waitFor();
             const at = await top(page, sel);
             // a scroll of the view the reader didn't make, in the frame after
-            // the click: put back, and the menu stays beside its anchor
-            await view(page).evaluate((v) => requestAnimationFrame(() => { v.scrollTop += 40; }));
-            await page.waitForTimeout(300);
+            // the click: put back, and the menu stays beside its anchor. Wait
+            // for the view to have heard the scroll and the anchor to be back
+            // where it was (a bound, not a fixed while): under load the
+            // put-back can take longer than any fixed wait.
+            await view(page).evaluate((v) => {
+              delete v.dataset.putBack;
+              v.addEventListener("scroll", () => { v.dataset.putBack = "heard"; }, { once: true, passive: true });
+              requestAnimationFrame(() => { v.scrollTop += 40; });
+            });
+            await page.waitForFunction(([s, y]) => document.querySelector("#view-gateway")?.dataset.putBack === "heard"
+              && Math.abs(document.querySelector(s).getBoundingClientRect().y - y) < 1, [sel, at]);
             assert.equal(await menuOpen(page), 1, `${sel}: the menu stays open after a scroll that wasn't the reader's`);
             assert.ok(Math.abs((await top(page, sel)) - at) < 1, `${sel}: its anchor stays where it was`);
             const [m, a] = [await page.locator(".proto-menu").boundingBox(), await page.locator(sel).boundingBox()];

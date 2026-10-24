@@ -130,7 +130,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // the window, on the Overview
       const calls = { state: 0, overview: 0, requests: 0 }, cur = { v: 0 };
       const p = await open("http://magpie.test/?view=usage", { width: 1180, height: 760 }, calls, cur);
-      if (await p.locator("#usageTab .opt.on").evaluate((b) => b !== b.parentElement.firstElementChild)) await p.locator(":is(#usageTab .opt, .nav-s):visible").first().click();
+      // which Usage tab is on, read in one go in the page: the tab's opts
+      // are rebuilt on every re-read of the page, and a locator's element
+      // can go away between the lookup and the read (null firstElementChild,
+      // issue #3501), so wait for one to be there rather than read at once
+      let offFirst = null;
+      for (let i = 0; i < 250 && offFirst === null; i++) {
+        offFirst = await p.evaluate(() => {
+          const b = document.querySelector("#usageTab .opt.on");
+          return b ? b !== b.parentElement.firstElementChild : null;
+        });
+        if (offFirst === null) await p.waitForTimeout(20);
+      }
+      assert.notEqual(offFirst, null, "the Usage tab's on tab showed up");
+      if (offFirst) await p.locator(":is(#usageTab .opt, .nav-s):visible").first().click();
       const BAR = "#chart .bars .bar";
       await p.locator(BAR).first().waitFor();
       assert.equal(await p.locator(BAR).count(), DAYS);

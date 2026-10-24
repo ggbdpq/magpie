@@ -178,12 +178,26 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await card.locator(".ctx-look-b.on").getAttribute("aria-label"), w.map);
         // every tile inside the map, none on another
         // read once the tiles have come in and the card has opened, the
-        // map and its tiles in one look
+        // map and its tiles in one look. The wait below can clear while the
+        // tiles are still gliding: the card's size class lands a frame after
+        // the map narrows (the #1249 deferral), the map lays out again, and
+        // WebKit runs the tiles' left/top/width/height transition without
+        // ever listing it in document.getAnimations(), so at a phone's width
+        // this read used to land mid-glide, where two gliding tiles can sit
+        // a hair past each other. The rects have to hold still for three
+        // looks in a row, as the wheel does above
         await page.waitForFunction(() => !document.getAnimations().some((a) => a.playState === "running" && a.effect?.target?.closest?.(".ctx-sess.open")));
-        const { rects, box } = await map.evaluate((m) => {
-          const rc = (n) => { const r = n.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; };
-          return { rects: [...m.querySelectorAll(".ctx-tile")].map(rc), box: rc(m) };
-        });
+        let read = "";
+        for (let last = null, same = 0, i = 0; i < 60 && same < 2; i++) {
+          await page.waitForTimeout(100);
+          read = await map.evaluate((m) => {
+            const rc = (n) => { const r = n.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; };
+            return JSON.stringify({ rects: [...m.querySelectorAll(".ctx-tile")].map(rc), box: rc(m) });
+          });
+          same = read === last ? same + 1 : 0;
+          last = read;
+        }
+        const { rects, box } = JSON.parse(read);
         for (const [i, a] of rects.entries()) {
           assert.ok(a[0] >= box[0] - 0.5 && a[1] >= box[1] - 0.5 && a[2] <= box[2] + 0.5 && a[3] <= box[3] + 0.5, `tile ${i} is outside the map: ${a} in ${box}`);
           assert.ok(a[2] - a[0] >= 10 && a[3] - a[1] >= 10, `tile ${i} is a sliver: ${a}`);

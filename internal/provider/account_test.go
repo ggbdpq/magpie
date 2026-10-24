@@ -261,7 +261,35 @@ func claudeSignIn(t *testing.T, home string, expiry time.Time) string {
 		// what magpie must not clobber when it writes a refreshed token back
 		"mcpOAuth": map[string]any{"plugin:slack:slack|x": map[string]any{"serverName": "Slack"}},
 	})
+	// A run let go by an earlier test that reads the home in the window
+	// between claudeHome's forget and this write — a sign-in's letting-go,
+	// an import's background read, a provider probe — caches that there is
+	// none, and the miss is served for the cache's TTL: the account went
+	// unlisted mid-package, under load only (#3174). What this test wrote
+	// is what a read serves.
+	forgetClaudeCredential()
 	return path
+}
+
+// A read of the fixture's home while it is still empty — a run let go by an
+// earlier test makes one: a sign-in's letting-go (claudeLogins), an import's
+// background read, a provider probe — caches that there is no credential,
+// and the cache is one global slot served by age alone. What claudeSignIn
+// wrote must be what a read serves after it, whatever landed in the cache
+// meanwhile: served the miss, the account goes unlisted mid-package, under
+// load only (#3174).
+func TestClaudeSignInServesWhatItWrote(t *testing.T) {
+	home := claudeHome(t)
+	if _, _, ok := claudeCredential(); ok {
+		t.Fatal("the empty home read as signed in")
+	}
+	claudeSignIn(t, home, time.Now().Add(time.Hour))
+	if _, _, ok := claudeCredential(); !ok {
+		t.Fatal("the fixture's sign-in read as the cached miss")
+	}
+	if p, ok := find(All(), "claude"); !ok || p.Account == nil {
+		t.Fatalf("claude: %+v %v", p, ok)
+	}
 }
 
 // claudeHome sets up a temp home with the usual env; the caller adds credentials.

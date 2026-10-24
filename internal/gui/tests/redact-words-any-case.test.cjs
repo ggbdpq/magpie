@@ -14,11 +14,11 @@ const { reach, wheelTo, watchSettingsReads, settingsDrawn } = require("./reader.
 
 const assets = path.resolve(__dirname, "../assets");
 const words = {
-  en: { name: "Masked words in any case", on: "On", off: "Off" },
-  zh: { name: "脱敏词不区分大小写", on: "开启", off: "关闭" },
-  "zh-TW": { name: "脫敏詞不分大小寫", on: "開啟", off: "關閉" },
-  ja: { name: "マスクする語の大文字・小文字を区別しない", on: "オン", off: "オフ" },
-  de: { name: "Maskierte Wörter ohne Groß-/Kleinschreibung", on: "An", off: "Aus" },
+  en: { name: "Masked words in any case", personal: "Mask personal data", on: "On", off: "Off" },
+  zh: { name: "脱敏词不区分大小写", personal: "脱敏个人信息", on: "开启", off: "关闭" },
+  "zh-TW": { name: "脫敏詞不分大小寫", personal: "脫敏個人資訊", on: "開啟", off: "關閉" },
+  ja: { name: "マスクする語の大文字・小文字を区別しない", personal: "個人情報をマスク", on: "オン", off: "オフ" },
+  de: { name: "Maskierte Wörter ohne Groß-/Kleinschreibung", personal: "Personenbezogene Daten maskieren", on: "An", off: "Aus" },
 };
 
 function serve(lang, saved) {
@@ -95,11 +95,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(saved[0].redact, true);
         assert.deepEqual(await page.evaluate(() => [scrollX, scrollY, document.querySelector("#view-settings").scrollTop]), before, "the click moved nothing");
 
-        // another choice on the page keeps it
-        const p = page.locator("#redactList .row").nth(1).locator(".segs .opt", { hasText: w.on });
+        // another choice on the page keeps it. "What was masked" leads the
+        // list now (Insights › Masking), so the personal row is found by its
+        // name, not by its place
+        const p = page.locator("#redactList .row", { has: page.locator(".name", { hasText: new RegExp("^" + w.personal + "$") }) }).locator(".segs .opt", { hasText: w.on });
         await reach(page, p); // above it now, maybe under the tabs
         await p.click();
-        await page.waitForFunction(() => document.querySelector("#redactList .row:nth-child(2) .segs .opt.on")?.textContent === t("On"));
+        await page.waitForFunction((name) => [...document.querySelectorAll("#redactList .row")].some((r) => r.querySelector(".name")?.textContent === name && r.querySelector(".segs .opt.on")?.textContent === t("On")), w.personal);
         await new Promise((r) => setTimeout(r, 300));
         assert.equal(saved.length, 2);
         assert.equal(saved[1].redactPersonal, true);

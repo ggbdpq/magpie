@@ -187,7 +187,22 @@ func TestRestartHandsTheGatewayOver(t *testing.T) {
 			default:
 			}
 			asked.Add(1)
-			r, err := http.Post("http://"+addr+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"plan/m1","messages":[{"role":"user","content":"hi"}]}`))
+			// the magpie handing over closes its idle keep-alive
+			// connections when it stops serving (http.Server.Shutdown),
+			// and a request sent the moment one dies reads EOF; any real
+			// client retries, and the socket is never closed (the new
+			// magpie serves it), so the retry is answered
+			var r *http.Response
+			var err error
+			for try := 0; try < 3; try++ {
+				if try > 0 {
+					time.Sleep(10 * time.Millisecond)
+				}
+				r, err = http.Post("http://"+addr+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"plan/m1","messages":[{"role":"user","content":"hi"}]}`))
+				if err == nil {
+					break
+				}
+			}
 			if err != nil {
 				t.Errorf("a request during the restart: %v", err)
 				return

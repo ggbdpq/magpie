@@ -63,7 +63,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const ctx = await browser.newContext({ viewport: { width: Math.round(1100 / zoom), height: 600 }, deviceScaleFactor: zoom });
         await ctx.addInitScript(() => { Object.defineProperty(Navigator.prototype, "platform", { get: () => "Win32" }); });
         const page = await ctx.newPage();
-        page.on("pageerror", (e) => errors.push(e.message));
+        // WebKit reports a ResizeObserver round left to the next frame as a page
+        // error; Chromium doesn't. Sweeping the window's width, a stop between
+        // fitTop's steps has the classes it tries re-laying the header out in
+        // the same frame, so the header's observers are told once more, past
+        // the loop's depth. The round is delivered on the next frame and the
+        // layout settles; nothing is painted wrong.
+        page.on("pageerror", (e) => { if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message); });
         await page.route("**/*", server(lang));
         await page.goto("http://magpie.test/");
         await page.waitForSelector("#nav button.on");

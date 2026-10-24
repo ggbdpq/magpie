@@ -82,7 +82,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
         const context = await browser.newContext({ viewport: { width, height: 800 }, reducedMotion: "reduce" });
         const page = await context.newPage();
-        page.setDefaultTimeout(5000);
+        // room for a busy machine: at load ~190 a press and a waitFor went
+        // over the 5s default with the element already there (#3476)
+        page.setDefaultTimeout(15000);
         const errors = [], posts = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, posts));

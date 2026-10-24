@@ -119,8 +119,13 @@ func TestUsageReadAfterAppendHashesNothingOnAFineClock(t *testing.T) {
 			if !tc.fine {
 				logChangeTime = func(info os.FileInfo) time.Time { return changeTime(info).Truncate(time.Second) }
 			}
-			// each read comes 150 ms after the append before it
-			logIndexNow = func() time.Time { return time.Now().Add(150 * time.Millisecond) }
+			stamp := logChangeTime(mustStat(t))
+			// each read comes 150 ms after the append before it, measured from
+			// the append's change stamp: a whole-second stamp of an append late
+			// in its second is a second behind the wall clock, so a read
+			// measured from the wall clock lands past the stamp's 1 s settle
+			// and hashes nothing (#3511)
+			logIndexNow = func() time.Time { return stamp.Add(150 * time.Millisecond) }
 			Summarize(Today)
 			hash := logRecordHash
 			var hashed int64
@@ -132,9 +137,11 @@ func TestUsageReadAfterAppendHashesNothingOnAFineClock(t *testing.T) {
 			const cycles = 5
 			for range cycles {
 				Append(Record{Agent: "codex", Provider: "relay", Model: "m", Input: 1, Status: 200})
-				if c := logChangeTime(mustStat(t)); tc.fine && c.Nanosecond() == 0 {
+				c := logChangeTime(mustStat(t))
+				if tc.fine && c.Nanosecond() == 0 {
 					t.Skip("this file system keeps change times in whole seconds")
 				}
+				stamp = c
 				Summarize(Today)
 				Summarize(Today)
 			}

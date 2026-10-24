@@ -147,7 +147,14 @@ const textAt = (row) => row.evaluate((e) => {
 });
 
 async function showRefresh(row) {
-  const was = await textAt(row);
+  // under load the hover is reached before the row's text is laid out,
+  // where textAt reads undefined: wait for the line to be drawn and to
+  // hold still, then read where it starts
+  let was = await textAt(row);
+  while (was === undefined || was !== await textAt(row)) {
+    await row.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+    was = await textAt(row);
+  }
   await row.hover();
   await row.locator(".quota-refresh").evaluate(e => new Promise(done => {
     const tick = () => getComputedStyle(e).opacity === "1" && e.getBoundingClientRect().width >= 14 ? done() : requestAnimationFrame(tick);

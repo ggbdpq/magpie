@@ -601,7 +601,11 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 		if name == "" {
 			name = id
 		}
-		input := imageInput(r.Modalities.Input)
+		in := r.Modalities.Input
+		if len(in) == 0 {
+			in = llamacppInputs(r.Architecture)
+		}
+		input := imageInput(in)
 		apis := EndpointAPIs(r.Endpoints)
 		if native := EndpointAPIs(r.Native); len(native) > 0 {
 			apis = native
@@ -612,6 +616,8 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 		m := Model{ID: id, Name: name, Plain: plain, ImageInput: input, APIs: apis, Draws: drawer, Films: films, Decides: decision,
 			InputModalities: r.Modalities.Input, OutputModalities: r.Modalities.Output}
 		if n, ok := r.ContextLength.(float64); ok && n > 0 {
+			m.Context = int(n)
+		} else if n, ok := llamacppNCtx(r.Meta); ok && n > 0 {
 			m.Context = int(n)
 		}
 		if n, ok := r.Output.(float64); ok && n > 0 {
@@ -632,6 +638,34 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 		out = append(out, m)
 	}
 	return out, v.HasMore, v.LastID, nil
+}
+
+// llamacppNCtx is the window a llama-server's list tells in meta.n_ctx,
+// whether the entry has one: the window per slot the server was started
+// with (-c), where a list's context_length would be. One not told, or not
+// a number, is no window.
+func llamacppNCtx(meta json.RawMessage) (float64, bool) {
+	var m struct {
+		NCtx any `json:"n_ctx"`
+	}
+	if len(meta) == 0 || json.Unmarshal(meta, &m) != nil {
+		return 0, false
+	}
+	n, ok := m.NCtx.(float64)
+	return n, ok
+}
+
+// llamacppInputs is the input modalities a llama-server's list tells in
+// architecture.input_modalities, where a list's modalities.input would
+// be; none told, or oddly, is none.
+func llamacppInputs(architecture json.RawMessage) []string {
+	var a struct {
+		InputModalities []string `json:"input_modalities"`
+	}
+	if len(architecture) == 0 || json.Unmarshal(architecture, &a) != nil {
+		return nil
+	}
+	return a.InputModalities
 }
 
 // errorMessage is the message of a vendor's JSON error reply
@@ -669,6 +703,12 @@ type liveModel struct {
 		Input  []string `json:"input"`
 		Output []string `json:"output"`
 	} `json:"modalities"`
+	// llama.cpp's llama-server tells the window per slot in meta.n_ctx
+	// and the input modalities in architecture.input_modalities, where a
+	// list's context_length and modalities.input would be (#3452). Raw,
+	// as a vendor's odd value mustn't lose the whole list
+	Meta         json.RawMessage `json:"meta"`
+	Architecture json.RawMessage `json:"architecture"`
 	// the paths the model is served on, where the vendor says: Command
 	// Code's Claude models on /messages alone, its open ones on
 	// /chat/completions and /responses

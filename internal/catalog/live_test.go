@@ -47,6 +47,62 @@ func TestFetchContextLength(t *testing.T) {
 	}
 }
 
+// A llama-server's list tells each model's window per slot in meta.n_ctx
+// and its input modalities in architecture.input_modalities, where a
+// list's context_length and modalities.input would be (#3452): a server
+// started with -c 131072 --mmproj lists the model with the window it
+// serves and the image it takes, where magpie read neither and its
+// /api/show told the stand-in window and no vision. A model not loaded
+// yet (router mode) has no meta and a text-only architecture, a list's
+// own context_length stays first where it has one, and a vendor's odd
+// value loses neither the field nor the whole list.
+func TestFetchLlamacppWindow(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.Write([]byte(`{"object":"list","data":[
+		  {"id":"gemma-4-qat","owned_by":"llamacpp","architecture":{"input_modalities":["text","image","video"],"output_modalities":["text"]},"meta":{"n_ctx":131072,"n_ctx_train":262144}},
+		  {"id":"gemma-4-unloaded","owned_by":"llamacpp","architecture":{"input_modalities":["text"],"output_modalities":["text"]}},
+		  {"id":"claude-sonnet-5","context_length":1000000,"meta":{"n_ctx":1}},
+		  {"id":"zero","meta":{"n_ctx":0}},
+		  {"id":"odd","meta":"llamacpp","architecture":"gemma"}]}`))
+	}))
+	defer srv.Close()
+	ms, _, err := FetchAt(context.Background(), srv.URL+"/v1", "k", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type seen struct {
+		context int
+		images  *bool
+	}
+	got := map[string]seen{}
+	for _, m := range ms {
+		got[m.ID] = seen{m.Context, m.ImageInput}
+	}
+	qat := got["gemma-4-qat"]
+	if qat.context != 131072 || qat.images == nil || !*qat.images {
+		t.Errorf("gemma-4-qat: %d %v", qat.context, qat.images)
+	}
+	// not loaded yet: no window of its own (the stand-in answers /api/show
+	// as before) and text only, as the list says
+	unloaded := got["gemma-4-unloaded"]
+	if unloaded.context != 0 || unloaded.images == nil || *unloaded.images {
+		t.Errorf("gemma-4-unloaded: %d %v", unloaded.context, unloaded.images)
+	}
+	// a list's own context_length is the window it is, whatever meta adds
+	if got["claude-sonnet-5"].context != 1000000 {
+		t.Errorf("claude-sonnet-5: %d", got["claude-sonnet-5"].context)
+	}
+	if got["zero"].context != 0 {
+		t.Errorf("zero: %d", got["zero"].context)
+	}
+	// an odd meta or architecture loses itself, not the whole list; a
+	// model neither of them says anything of is left as it was
+	odd := got["odd"]
+	if odd.context != 0 || odd.images != nil || len(got) != 5 {
+		t.Errorf("odd: %+v of %v", odd, got)
+	}
+}
+
 // Another magpie's list tells each model's native APIs, over the ones it
 // serves it on, its longest reply and its reasoning levels; a vendor's odd
 // values are only left out, never the whole list.

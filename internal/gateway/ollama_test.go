@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -124,6 +125,51 @@ func TestOllamaModelRoutes(t *testing.T) {
 	}
 	if c, _ := show(`{}`); c != 400 {
 		t.Fatal("no model:", c)
+	}
+}
+
+// A provider pointed at llama.cpp's llama-server: its /v1/models says each
+// model's window in meta.n_ctx and its input modalities in
+// architecture.input_modalities (#3452), so /api/show tells the window the
+// server was started with (-c 131072) and vision, where it told the
+// stand-in 32768 and no vision and a client reading /api/show refused to
+// run the model for a window it does serve.
+func TestOllamaShowTellsALlamacppWindow(t *testing.T) {
+	fresh(t)
+	up := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		io.WriteString(rw, `{"object":"list","data":[{"id":"gemma-4-qat","owned_by":"llamacpp","architecture":{"input_modalities":["text","image","video"],"output_modalities":["text"]},"meta":{"n_ctx":131072,"n_ctx_train":262144}}]}`)
+	}))
+	defer up.Close()
+	if err := provider.Save(provider.Provider{ID: "llamacpp", Name: "LlamaCpp", Key: "k", Chat: up.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := provider.Find("llamacpp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Fetch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h := New().Handler()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/show", strings.NewReader(`{"model":"llamacpp/gemma-4-qat"}`))
+	req.RemoteAddr = "127.0.0.1:50123"
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("show: %d %s", rec.Code, rec.Body)
+	}
+	var s struct {
+		Capabilities []string
+		ModelInfo    map[string]any `json:"model_info"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &s); err != nil {
+		t.Fatal(rec.Body.String())
+	}
+	if s.ModelInfo["magpie.context_length"] != float64(131072) {
+		t.Errorf("model_info window: %v", s.ModelInfo["magpie.context_length"])
+	}
+	if !slices.Contains(s.Capabilities, "vision") {
+		t.Errorf("capabilities %v", s.Capabilities)
 	}
 }
 

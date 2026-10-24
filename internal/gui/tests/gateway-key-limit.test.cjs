@@ -117,7 +117,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await row("server").getByRole("button", { name: w.change, exact: true }).click();
       await row("server").locator(".key-limit-ed").waitFor();
       await page.setViewportSize({ width: 560, height: 740 });
-      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
+      // WebKit answers the resize before it has laid the page out at the
+      // new width, so a read right away can see a mid-layout width (597
+      // seen against 560): the page is read once it holds still for three
+      // looks in a row, and a settled page that really runs past 560
+      // still fails
+      let read = "";
+      for (let last = null, same = 0, i = 0; i < 60 && same < 2; i++) {
+        await page.waitForTimeout(100);
+        read = await page.evaluate(() => JSON.stringify([document.documentElement.scrollWidth, window.innerWidth]));
+        same = read === last ? same + 1 : 0;
+        last = read;
+      }
+      const [sw, iw] = JSON.parse(read);
+      assert.equal(sw > iw, false);
       assert.deepEqual(errors, []);
     });
   }

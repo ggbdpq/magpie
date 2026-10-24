@@ -33,6 +33,10 @@ type fakeSocketBackend struct {
 	posts   int
 	refuse  int
 	frames  func(socketTurn) []string
+	// tooBig says which turns the backend refuses with a close
+	// StatusMessageTooBig, as it does a message over its socket's
+	// ceiling (#3444)
+	tooBig func(socketTurn) bool
 }
 
 func (f *fakeSocketBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -59,6 +63,10 @@ func (f *fakeSocketBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.sockets = append(f.sockets, turn)
 		f.mu.Unlock()
+		if f.tooBig != nil && f.tooBig(turn) {
+			c.Close(websocket.StatusMessageTooBig, "")
+			return
+		}
 		for _, fr := range f.frames(turn) {
 			if c.Write(r.Context(), websocket.MessageText, []byte(fr)) != nil {
 				return
@@ -279,6 +287,35 @@ func TestCodexSocketClosedEarlyIsCut(t *testing.T) {
 	b, err := io.ReadAll(res.Body)
 	if !errors.Is(err, io.ErrUnexpectedEOF) || !strings.Contains(string(b), "pong") {
 		t.Fatalf("read %q, %v; want the reply so far and a cut", b, err)
+	}
+}
+
+// A turn whose message the backend refuses with a close
+// StatusMessageTooBig — a large one, over the socket's ceiling, which the
+// same request clears over HTTP — goes over HTTP as it was, as Codex's own
+// client makes it, and the host isn't shunned for it: the next, small turn
+// is on the socket again (#3444).
+func TestCodexSocketTooBigGoesOverHTTP(t *testing.T) {
+	socketOn(t)
+	f := &fakeSocketBackend{frames: wholeReply, tooBig: func(turn socketTurn) bool {
+		return len(turn.msg) > 1<<20
+	}}
+	chatgpt(t, f.ServeHTTP)
+
+	big := `{"model":"gpt-5.5","stream":true,"input":"` + strings.Repeat("x", 2<<20) + `"}`
+	code, body := codexPost(t, big)
+	if code != 200 || !strings.Contains(body, `"delta":"po"`) {
+		t.Fatalf("the big turn: %d %s", code, body[:min(len(body), 400)])
+	}
+	if strings.Contains(body, "MessageTooBig") {
+		t.Errorf("the big turn's size reached Codex: %s", body[:min(len(body), 400)])
+	}
+	code, body = codexPost(t, `{"model":"gpt-5.5","stream":true,"input":"ping"}`)
+	if code != 200 || !strings.Contains(body, "pong") || !strings.Contains(body, "response.completed") {
+		t.Fatalf("the small turn: %d %s", code, body)
+	}
+	if posts, sockets := f.counts(); posts != 1 || sockets != 2 {
+		t.Fatalf("%d posts, %d sockets; want the big turn over HTTP after its socket, the small one on a socket", posts, sockets)
 	}
 }
 

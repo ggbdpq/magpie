@@ -288,6 +288,13 @@ func (t codexSocket) socket(req *http.Request, msg []byte) (*http.Response, erro
 			if errors.Is(err, io.EOF) && len(body.pending) == 0 {
 				return nil, errors.New("codex websocket: closed before the reply began")
 			}
+			if websocket.CloseStatus(err) == websocket.StatusMessageTooBig {
+				// the backend refused the turn's message as more than
+				// its socket takes, before the reply began: nothing of
+				// it was taken, and the same turn clears over HTTP, as
+				// Codex's own client makes it (#3444)
+				return nil, errCodexSocketFallBack
+			}
 			return nil, err
 		}
 		if frame == nil { // dropped

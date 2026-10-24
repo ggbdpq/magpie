@@ -2131,7 +2131,13 @@ func priceOf(s settings.Settings, p Provider, known bool, model string) (catalog
 		if m, ok := s.ModelPrices[key]; ok {
 			if pr, bad := m.Price(); bad == "" {
 				// a Claude model's 1-hour cache write left out: 2× input
-				catalog.OneHourFor(model, &pr)
+				// where the price is of Anthropic's, whose rule that is;
+				// one for the model from any provider is the maker's
+				who := id
+				if key == AnyPriceKey(model) {
+					who = ""
+				}
+				catalog.OneHourFor(who, model, &pr)
 				return pr, true
 			}
 		}

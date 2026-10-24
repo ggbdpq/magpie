@@ -497,7 +497,8 @@ func anyModelPrice(ref string, rest []string) error {
 	}
 	if len(rest) == 0 {
 		if pr, ok := statedPrice(settings.Load().ModelPrices, key); ok {
-			catalog.OneHourFor(strings.TrimPrefix(key, settings.AnyProvider), &pr)
+			// a price of the model from any provider is the maker's rule
+			catalog.OneHourFor("", strings.TrimPrefix(key, settings.AnyProvider), &pr)
 			fmt.Println(bold.Render(perMillion(pr)), muted.Render("· "+key))
 			for _, l := range priceDetail(pr) {
 				fmt.Println(faint.Render(l))

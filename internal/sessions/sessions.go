@@ -1859,7 +1859,9 @@ func priceOf(s settings.Settings, model string) (catalog.Price, bool) {
 	// from them
 	if p, ok := s.ModelPrices[provider.AnyPriceKey(bare)]; ok {
 		if pr, bad := p.Price(); bad == "" {
-			catalog.OneHourFor(bare, &pr)
+			// a bare id is billed at its maker's (Anthropic's, for a
+			// Claude model), so its 1-hour write is 2× input
+			catalog.OneHourFor("", bare, &pr)
 			return pr, true
 		}
 	}

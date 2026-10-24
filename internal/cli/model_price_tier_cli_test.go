@@ -39,7 +39,9 @@ func TestModelPriceTierCmd(t *testing.T) {
 
 	// PAMI on Discord: four parts give no 1-hour cache write but a Claude
 	// model's — gpt-6-astra was shown "$20 (1 hour) at 2× input", a write
-	// OpenAI has no price for
+	// OpenAI has no price for. The fill is Anthropic's rule (#3435), so a
+	// price of another provider's stands as it was given: Copilot's Claude
+	// writes for an hour at its 5-minute price
 	if strings.Contains(out, "1 hour") || strings.Contains(out, "2× input") {
 		t.Errorf("magpie model price a/m: %q; want no 1-hour cache write", out)
 	}
@@ -49,12 +51,12 @@ func TestModelPriceTierCmd(t *testing.T) {
 	if err := modelCmd([]string{"price", "a/claude-opus-5-5", "3,15,0.3,3.75"}); err != nil {
 		t.Fatal(err)
 	}
-	if pr, _ := provider.EffectivePrice("a", "claude-opus-5-5"); pr.OneHour() != 6 {
-		t.Errorf("claude 1h = %+v, want 2× input", pr)
+	if pr, _ := provider.EffectivePrice("a", "claude-opus-5-5"); pr.OneHour() != 3.75 {
+		t.Errorf("claude 1h = %+v, want the 5-minute 3.75: a is not Anthropic", pr)
 	}
 	out, _ = said(t, func() error { return modelCmd([]string{"price", "a/claude-opus-5-5"}) })
-	if !strings.Contains(out, "$6.00 (1 hour)") && !strings.Contains(out, "$6 (1 hour)") {
-		t.Errorf("magpie model price a/claude-opus-5-5: %q; want its 1-hour cache write", out)
+	if strings.Contains(out, "1 hour") {
+		t.Errorf("magpie model price a/claude-opus-5-5: %q; want no 1-hour cache write", out)
 	}
 
 	if err := modelCmd([]string{"price", "a/only-a", "5,25,0.5,6.25,8"}); err != nil {

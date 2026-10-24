@@ -66,12 +66,12 @@ func TestCostSplit(t *testing.T) {
 		t.Errorf("unset 1h: %v, want %v, every write at the 5-minute price", got, want)
 	}
 	c := p
-	OneHourFor("claude-sonnet-5-5", &c)
+	OneHourFor("", "claude-sonnet-5-5", &c)
 	if got, want := c.CostSplit(1000, 100, 0, 3000, 1000), (1000*5.0+100*25+2000*6.25+1000*10)/1e6; !near(got, want) {
 		t.Errorf("claude unset 1h: %v, want %v", got, want)
 	}
 	g := p
-	OneHourFor("gpt-6-astra", &g)
+	OneHourFor("", "gpt-6-astra", &g)
 	if g.CacheWrite1h != 0 {
 		t.Errorf("gpt given a 1-hour write: %v", g.CacheWrite1h)
 	}

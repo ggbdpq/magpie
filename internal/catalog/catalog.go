@@ -218,10 +218,19 @@ func (p *Price) UnmarshalJSON(b []byte) error {
 // OneHourFor gives a Claude model's price its 1-hour cache write where none
 // is given — models.dev lists none, and a price the user gives may leave it
 // out: 2× input, as Anthropic bills it for every model, wherever the model
-// has a (5-minute) cache write price at all. Any other model's stays
-// unset, its writes all at the 5-minute price: only Anthropic has a 1-hour
-// one (PAMI on Discord: gpt-6-astra was shown a $20 one that isn't).
-func OneHourFor(id string, p *Price) {
+// has a (5-minute) cache write price at all. A 1-hour write at 2× input is
+// Anthropic's own charge, so only a price of Anthropic's takes it: the
+// maker's list, a Claude Code account's (claude), or one no provider is
+// named for, which falls back to the maker's. Any other provider's stands
+// as its list has it, its writes all at the 5-minute price (mdwsk88 on
+// #3435: Copilot's Claude writes for an hour at its 5-minute price). Any
+// other model's stays unset, its writes all at the 5-minute price: only
+// Anthropic has a 1-hour one (PAMI on Discord: gpt-6-astra was shown a $20
+// one that isn't).
+func OneHourFor(provider, id string, p *Price) {
+	if provider != "" && provider != "anthropic" && provider != "claude" {
+		return
+	}
 	if p == nil || p.CacheWrite <= 0 || p.CacheWrite1h > 0 || !strings.Contains(strings.ToLower(id), "claude") {
 		return
 	}
@@ -570,7 +579,7 @@ func load() map[string]mdProvider {
 							if _, _, ok := strings.Cut(x.Canonical, "/"); ok {
 								canonical[bareID(x.Canonical)] = true
 							}
-							OneHourFor(id, x.Cost)
+							OneHourFor(pid, id, x.Cost)
 							vote(bareID(id), id, pid, x)
 						}
 					}

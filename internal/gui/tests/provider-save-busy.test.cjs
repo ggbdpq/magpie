@@ -51,6 +51,15 @@ const words = {
   de: { save: "Speichern", saving: "Wird gespeichert…" },
 };
 
+// Under the whole suite's load webkit en 440px once couldn't reach load
+// within the 5s default (#3525): every asset comes from the route handler
+// here, so a navigation's bar is pure serve time on a loaded machine, and
+// a 5s one leaves no room above. The waits that span the page's boot (the
+// goto and the provider row it fills from the boot reads) get 15s; the
+// ones inside a loaded page (the editor, the save and its answers) keep
+// the quick 5s.
+const boot = 15000;
+
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of Object.keys(words)) {
     for (const width of [440, 900]) {
@@ -63,8 +72,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const errors = [], saves = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, saves));
-        await page.goto("http://magpie.test/?view=providers");
-        await page.locator('.row.provider[data-id="deepseek"]').click();
+        await page.goto("http://magpie.test/?view=providers", { timeout: boot });
+        await page.locator('.row.provider[data-id="deepseek"]').click({ timeout: boot });
         const bar = page.locator(".editor .bar");
         const save = bar.getByRole("button", { name: w.save, exact: true });
         const top = await page.evaluate(() => document.scrollingElement.scrollTop);

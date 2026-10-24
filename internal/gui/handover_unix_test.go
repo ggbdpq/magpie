@@ -111,18 +111,31 @@ func slowUpstream(t *testing.T, release <-chan struct{}) *httptest.Server {
 }
 
 // servedByPid is the pid of the magpie answering at addr, 0 when none.
+// The handover never leaves the socket unattended, but under load this
+// one GET can outlive its 2s, or read an answer that carries no pid —
+// 2 of the report's 40 runs (#3451), both handovers whole — so it asks
+// again the way a real client does: three tries, 10ms apart, until an
+// answer carries a pid.
 func servedByPid(addr string) int {
 	c := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
-	r, err := c.Get("http://" + addr + "/")
-	if err != nil {
-		return 0
+	for try := 0; try < 3; try++ {
+		if try > 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
+		r, err := c.Get("http://" + addr + "/")
+		if err != nil {
+			continue
+		}
+		var info struct {
+			Pid int `json:"pid"`
+		}
+		json.NewDecoder(r.Body).Decode(&info)
+		r.Body.Close()
+		if info.Pid != 0 {
+			return info.Pid
+		}
 	}
-	defer r.Body.Close()
-	var info struct {
-		Pid int `json:"pid"`
-	}
-	json.NewDecoder(r.Body).Decode(&info)
-	return info.Pid
+	return 0
 }
 
 // xuanwo on X: a restart to update on a Mac or Linux hands the gateway to
@@ -239,7 +252,10 @@ func TestRestartHandsTheGatewayOver(t *testing.T) {
 	}
 	for range 5 {
 		if pid := servedByPid(addr); pid != child.Process.Pid {
-			t.Fatalf("a request after the handover reached pid %d", pid)
+			// 0 is no magpie's pid: the probe timed out, or its answer
+			// carried no pid — the magpie serving now is not named by a
+			// failure to ask it
+			t.Fatalf("a pid probe after the handover read %d (0: it timed out, or its answer carried no pid)", pid)
 		}
 	}
 	stop()

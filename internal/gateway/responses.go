@@ -1616,9 +1616,34 @@ func (d *responsesDecoder) decode(data string, emit func(Event)) error {
 		if status == 0 {
 			status, said = fs, fsaid
 		}
+		if said == nil {
+			said = flatErrorSaid(data)
+		}
 		emit(Event{Kind: KError, Text: cmp.Or(msg, streamErrorText(data)), Code: code, Status: status, Said: said})
 	}
 	return nil
+}
+
+// flatErrorSaid is a Responses stream's error event that carries its code
+// and param on itself, as the documented one does, where requestRefused
+// and filterRefused read no error object to carry them: the fields go as
+// an Event's Said, for a translation to keep them as they were said
+// (#3427). Nil when the event names neither, so none is invented.
+func flatErrorSaid(data string) json.RawMessage {
+	var said map[string]string
+	for _, k := range []string{"code", "param"} {
+		if v := gjson.Get(data, k); v.Type == gjson.String && v.String() != "" {
+			if said == nil {
+				said = map[string]string{}
+			}
+			said[k] = v.String()
+		}
+	}
+	if said == nil {
+		return nil
+	}
+	b, _ := json.Marshal(map[string]any{"error": said})
+	return b
 }
 
 // requestRefused is 400 and the vendor's error, as {"error":{…}}, when a

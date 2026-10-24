@@ -60,6 +60,13 @@ const L = {
     more: "插件中还有更多" },
 };
 
+// Under the whole suite's load the notice after a reload has landed past
+// the 5s default on webkit (#3484): the page is served file by file, then
+// /api/state is read before /api/providers before the rows. The waits that
+// span a whole page load (each goto and what it leads to) get 15s; the
+// ones inside a loaded page keep the quick 5s.
+const boot = 15000;
+
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of ["en", "zh"]) {
     test(`${engine} ${lang}: deprecated built-in subscriptions are badged and explained`, async (t) => {
@@ -69,14 +76,19 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const page = await (await browser.newContext({ viewport: { width: 900, height: 1000 }, reducedMotion: "reduce" })).newPage();
       page.setDefaultTimeout(5000);
       const errors = [];
-      page.on("pageerror", (e) => errors.push(e.message));
+      // A reload kills the page's own background reads (the web update
+      // poll, What's new), and webkit reports each killed fetch as a page
+      // error on the page it leaves (#3484): with every response faked
+      // here that wording only ever means a killed read, not the page
+      // misbehaving, so it doesn't count.
+      page.on("pageerror", (e) => { if (!e.message.includes("due to access control checks")) errors.push(e.message); });
       const calls = [];
       await page.route("**/*", serve(lang, calls));
-      await page.goto("http://magpie.test/?view=providers");
+      await page.goto("http://magpie.test/?view=providers", { timeout: boot });
 
       // the notice: the signed-in deprecated ones, and why
       const notice = page.locator("#movable .deprecation");
-      await notice.waitFor();
+      await notice.waitFor({ timeout: boot });
       const said = await notice.innerText();
       assert.ok(said.includes(w.head), `the notice doesn't name Cursor and Kiro: ${said}`);
       assert.ok(said.includes(w.why), "the notice doesn't say why");
@@ -114,12 +126,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.deepEqual(calls, [], "a sign-in or an install started by itself");
 
       // Not now hides the notice, and it stays hidden on the next load
-      await page.goto("http://magpie.test/?view=providers");
-      await notice.waitFor();
+      await page.goto("http://magpie.test/?view=providers", { timeout: boot });
+      await notice.waitFor({ timeout: boot });
       await notice.locator("button", { hasText: w.later }).click();
       await page.locator("#movable").waitFor({ state: "hidden" });
-      await page.goto("http://magpie.test/?view=providers");
-      await page.locator('.row.provider[data-id="cursor"] .badge.deprecated').waitFor();
+      await page.goto("http://magpie.test/?view=providers", { timeout: boot });
+      await page.locator('.row.provider[data-id="cursor"] .badge.deprecated').waitFor({ timeout: boot });
       assert.equal(await page.locator("#movable").isHidden(), true, "the notice came back");
       assert.deepEqual(errors, []);
     });

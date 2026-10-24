@@ -2592,9 +2592,13 @@ func userMessage(text string) map[string]any { return codexsummary.UserMessage(t
 //
 // The summary is asked for whole (askWhole): a reply that breaks off, or
 // ends incomplete, is a failure the next account or member answers, as
-// one that fails before it begins, and is never taken for the summary;
-// when none is left Codex is told so. One conversation's compaction that
-// keeps failing stops being asked for a while (compactFails, #2274).
+// one that fails before it begins, and is never taken for the summary.
+// When none is left and the last one's stream broke off, the summary is
+// magpie's own (#3526): Codex, told a 502, asked the same huge summary
+// over until the guard held it, and the conversation could neither compact
+// nor go on. One that ended incomplete is still told so. One conversation's
+// compaction that keeps failing stops being asked for a while
+// (compactFails, #2274).
 func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byte) {
 	key, model := compactKey(body), modelOf(body)
 	if msg, held := s.compactFails.held(key, model); held {
@@ -2642,6 +2646,19 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
 			local = localSummary(body, fmt.Sprintf("%s answered %d to the summary request: %s", who, first, msg))
 			rec, res, err = &recorder{header: http.Header{}, status: 200}, compactResult{}, nil
 		}
+	}
+	if err != nil && strings.HasSuffix(err.Error(), errEndedShort.Error()) {
+		// nobody left, and the last one's stream broke off before its end
+		// (#2274): the words before the cut are no summary, and Codex,
+		// told a 502, asked the same huge summary over, three times, until
+		// the guard held it and the conversation could neither compact nor
+		// go on (#3526). The summary is magpie's own, as when no model can
+		// be asked at all; the summary as text isn't tried, the cut was in
+		// what the model wrote, not in what it was asked
+		who, _ := compactFailure(body, rec)
+		log.Printf("codex compaction: %s: %s; compacting locally", who, err)
+		local = localSummary(body, err.Error())
+		rec, res, err = &recorder{header: http.Header{}, status: 200}, compactResult{}, nil
 	}
 	if rec.status >= 400 {
 		_, msg := compactFailure(body, rec)

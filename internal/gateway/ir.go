@@ -92,6 +92,11 @@ type Hit struct {
 	URL   string `json:"url"`
 	// PageAge is how old the search said the page is, "" when it didn't
 	PageAge string `json:"page_age,omitempty"`
+	// CitedText is what the search quoted of the page: the excerpt a
+	// client reads as the page's snippet, Anthropic's citations'
+	// cited_text (#3447). "" when the search gave none, which no citation
+	// of the page is made for.
+	CitedText string `json:"cited_text,omitempty"`
 }
 
 // attachmentText is the fallback when a protocol cannot carry a Gemini file.

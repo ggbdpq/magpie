@@ -1371,6 +1371,9 @@ type anthropicEncoder struct {
 	fresh   bool
 	started bool
 	col     collector
+	// cites: what the reply's searches quoted of their pages, which the
+	// text that read them carries as its citations (#3447)
+	cites []any
 }
 
 // anthropicID is a reply's id as Anthropic's API gives one, msg_…: an
@@ -1498,7 +1501,16 @@ func (e *anthropicEncoder) event(ev Event) {
 		if ev.Text == "" {
 			return
 		}
-		e.openBlock(Text, map[string]any{"text": ""})
+		block := map[string]any{"text": ""}
+		if len(e.cites) > 0 {
+			// what the searches before it quoted, said of the block as
+			// Anthropic's own web search says it (#3447)
+			block["citations"] = []any{}
+		}
+		e.openBlock(Text, block)
+		for _, c := range e.cites {
+			e.delta(map[string]any{"type": "citations_delta", "citation": c})
+		}
 		e.delta(map[string]any{"type": "text_delta", "text": ev.Text})
 	case KThinkStart:
 		// opened with what it says first: one that says nothing isn't
@@ -1541,6 +1553,7 @@ func (e *anthropicEncoder) event(ev Event) {
 		// as Anthropic's own web search tells it, which Claude Code's
 		// WebSearch counts and takes its links from
 		e.close()
+		e.cites = append(e.cites, citationsOf(ev.Hits)...)
 		id := "srvtoolu_" + newID()
 		query, _ := json.Marshal(map[string]string{"query": ev.Text})
 		e.w.event("content_block_start", map[string]any{"type": "content_block_start", "index": e.index,
@@ -1597,13 +1610,19 @@ func (e *anthropicEncoder) finish() {
 // renderAnthropic is the non-streaming reply.
 func renderAnthropic(res Result, model string) []byte {
 	content := []any{}
+	var cites []any
 	for _, p := range res.Parts {
 		switch p.Kind {
 		case Text:
 			if p.Text == "" && p.Signature != "" {
 				continue // only Gemini's signature, which is Gemini's
 			}
-			content = append(content, map[string]any{"type": "text", "text": p.Text})
+			block := map[string]any{"type": "text", "text": p.Text}
+			if len(cites) > 0 {
+				// what the searches before it quoted (#3447)
+				block["citations"] = cites
+			}
+			content = append(content, block)
 		case Thinking:
 			switch {
 			case p.sealedBy(sealAnthropic):
@@ -1621,6 +1640,7 @@ func renderAnthropic(res Result, model string) []byte {
 			content = append(content, map[string]any{"type": "tool_use", "id": anthropicOutID(id), "name": p.Name, "input": argsOf(p)})
 		case Search:
 			id := "srvtoolu_" + newID()
+			cites = append(cites, citationsOf(p.Hits)...)
 			content = append(content,
 				map[string]any{"type": "server_tool_use", "id": id, "name": "web_search", "input": map[string]any{"query": p.Text}},
 				searchResultBlock(id, p.Hits))
@@ -1653,10 +1673,34 @@ func searchResultBlock(id string, hits []Hit) map[string]any {
 		if h.PageAge != "" {
 			age = h.PageAge
 		}
-		results = append(results, map[string]any{"type": "web_search_result", "title": h.Title, "url": h.URL,
-			"encrypted_content": "", "page_age": age})
+		page := map[string]any{"type": "web_search_result", "title": h.Title, "url": h.URL,
+			"encrypted_content": "", "page_age": age}
+		if h.CitedText != "" {
+			page["cited_text"] = h.CitedText
+		}
+		results = append(results, page)
 	}
 	return map[string]any{"type": "web_search_tool_result", "tool_use_id": id, "content": results}
+}
+
+// citedTextMost is the most of a page a citation quotes, as much as
+// Anthropic's own web search says of one.
+const citedTextMost = 150
+
+// citationsOf is the citations the text that read a search's pages
+// carries: each page the search quoted something of, with where it is and
+// what was quoted of it (#3447). A page nothing was quoted of gives no
+// citation, as none is invented.
+func citationsOf(hits []Hit) []any {
+	var cites []any
+	for _, h := range hits {
+		if h.CitedText == "" {
+			continue
+		}
+		cites = append(cites, map[string]any{"type": "web_search_result_location",
+			"url": h.URL, "title": h.Title, "cited_text": h.CitedText})
+	}
+	return cites
 }
 
 // idSeq keeps ids made within one tick of the clock apart: Windows'

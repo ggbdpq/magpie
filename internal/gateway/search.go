@@ -963,16 +963,17 @@ func (s *Server) searchWith(ctx context.Context, p provider.Provider, model, que
 			json.Unmarshal(b.Content, &results)
 			for _, raw := range results {
 				var h struct {
-					Title   string `json:"title"`
-					URL     string `json:"url"`
-					PageAge any    `json:"page_age"`
+					Title     string `json:"title"`
+					URL       string `json:"url"`
+					PageAge   any    `json:"page_age"`
+					CitedText string `json:"cited_text"`
 				}
 				if json.Unmarshal(raw, &h) != nil || h.URL == "" {
 					continue
 				}
 				age, _ := h.PageAge.(string)
 				sources = append(sources, "- "+h.Title+" — "+h.URL)
-				found = append(found, Hit{Title: h.Title, URL: h.URL, PageAge: age})
+				found = append(found, Hit{Title: h.Title, URL: h.URL, PageAge: age, CitedText: h.CitedText})
 			}
 		}
 	}

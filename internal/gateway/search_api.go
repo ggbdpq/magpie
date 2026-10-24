@@ -195,7 +195,9 @@ func pagesSaid(pages []foundPage) (string, []Hit) {
 			b.WriteString(p.Text + "\n")
 		}
 		b.WriteString("\n")
-		hits = append(hits, Hit{Title: p.Title, URL: p.URL, PageAge: p.Age})
+		// what the page says, clipped as much as a citation quotes of it
+		// (#3447)
+		hits = append(hits, Hit{Title: p.Title, URL: p.URL, PageAge: p.Age, CitedText: clipText(p.Text, citedTextMost)})
 	}
 	return strings.TrimSpace(b.String()), hits
 }

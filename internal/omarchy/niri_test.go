@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // The JSON below is niri's own, as niri-ipc 26.4.0 (niri v26.04,
@@ -111,7 +112,11 @@ func TestWatchWindowsRefused(t *testing.T) {
 }
 
 // fakeNiri answers on NIRI_SOCKET as niri does, one request a line, and
-// keeps the requests.
+// keeps the requests. It answers past niri's production deadline: a busy
+// test binary can leave a goroutine unscheduled a second and more
+// (#3639), so the sleep below stands for that load, and niriTimeout is
+// raised to outlive it — with production's second the sleep times every
+// request of place out, which is the flake this guards against.
 func fakeNiri(t *testing.T, answer func(req string) string) (sent func() []string) {
 	dir, err := os.MkdirTemp("", "niri") // a socket path fits in 104 bytes
 	if err != nil {
@@ -133,6 +138,7 @@ func fakeNiri(t *testing.T, answer func(req string) string) (sent func() []strin
 			if err != nil {
 				return
 			}
+			time.Sleep(1100 * time.Millisecond) // the fake niri, unscheduled by a busy test binary (#3639)
 			sc := bufio.NewScanner(c)
 			for sc.Scan() {
 				mu.Lock()
@@ -144,11 +150,13 @@ func fakeNiri(t *testing.T, answer func(req string) string) (sent func() []strin
 		}
 	}()
 	t.Cleanup(func() {
+		niriTimeout = time.Second
 		l.Close()
 		wg.Wait()
 		os.RemoveAll(dir)
 	})
 	t.Setenv("NIRI_SOCKET", sock)
+	niriTimeout = 30 * time.Second // the fake answers past production's second, and later still under load
 	return func() []string {
 		mu.Lock()
 		defer mu.Unlock()

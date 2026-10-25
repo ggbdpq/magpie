@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -172,4 +173,32 @@ func TestWritten(t *testing.T) {
 		t.Fatal("the next wait is closed already")
 	default:
 	}
+}
+
+// A write in one synctest bubble, then a write in another: Forget closed
+// the channel the first write had made, and the process died ("close of
+// synctest channel from outside bubble"), every test of the package with
+// it (#3632). A write with no one waiting makes and closes no channel,
+// and a wait begun and woken in the same bubble still works.
+func TestForgetInAnotherBubble(t *testing.T) {
+	for range 2 {
+		synctest.Test(t, func(t *testing.T) {
+			Forget()
+		})
+	}
+	synctest.Test(t, func(t *testing.T) {
+		w := Written()
+		select {
+		case <-w:
+			t.Fatal("closed before any write")
+		default:
+		}
+		done := make(chan struct{})
+		go func() {
+			<-w
+			close(done)
+		}()
+		Forget()
+		<-done
+	})
 }

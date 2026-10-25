@@ -335,6 +335,13 @@ func MoveCandidates() []MoveCandidate {
 		if Moved(id) {
 			continue
 		}
+		// one whose provider the user removed (the row Delete hides) is no
+		// candidate: its Move line would stay for good over a subscription
+		// the user did away with, nothing serving it and nothing to dismiss
+		// it with (#3542). Adding the provider back lists the move again.
+		if hiddenAccount(id) {
+			continue
+		}
 		if accts, err := mv.out(); err == nil && len(accts) > 0 {
 			c := MoveCandidate{ID: id, Name: nameOf(id), Package: mv.pkg, Accounts: len(accts)}
 			if m, ok := MigrationOf(id); ok && m.State == MoveFailed {

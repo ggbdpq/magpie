@@ -59,3 +59,29 @@ func TestRetiredOwnAccountStillMoves(t *testing.T) {
 		t.Fatalf("candidates: %+v", c)
 	}
 }
+
+// A move candidate whose provider the user removed from magpie (the row
+// Delete hides) is no candidate: the page's Move line would otherwise
+// nag for good about a subscription the user did away with, and it has
+// no way to be dismissed (#3542: the zcode plugin and the provider
+// removed, the line stayed). Adding the provider back lists it again.
+func TestRemovedProviderIsNoMoveCandidate(t *testing.T) {
+	home := signIn(t)
+	was := retiredBuiltins["zcode"]
+	retiredBuiltins["zcode"] = true
+	t.Cleanup(func() { retiredBuiltins["zcode"] = was })
+	t.Setenv("ZCODE_CREDENTIAL_SECRET", "test-secret")
+	writeFile(t, filepath.Join(home, ".zcode", "v2", "credentials.json"), map[string]any{
+		"oauth:zai:user_info": zcodeEncrypt(t, `{"user_id":"u1","email":"own@example.com"}`),
+		"account-provider:coding-plan:account:zai-individual-coding-plan:account:abc:api-key": zcodeEncrypt(t, "own.secret"),
+	})
+	if c := MoveCandidates(); len(c) != 1 || c[0].ID != "zcode" || c[0].Accounts != 1 {
+		t.Fatalf("candidates before the provider is removed: %+v", c)
+	}
+	if err := store(file{Providers: []Provider{{ID: "zcode", Hidden: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if c := MoveCandidates(); len(c) != 0 {
+		t.Fatalf("candidates after the provider was removed: %+v", c)
+	}
+}

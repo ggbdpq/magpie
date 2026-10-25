@@ -30,7 +30,10 @@ func TestProgram(t *testing.T) {
 			t.Fatalf("ran again: %q %v", out, err)
 		}
 		fi, err := os.Stat(p)
-		if err != nil || fi.Mode().Perm() != 0o755 {
+		// macOS gets 0o755 exactly (WriteProgram chmods, for the system's
+		// first-run check); elsewhere the 0o755 ask goes through the umask,
+		// so the test holds the file to its owner's rwx, what runs it
+		if err != nil || fi.Mode().Perm()&0o700 != 0o700 {
 			t.Fatalf("mode: %v %v", fi, err)
 		}
 		first = fi

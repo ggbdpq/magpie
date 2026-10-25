@@ -187,12 +187,18 @@ func niriAction(name string, args map[string]any) any {
 	return map[string]any{"Action": map[string]any{name: args}}
 }
 
+// niriTimeout is how long niri gets to take the connection and to answer
+// one request. niri answers from memory, so a second serves it; the fake
+// niri of the tests can be left unscheduled longer than that by a busy
+// test binary (#3639), so the tests raise it.
+var niriTimeout = time.Second
+
 func niriDial() (net.Conn, error) {
 	sock := os.Getenv("NIRI_SOCKET")
 	if sock == "" {
 		return nil, errors.New("niri: NIRI_SOCKET is not set")
 	}
-	return net.DialTimeout("unix", sock, time.Second)
+	return net.DialTimeout("unix", sock, niriTimeout)
 }
 
 // niriRequest sends niri one request, a line of JSON, and reads its reply
@@ -203,7 +209,7 @@ func niriRequest(req, v any) error {
 		return err
 	}
 	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(time.Second))
+	_ = c.SetDeadline(time.Now().Add(niriTimeout))
 	b, err := json.Marshal(req)
 	if err != nil {
 		return err

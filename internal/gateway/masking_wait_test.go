@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -139,5 +140,85 @@ func TestUnroutedMsgNamesTheModelOnlyWhenItIsOn(t *testing.T) {
 	}
 	if m := unroutedMsg(2*time.Minute, false); !strings.Contains(m, "without routing it to any provider") {
 		t.Fatalf("not masking: %s", m)
+	}
+}
+
+// heldMasker is masking that is slow (the local model loading): every
+// wait runs to its request's context's end and panics out, however many
+// candidates ask — waitingMasker's one left channel a second wait would
+// close again.
+type heldMasker struct{ asked int }
+
+func (m *heldMasker) wait(ctx context.Context) {
+	m.asked++
+	<-ctx.Done()
+	panic("stopped waiting for the local masking model")
+}
+
+func (m *heldMasker) TextHitsContext(ctx context.Context, s string) (string, []gwmw.Hit) {
+	m.wait(ctx)
+	return s, nil
+}
+
+func (m *heldMasker) JSONHitsContext(ctx context.Context, b []byte) ([]byte, []gwmw.Hit) {
+	m.wait(ctx)
+	return b, nil
+}
+
+func (m *heldMasker) TextHits(s string) (string, []gwmw.Hit) {
+	return m.TextHitsContext(context.Background(), s)
+}
+
+func (m *heldMasker) JSONHits(b []byte) ([]byte, []gwmw.Hit) {
+	return m.JSONHitsContext(context.Background(), b)
+}
+func (m *heldMasker) JSON(b []byte) ([]byte, int)     { b, _ = m.JSONHits(b); return b, 0 }
+func (m *heldMasker) Text(s string) (string, int)     { s, _ = m.TextHits(s); return s, 0 }
+func (m *heldMasker) Restore(s string, _ bool) string { return s }
+func (m *heldMasker) Value(string) (string, bool)     { return "", false }
+func (m *heldMasker) Writer(w http.ResponseWriter) (http.ResponseWriter, func()) {
+	return w, func() {}
+}
+
+// #3682: with the local masking model slow, a routing group's decision
+// went candidate by candidate, each waiting out the classifier's whole
+// timeout and resting its account with a 502 that was magpie's own
+// holding, not the provider's: two candidates waited twice, and both
+// accounts rested. A decision held for masking comes back at once, and
+// no account rests for it.
+func TestSlowMaskingRestsNoDecider(t *testing.T) {
+	fresh(t)
+	if err := settings.Save(settings.Settings{Redact: true, ClassifyTimeout: 1}); err != nil {
+		t.Fatal(err)
+	}
+	was := classifyUnit
+	classifyUnit = 100 * time.Millisecond // the 1 second set is 100ms
+	t.Cleanup(func() { classifyUnit = was })
+	withoutMasker(t)
+	m := &heldMasker{}
+	t.Cleanup(gwmw.Mask(m))
+
+	s := New()
+	cs := []candidate{
+		{p: provider.Provider{ID: "p1", Key: "k1"}, model: "m1", rest: "p1#k1"},
+		{p: provider.Provider{ID: "p2", Key: "k2"}, model: "m2", rest: "p2#k2"},
+	}
+	t0 := time.Now()
+	_, err := s.askDecideTries(cs, []string{"debugging"}, before{}, false, "a message for the decider to read")
+	if err == nil {
+		t.Fatal("a decision held for masking comes back as an error")
+	}
+	var held maskingHeld
+	if !errors.As(err, &held) {
+		t.Fatalf("the error is not one masking held: %v", err)
+	}
+	if m.asked != 1 {
+		t.Fatalf("the masker was asked %d times, want once: no other candidate is asked to wait the same out", m.asked)
+	}
+	if resting := restingNow(t); len(resting) != 0 {
+		t.Fatalf("accounts rested for a masking hold: %v", resting)
+	}
+	if elapsed := time.Since(t0); elapsed > 3*classifyUnit {
+		t.Fatalf("the hold waited %s, want about one timeout", elapsed)
 	}
 }

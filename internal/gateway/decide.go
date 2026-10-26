@@ -377,7 +377,7 @@ func (s *Server) askJev(p provider.Provider, model string, intents []string, pre
 	if !p.SkipsRedaction() {
 		var err error
 		if text, prev.User, prev.Reply, err = maskedState(ctx, text, prev.User, prev.Reply); err != nil {
-			return verdict{}, err // fails closed: never sent unmasked
+			return verdict{}, maskingHeld{err} // fails closed: never sent unmasked
 		}
 	}
 	var l levelling
@@ -806,3 +806,10 @@ func agentEffort(proto provider.Protocol, body []byte) string {
 	}
 	return strings.ToLower(strings.TrimSpace(bodyEffort(proto, body)))
 }
+
+// maskingHeld is a decision held back by magpie's own masking (the local
+// model loading, or failing): not the provider's doing, so no account of
+// it rests, and no other is asked to wait the same again.
+type maskingHeld struct{ error }
+
+func (m maskingHeld) Unwrap() error { return m.error }

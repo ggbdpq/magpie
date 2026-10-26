@@ -303,7 +303,10 @@ func (s *Server) askDecideTries(cs []candidate, intents []string, prev before, e
 		}
 		var refused decideRefused
 		var answer answerError
+		var held maskingHeld
 		switch {
+		case errors.As(err, &held):
+			return verdict{}, err
 		case errors.As(err, &refused):
 			s.decideFailed(c, refused.status, refused.header, refused.body)
 		case errors.As(err, &answer), errors.Is(err, context.Canceled):

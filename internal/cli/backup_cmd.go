@@ -143,15 +143,30 @@ func passphrase(prompt string, confirm bool) (string, error) {
 }
 
 // stdin is read through one reader, so a second secret piped in is the
-// second line and not lost to the first one's buffer.
-var stdin = bufio.NewReader(os.Stdin)
+// second line and not lost to the first one's buffer. It is built on
+// first use, and again whenever os.Stdin has changed: package variables
+// are initialized before init functions run, so one built at start-up
+// would hold the dead stdin the Windows desktop build begins with
+// instead of the parent console its init attaches (#3737).
+var (
+	stdin     *bufio.Reader
+	stdinFile *os.File
+)
+
+// stdinReader is where prompted answers are read from.
+func stdinReader() *bufio.Reader {
+	if stdin == nil || stdinFile != os.Stdin {
+		stdinFile, stdin = os.Stdin, bufio.NewReader(os.Stdin)
+	}
+	return stdin
+}
 
 // secret reads what (a passphrase, a password) as passphrase does; piped
 // in, it is the next line of stdin.
 func secret(what, prompt string, confirm bool) (string, error) {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		line, err := stdin.ReadString('\n')
+		line, err := stdinReader().ReadString('\n')
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
 			if err != nil {

@@ -82,6 +82,12 @@ type Part struct {
 	Hits []Hit
 
 	cache string // opted-in Claude bridge breakpoint TTL; empty for none
+
+	// block reports the part came from one content block of the client's
+	// own: a client-marks prompt ends a rendered block there even when the
+	// client put no mark on it, or an earlier round's marked boundary is
+	// merged away and its cache write is found no more (#3835)
+	block bool
 }
 
 // The APIs a Part's Sealed reasoning is in.

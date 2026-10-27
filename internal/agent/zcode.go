@@ -25,7 +25,8 @@ import (
 //	  "options":{"apiKey":"magpie","baseURL":"http://127.0.0.1:3425"},
 //	  "enabled":true,"source":"custom",
 //	  "models":{"<id>":{"name":…,"limit":{"context":…,"output":…},"modalities":{…},
-//	    "reasoning":{"enabled":true,"variants":[…],"defaultVariant":…}}}}}}
+//	    "reasoning":{"enabled":true,"levels":[…],"defaultLevel":…,
+//	      "providerOptionsByLevel":{"<level>":{"thinking":{"type":"enabled"}}}}}}}}}
 //
 // An anthropic provider is asked at baseURL + /v1/messages. The model is
 // picked per task in ZCode's own picker and kept in its window, not in a
@@ -129,7 +130,7 @@ func zcode(home string) *Agent {
 // turned off in ZCode stays off. A sync (keep) leaves an address on another
 // machine as it found it (zcodeAddress).
 func zcodeProviderJSON(path string, keep bool) any {
-	was := zcodeVariants(path)
+	was := zcodeDefaultLevels(path)
 	ms := map[string]any{}
 	for _, m := range magpieModels("zcode") {
 		window := m.Context
@@ -148,7 +149,9 @@ func zcodeProviderJSON(path string, keep bool) any {
 		e := map[string]any{"name": m.Name, "limit": limit,
 			"modalities": map[string]any{"input": in, "output": []string{"text"}}}
 		if levels := zcodeLevels(m.Efforts); levels != nil {
-			e["reasoning"] = map[string]any{"enabled": true, "variants": levels, "defaultVariant": keptEffort(was[m.ID], levels, zcodeDefaultLevel(levels))}
+			e["reasoning"] = map[string]any{"enabled": true, "levels": levels,
+				"defaultLevel":           keptEffort(was[m.ID], levels, zcodeDefaultLevel(levels)),
+				"providerOptionsByLevel": zcodeOptionsByLevel(levels)}
 		}
 		ms[m.ID] = e
 	}
@@ -164,13 +167,16 @@ func zcodeProviderJSON(path string, keep bool) any {
 		"options": map[string]any{"apiKey": token, "baseURL": base}, "models": ms}
 }
 
-// zcodeVariants is the default variant each of magpie's models has in
-// config.json at path, which one set by hand keeps (keptEffort).
-func zcodeVariants(path string) map[string]string {
+// zcodeDefaultLevels is the default level each of magpie's models has in
+// config.json at path, which one set by hand keeps (keptEffort). A default
+// a magpie before #3852 wrote as defaultVariant is carried over: ZCode never
+// read that key, only magpie wrote it.
+func zcodeDefaultLevels(path string) map[string]string {
 	var c struct {
 		Provider map[string]struct {
 			Models map[string]struct {
 				Reasoning struct {
+					DefaultLevel   string `json:"defaultLevel"`
 					DefaultVariant string `json:"defaultVariant"`
 				} `json:"reasoning"`
 			} `json:"models"`
@@ -182,7 +188,10 @@ func zcodeVariants(path string) map[string]string {
 	}
 	out := map[string]string{}
 	for id, m := range c.Provider[magpieID].Models {
-		out[id] = m.Reasoning.DefaultVariant
+		out[id] = m.Reasoning.DefaultLevel
+		if out[id] == "" {
+			out[id] = m.Reasoning.DefaultVariant
+		}
 	}
 	return out
 }
@@ -337,6 +346,22 @@ func zcodeLevels(efforts []string) []string {
 		if !slices.Contains(out, e) {
 			out = append(out, e)
 		}
+	}
+	return out
+}
+
+// zcodeOptionsByLevel are the provider options ZCode sends for each of a
+// model's reasoning levels: thinking off for the level named "disabled",
+// on for every other (#3852 — with no provider options for a level ZCode
+// asks the model without thinking, and an always-thinking model refuses).
+func zcodeOptionsByLevel(levels []string) map[string]any {
+	out := map[string]any{}
+	for _, l := range levels {
+		t := "enabled"
+		if l == "disabled" {
+			t = "disabled"
+		}
+		out[l] = map[string]any{"thinking": map[string]any{"type": t}}
 	}
 	return out
 }

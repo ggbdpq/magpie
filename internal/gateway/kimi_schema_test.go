@@ -77,6 +77,54 @@ func TestKimiToolEnumTypes(t *testing.T) {
 	}
 }
 
+// A tool schema with items and a string enum goes to Kimi typed from
+// its items, an array, not from its values, a string: the node was read
+// from its enum first and went on with items beside a string, as a
+// Gemini one did before geminiSchemaType read its keywords first
+// (d71362af; yetone, #3867). A $ref's target is typed the same way. An
+// enum with no items or properties is still typed from its values.
+func TestKimiToolEnumTypesItemsBeforeEnum(t *testing.T) {
+	kimi, err := provider.FromPreset("kimi-code-cn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ask := `{"model":"kimi/m","tools":[{"type":"function","function":{"name":"show","description":"show rows","parameters":{"type":"object","properties":{` +
+		`"display":{"description":"columns to display","items":{"type":"string"},"enum":["name","size","date"]},` +
+		`"filter":{"description":"a filter","properties":{"q":{"type":"string"}},"const":"x"},` +
+		`"limit":{"type":"integer"},"m":{"enum":["a","b"]}}}}}]}`
+
+	out := kimiToolEnumTypes(kimi, provider.Chat, []byte(ask))
+	if !json.Valid(out) {
+		t.Fatalf("Kimi was sent invalid JSON: %s", out)
+	}
+	props := gjson.GetBytes(out, "tools.0.function.parameters.properties")
+	if got := props.Get("display.type").String(); got != "array" {
+		t.Errorf("display typed %q, want array: %s", got, props.Get("display").Raw)
+	}
+	if it := props.Get("display.items"); !it.Exists() || it.Get("type").String() != "string" {
+		t.Errorf("display's items: %s", it.Raw)
+	}
+	if got := props.Get("filter.type").String(); got != "object" {
+		t.Errorf("filter typed %q, want object: %s", got, props.Get("filter").Raw)
+	}
+	if got := props.Get("m.type").String(); got != "string" {
+		t.Errorf("an enum without items typed %q, want string", got)
+	}
+
+	ref := `{"model":"kimi/m","tools":[{"type":"function","function":{"name":"show","parameters":{"type":"object","properties":{"a":{"$ref":"#/$defs/choice"}},"$defs":{"choice":{"description":"a choice","items":{"type":"string"},"enum":["a","b"]}}}}}]}`
+	out = kimiToolRefTypes(kimi, provider.Chat, []byte(ref))
+	if !json.Valid(out) {
+		t.Fatalf("Kimi was sent invalid JSON: %s", out)
+	}
+	choice := gjson.GetBytes(out, "tools.0.function.parameters.$defs.choice")
+	if got := choice.Get("type").String(); got != "array" {
+		t.Errorf("the $ref's target typed %q, want array: %s", got, choice.Raw)
+	}
+	if it := choice.Get("items"); !it.Exists() || it.Get("type").String() != "string" {
+		t.Errorf("the target's items: %s", it.Raw)
+	}
+}
+
 // A schema a tool's $ref reaches goes to Kimi with a type: Kimi expands
 // the $ref and refuses a target with none, 400 "At path 'properties.b':
 // detected infinite recursion without termination condition", and Codex on

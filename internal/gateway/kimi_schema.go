@@ -95,7 +95,10 @@ type typeInsert struct {
 }
 
 // collectUntypedEnums adds, for each schema under node with an enum or a
-// const and no type, where it opens and the type its values have.
+// const and no type, where it opens and the type it is given: properties
+// or items say it before the values do (a string enum beside items is an
+// array, #3867, as geminiSchemaType reads its keywords first), and the
+// values' own type when no keyword does.
 func collectUntypedEnums(body []byte, node gjson.Result, inSchema bool, ins *[]typeInsert) {
 	switch {
 	case node.IsArray():
@@ -112,6 +115,14 @@ func collectUntypedEnums(body []byte, node gjson.Result, inSchema bool, ins *[]t
 				vals = []gjson.Result{c}
 			}
 			if t := enumType(vals); t != "" {
+				if kt := keywordType(node); kt == "object" || kt == "array" {
+					// properties or items say the type before the
+					// values do: a schema with items and a string
+					// enum given "string" went on with items beside
+					// a string, as a Gemini one did before
+					// geminiSchemaType read its keywords first (#3867)
+					t = `"` + kt + `"`
+				}
 				*ins = append(*ins, typeInsert{node.Index, t})
 			}
 		}
@@ -399,6 +410,13 @@ const allKimiTypes = `["string","number","integer","boolean","object","array","n
 // one (or the ones) its keywords and branches say, every type when they
 // say nothing, and "" for an enum no type Kimi takes beside one can hold.
 func kimiSchemaType(root, s gjson.Result) string {
+	if t := keywordType(s); t == "object" || t == "array" {
+		// properties or items say it before its values do: a schema
+		// with items and a string enum given "string" went on with
+		// items beside a string, as a Gemini one did before
+		// geminiSchemaType read its keywords first (#3867)
+		return `"` + t + `"`
+	}
 	if e := s.Get("enum"); e.IsArray() {
 		return enumType(e.Array())
 	}

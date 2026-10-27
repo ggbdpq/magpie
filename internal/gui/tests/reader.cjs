@@ -133,6 +133,18 @@ async function click(page, locator) {
   await locator.click();
 }
 
+// A page's boot — its goto and what the goto leads to — is served here by
+// the route handler alone, so on a loaded machine a navigation's bar is
+// pure serve time, and the 5s default the specs give their page left it no
+// room above (#3525: provider-save-busy, then privacy-hides-accounts at
+// load ~290). boot gives the page's navigations 15s and leaves the waits
+// inside a loaded page at the quick 5s, so a regression after boot still
+// fails fast. Call it after the page's own setDefaultTimeout, which would
+// set the navigation default back to its own.
+function boot(page) {
+  page.setDefaultNavigationTimeout(15000);
+}
+
 // Settings is drawn from each read of the settings, and opening the page
 // reads them twice: the page's own read, then the window's load() once the
 // state is in. Every row is replaced by the second draw, so a row found
@@ -202,4 +214,4 @@ async function settled(page) {
   await page.waitForFunction(() => !document.getAnimations().some((a) => a.playState === "running" && Number.isFinite(a.effect?.getComputedTiming().endTime)));
 }
 
-module.exports = { settled, inView, reach, wheelTo, click, openPart, watchSettingsReads, settingsDrawn, agentRow, openAgentSettings };
+module.exports = { settled, inView, reach, wheelTo, click, boot, openPart, watchSettingsReads, settingsDrawn, agentRow, openAgentSettings };

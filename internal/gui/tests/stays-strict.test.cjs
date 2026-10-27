@@ -10,6 +10,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { boot } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const sub = {
@@ -70,6 +71,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         t.after(() => browser.close());
         const page = await (await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: "reduce" })).newPage();
         page.setDefaultTimeout(5000);
+        boot(page);
         const errors = [], posts = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, posts));
@@ -107,8 +109,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     test(`${engine} ${lang}: the Routing page sets a provider's conversations to stay strictly`, async (t) => {
       const browser = await launch();
       t.after(() => browser.close());
-      const page = await (await browser.newContext({ viewport: { width: 1100, height: 1000 }, reducedMotion: "reduce" })).newPage();
-      page.setDefaultTimeout(5000);
+        const page = await (await browser.newContext({ viewport: { width: 1100, height: 1000 }, reducedMotion: "reduce" })).newPage();
+        page.setDefaultTimeout(5000);
+        boot(page);
       const errors = [], posts = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, posts));

@@ -11,6 +11,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { boot } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const quotas = () => [
@@ -56,6 +57,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await context.addInitScript((v) => { try { if (v === null) localStorage.removeItem("magpie.maskEmails"); else localStorage.setItem("magpie.maskEmails", v); } catch {} }, stored);
         const page = await context.newPage();
         page.setDefaultTimeout(5000);
+        boot(page);
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, settings, saved));
         await page.goto(url);

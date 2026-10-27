@@ -100,19 +100,29 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         return card.classList.contains("flash");
       }), "child or unrelated animations must not end the card's highlight");
       // Showing a native panel gives it focus, which refreshes its state and quotas.
-      // The first click must remain highlighted across that refresh.
+      // The first click must remain highlighted across that refresh. The flash is
+      // parked at 600 of its 1200 (#2686): left running it left the refresh and
+      // the reads only 600ms to catch it, which a busy machine loses, while a
+      // parked one has no deadline to beat and a restarted one reads its first
+      // milliseconds, never 600.
       await panel.evaluate(() => {
         window.__beforeFocusRefresh = document.querySelector('#panelQuota [data-card="codex|x@y.z"]');
-        window.__beforeFocusRefresh.getAnimations().find((a) => a.animationName === "flash").currentTime = 600;
+        const animation = window.__beforeFocusRefresh.getAnimations().find((a) => a.animationName === "flash");
+        animation.pause();
+        animation.currentTime = 600;
         window.dispatchEvent(new Event("focus"));
       });
       // the refresh read the same allowances, so the card is kept as drawn
       // (#3192); one drawn again would have to keep the highlight too
       await panel.waitForFunction(() => !loadBack.flight && !quotasLoading);
-      await panel.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
       assert(await panel.locator('#panelQuota [data-card="codex|x@y.z"]').evaluate((e) => e.classList.contains("flash")), "first-open focus refresh must preserve the highlight");
 
-      assert(await panel.locator('#panelQuota [data-card="codex|x@y.z"]').evaluate((e) => e.getAnimations().find((a) => a.animationName === "flash")?.currentTime >= 600), "refresh must continue the animation rather than restart it");
+      assert(await panel.locator('#panelQuota [data-card="codex|x@y.z"]').evaluate((e) => {
+        const animation = e.getAnimations().find((a) => a.animationName === "flash");
+        const continued = animation?.currentTime >= 600;
+        if (animation) animation.currentTime = animation.effect.getTiming().duration; // read: end the flash
+        return continued;
+      }), "refresh must continue the animation rather than restart it");
       await panel.waitForFunction(() => !document.querySelector('#panelQuota [data-card="codex|x@y.z"]').classList.contains("flash"));
 
       // a balance alone is a cell too, and its card is among the Balances
@@ -165,11 +175,21 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await win.evaluate(() => document.querySelector("#ledgerPane").hidden), true, "the Requests the page was left on are not the pane");
       await win.waitForFunction(() => document.querySelector('.subscription-card[data-provider="kimi"]')?.classList.contains("flash"));
       assert.deepEqual(await win.evaluate(() => window.__scrolled.slice(-1)), ["kimi"], "the provider's card is scrolled to");
-      await win.evaluate(async () => {
-        document.querySelector('.subscription-card[data-provider="kimi"]').getAnimations().find((a) => a.animationName === "flash").currentTime = 600;
+      // Parked as above (#2686): the quota refresh carries the animation's own
+      // time across, and a restarted one reads its first milliseconds, never
+      // 600. The read waits in the page, so no round trip hands the answer to
+      // a load-slowed machine.
+      assert(await win.evaluate(async () => {
+        const animation = document.querySelector('.subscription-card[data-provider="kimi"]').getAnimations().find((a) => a.animationName === "flash");
+        animation.pause();
+        animation.currentTime = 600;
         await loadQuotas();
-      });
-      assert(await win.locator('.subscription-card[data-provider="kimi"]').evaluate((e) => e.classList.contains("flash") && e.getAnimations().find((a) => a.animationName === "flash")?.currentTime >= 600), "main-window quota refresh must preserve the remaining highlight");
+        const card = document.querySelector('.subscription-card[data-provider="kimi"]');
+        const fresh = card.getAnimations().find((a) => a.animationName === "flash");
+        const kept = card.classList.contains("flash") && !!fresh && fresh.currentTime >= 600;
+        if (fresh) fresh.currentTime = fresh.effect.getTiming().duration; // read: end the flash
+        return kept;
+      }), "main-window quota refresh must preserve the remaining highlight");
       assert.equal(await win.evaluate(() => location.search.includes("tab=")), false, "the parameters are the page's own again");
       await visible(win, '.subscription-card[data-provider="kimi"]');
 

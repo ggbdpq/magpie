@@ -55,6 +55,14 @@ var Run = func(timeout time.Duration, args ...string) ([]byte, error) {
 	return out, err
 }
 
+// ProbeShell runs a probe's script, given as $1, in the distro's login
+// shell and, when its profile ends that shell (a source of a file that
+// isn't there, say), in a plain one: a distro probed through such a profile
+// found nothing, and nothing said why (#3754). A login run that ended is
+// dropped whole, and the plain shell's failure is left on stderr for the
+// caller to log.
+const ProbeShell = `out=$(sh -lc "$1") && printf '%s\n' "$out" || sh -c "$1"`
+
 var found struct {
 	sync.Mutex
 	at    map[string]time.Time
@@ -106,7 +114,7 @@ func Find(name string) (Tool, bool) {
 		}
 	}
 	for _, d := range names {
-		out, err := Run(30*time.Second, "-d", d, "-e", "sh", "-lc", probeScript(name))
+		out, err := Run(30*time.Second, "-d", d, "-e", "sh", "-c", ProbeShell, "sh", probeScript(name))
 		if err != nil {
 			continue
 		}
@@ -162,7 +170,7 @@ func In(distro, name string) (Tool, error) {
 	if fresh {
 		return t, nil
 	}
-	out, err := Run(30*time.Second, "-d", distro, "-e", "sh", "-lc", probeScript(name))
+	out, err := Run(30*time.Second, "-d", distro, "-e", "sh", "-c", ProbeShell, "sh", probeScript(name))
 	if err != nil {
 		return Tool{}, err
 	}

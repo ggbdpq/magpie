@@ -377,6 +377,15 @@ func buildModels(agent string) []catalog.Model {
 		_, ms, _ := find(id)
 		return ms
 	}
+	// read once for the list, and only when a ChatGPT account's model is
+	// in it (provider.CodexTiers)
+	var ultra map[string]bool
+	for _, e := range shown {
+		if e.Group == "" && e.Provider.Account != nil && e.Provider.Account.Agent == "codex" {
+			ultra = provider.UltraModels()
+			break
+		}
+	}
 	for i, e := range shown {
 		efforts := e.Efforts
 		if agent == "codex" {
@@ -429,7 +438,7 @@ func buildModels(agent string) []catalog.Model {
 		// the service tiers Codex is offered on it, as the gateway's own
 		// lists offer them: Fast in the Codex CLI magpie writes
 		// magpie-models.json for (#1530)
-		provider.CodexTiers(&m, e, members)
+		provider.CodexTiers(&m, e, members, ultra)
 		if agent == "codex" {
 			provider.CodexSeals(&m, e, members)
 		}

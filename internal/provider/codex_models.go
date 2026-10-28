@@ -929,13 +929,19 @@ func codexListedIf(shown []Entry, members func(id string) []Member, listed func(
 	s := settings.Load().ForAgent("codex")
 	find := func(id string) (Group, []Member, bool) { return Group{}, members(id), true }
 	apart := codexApart(shown, labels, listed)
+	// read once for the list, and only when a ChatGPT account's model is
+	// in it: UltraModels reads every Codex account's model list
+	var ultra map[string]bool
 	for i, e := range shown {
+		if ultra == nil && e.Group == "" && e.Provider.Account != nil && e.Provider.Account.Agent == "codex" {
+			ultra = UltraModels()
+		}
 		if !listed(e) {
 			continue
 		}
 		m := catalog.Model{ID: e.ID, Name: labels[i], Efforts: CodexEfforts(e), Images: e.Images || seen, Context: e.Context, AgentsV2: e.AgentsV2, Codex: e.Codex, Apart: apart[i]}
 		m.Compact = CompactFor(s, e, find)
-		CodexTiers(&m, e, members)
+		CodexTiers(&m, e, members, ultra)
 		CodexSeals(&m, e, members)
 		ms = append(ms, m)
 	}
@@ -1020,7 +1026,8 @@ func codexApart(shown []Entry, labels []string, listed func(Entry) bool) []strin
 // (codexcat.Entries turns them into the entry's service_tiers): one source
 // for every list Codex is handed, the gateway's and the models.json file
 // magpie writes for a Codex CLI that names magpie its provider (#1530).
-func CodexTiers(m *catalog.Model, e Entry, members func(id string) []Member) {
+// ultra is UltraModels, read once by the caller; nil offers no Ultrafast.
+func CodexTiers(m *catalog.Model, e Entry, members func(id string) []Member, ultra map[string]bool) {
 	// a provider the user added by its address is sent the tier Codex
 	// asks for as it is (hsiangron on X)
 	m.OwnTier = e.Group == "" && e.Provider.Preset == "" && e.Provider.Account == nil && e.Provider.ID != ""
@@ -1049,6 +1056,15 @@ func CodexTiers(m *catalog.Model, e Entry, members func(id string) []Member) {
 		if !m.Fast && fast {
 			m.Tiers = []string{codexFastTier}
 		}
+		return
+	}
+	// a ChatGPT account's GPT model is offered Ultrafast beside Fast where
+	// one of Codex's accounts lists it on the model: Codex sends only a
+	// tier its list names, and the gateway sends an ultrafast ask to an
+	// account that offers it, priority to the others. A group isn't, since
+	// its other members would be sent ultrafast as it is.
+	if a := e.Provider.Account; a != nil && a.Agent == "codex" && UltraOn(*e.Provider, e.Model, ultra) {
+		m.Tiers = []string{codexFastTier, "ultrafast"}
 		return
 	}
 	// so is a model of its own that has one, which no tier above names

@@ -405,6 +405,12 @@ func entriesAt(ms []catalog.Model, after int, effort string) []any {
 		if slug, ok := OwnSlug(m); ok && own[slug] != nil {
 			raw := own[slug]
 			e := ownEntry(raw, m.ID, shownName(m), after+i+1)
+			// the cache is the one account Codex last fetched it with; a
+			// model another account offers Ultrafast on gets it too
+			// (provider.CodexTiers)
+			if slices.Contains(m.Tiers, "ultrafast") {
+				withUltrafast(e)
+			}
 			// the window as magpie resolves it — the one the user set,
 			// else the account's list's — not the cache's, which is what
 			// magpie last handed Codex (#674)
@@ -790,6 +796,23 @@ func ownTiers(own map[string]map[string]any, m catalog.Model) []tier {
 // fastTier is Fast as Codex's own catalog writes it on its GPT models.
 var fastTier = tier{ID: "priority", Name: "Fast", Description: "1.5x speed, increased usage"}
 
+// ultrafastTier is Ultrafast as Codex's own catalog writes it (models_cache
+// of a Pro account, Codex 0.165).
+var ultrafastTier = tier{ID: "ultrafast", Name: "Ultrafast", Description: "The fastest available responses for latency-sensitive work."}
+
+// withUltrafast adds Ultrafast to an entry copied from Codex's cache that
+// doesn't list it, after the tiers it has.
+func withUltrafast(e map[string]any) {
+	raw, _ := e["service_tiers"].([]any)
+	for _, r := range raw {
+		if o, _ := r.(map[string]any); o["id"] == ultrafastTier.ID {
+			return
+		}
+	}
+	ts := slices.Clone(raw)
+	e["service_tiers"] = append(ts, map[string]any{"id": ultrafastTier.ID, "name": ultrafastTier.Name, "description": ultrafastTier.Description})
+}
+
 // namedTiers are the tiers ids name, each as Codex's own catalog writes it
 // on any of its models, else by its id: Fast's "priority" as Codex names
 // it, "ultrafast" as Ultrafast.
@@ -801,8 +824,9 @@ func namedTiers(own map[string]map[string]any, ids []string) []tier {
 		case fastTier.ID:
 			t = fastTier
 		case "ultrafast":
-			// as magpie names it, where Codex's own catalog doesn't
-			t.Name = "Ultrafast"
+			// as Codex's own catalog writes it, where the cache's account
+			// has no entry to name it from (provider.CodexTiers)
+			t = ultrafastTier
 		}
 	found:
 		for _, slug := range slices.Sorted(maps.Keys(own)) {

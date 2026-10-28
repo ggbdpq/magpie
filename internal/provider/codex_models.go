@@ -1170,6 +1170,15 @@ func CodexTiersWith(m *catalog.Model, e Entry, members func(id string) []Member,
 		}
 		return
 	}
+	// a ChatGPT account's GPT model is offered Ultrafast beside Fast where
+	// one of Codex's accounts lists it on the model: Codex sends only a
+	// tier its list names, and the gateway sends an ultrafast ask to an
+	// account that offers it, priority to the others. A group isn't, since
+	// its other members would be sent ultrafast as it is.
+	if a := e.Provider.Account; a != nil && a.Agent == "codex" && UltraOn(*e.Provider, e.Model, ultra) {
+		m.Tiers = []string{codexFastTier, "ultrafast"}
+		return
+	}
 	// so is a model of its own that has one, which no tier above names
 	// (an Anthropic key's Opus, an OpenAI key's GPT, a Cursor account's)
 	if len(m.Tiers) == 0 && CanFast(*e.Provider, e.Model) {

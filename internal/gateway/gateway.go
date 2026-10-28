@@ -6582,6 +6582,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		// Ark takes web_search in the shape its docs give, and only the include
 		// values it knows (search_ark.go)
 		body = forArkSearch(p, body)
+		if !keepsAgentMessages(p) {
+			body = agentMessagesAsUser(body)
+		}
 		if replay {
 			// its reasoning goes back as text, never left out: DeepSeek
 			// refuses a request without it (#1104)

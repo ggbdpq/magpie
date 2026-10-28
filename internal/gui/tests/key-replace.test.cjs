@@ -64,7 +64,11 @@ const want = {
   de: { edit: "Schlüssel ändern", hint: "Neuen Wert des Schlüssels einfügen", note: "Team nutzt jetzt den neuen Wert" },
 };
 
-const scrolled = (page) => page.evaluate(() => [window.scrollY, ...[...document.querySelectorAll("*")].filter((e) => e.scrollTop > 0).map((e) => `${e.className}:${e.scrollTop}`)].join(" "));
+// positions only: a scrolled box's className carries the transient .holds
+// marker (d74ef5e04 marks it on pointerover and wheel), and the replace's
+// re-render builds a fresh body that has it back only at the engine's next
+// hover pass, after this read — nothing had scrolled (#3476)
+const scrolled = (page) => page.evaluate(() => [window.scrollY, ...[...document.querySelectorAll("*")].filter((e) => e.scrollTop > 0).map((e) => e.scrollTop)].join(" "));
 const sideways = (page) => page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
 // a reader wheels the row into sight and points at it
 async function reach(page, row) {

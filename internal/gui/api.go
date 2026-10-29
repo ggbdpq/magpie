@@ -1993,6 +1993,13 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		// a size that would be refused leaves Full window as it was
+		if !in.On && in.At != nil {
+			if err := provider.CheckCompactAt(*in.At); err != nil {
+				fail(rw, err)
+				return
+			}
+		}
 		err := provider.SetFullContext(in.On)
 		if err == nil && !in.On && in.At != nil {
 			err = provider.SetCompactAt(*in.At)

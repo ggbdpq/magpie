@@ -194,8 +194,10 @@ func SetModelCompacts(providerID string, cs map[string]int) error {
 	}
 	s := settings.Load()
 	for model, n := range cs {
-		if n < 0 {
-			return errorf("a compaction threshold is a number of tokens, not %d", n)
+		if s.ModelCompacts[p.ID+"/"+model] != n {
+			if err := CheckCompactAt(n); err != nil {
+				return err
+			}
 		}
 		if err := settings.CheckModelKey("a compaction threshold", p.ID+"/"+model); err != nil {
 			return err
@@ -270,12 +272,27 @@ func SetAgentCompact(agent string, c *settings.AgentCompact) error {
 	return nil
 }
 
+// CheckCompactAt says whether n can be a compaction threshold: 0 (none
+// set) or at least catalog.LeastWindow tokens. Less can't hold an agent's
+// system prompt, so Codex and Claude Code told it compact on every turn
+// and spend the account's limit doing it (#4148: 400 typed for 400K was
+// saved as 400 tokens). The error names the size n was likely meant as.
+func CheckCompactAt(n int) error {
+	switch {
+	case n < 0:
+		return errorf("a compaction threshold is a number of tokens, not %d", n)
+	case n > 0 && n < catalog.LeastWindow:
+		return errorf("a compaction threshold of %d tokens can't hold an agent's system prompt, so it would compact on every turn; at least %d, or %dk for %dK", n, catalog.LeastWindow, n, n)
+	}
+	return nil
+}
+
 // SetCompactAt has every model without a threshold of its own compacted at
 // n tokens, Full window turned off; 0 is the working window again
 // (settings.WorkingWindow).
 func SetCompactAt(n int) error {
-	if n < 0 {
-		return errorf("a compaction threshold is a number of tokens, not %d", n)
+	if err := CheckCompactAt(n); err != nil {
+		return err
 	}
 	s := settings.Load()
 	if n == settings.WorkingWindow {

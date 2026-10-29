@@ -111,6 +111,10 @@ func codexPostTo(s *Server, body string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	// Codex's own name on every turn; a request without it is another
+	// client's, which reads no phase (phase_test.go's muse one)
+	req.Header.Set("User-Agent", "codex_cli_rs/0.55.0 (Ubuntu 24.04; x86_64)")
+	req.Header.Set("Originator", "codex_cli_rs")
 	s.Handler().ServeHTTP(rec, req)
 	return rec
 }

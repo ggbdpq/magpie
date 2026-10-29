@@ -160,6 +160,12 @@ func codexRuns(r *http.Request) bool {
 	return fromCodex(r.Header) || agentOf(r) == "codex" || codexTurnHeaders(r.Header)
 }
 
+// codexPhase says whether a request is Codex's, the one client whose
+// folding reads an assistant message's phase (phase.go, #2437).
+func codexPhase(r *http.Request) bool {
+	return fromCodex(r.Header) || agentOf(r) == "codex"
+}
+
 // startedByAgent says whether a request is from no agent magpie knows but
 // from something an agent started with its environment (a hook's script): it
 // came with the plain gateway token, not one magpie gave an agent, and
@@ -8331,10 +8337,15 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	// a message the upstream gave no phase gets one, as OpenAI's own
 	// models' do (phase.go, #2437), and its output_text parts the
 	// annotations list the AI SDK requires (output_text_shape.go); it
-	// goes last, as it holds events back
+	// goes last, as it holds events back. Codex's alone: another client
+	// (Muse Code) reads a streamed message's text as the final answer
+	// and refuses a later commentary.
 	var phases *phaseTidy
 	if proto == provider.Responses {
-		phases = &phaseTidy{sse: sse}
+		// built for every Responses client: its output_text parts carry
+		// their annotations (output_text_shape.go, #7363); a message's
+		// phase is written for Codex's alone (codexPhase, #4324)
+		phases = &phaseTidy{sse: sse, codex: codexPhase(r)}
 	}
 	// each item keeps the id it was added with (itemids.go): Copilot gives
 	// it another in every event
@@ -10966,7 +10977,7 @@ func makeEncoder(proto provider.Protocol, w *sseWriter, r *Request) streamEncode
 	case provider.Chat:
 		return &chatEncoder{w: w, model: model}
 	case provider.Responses:
-		return &responsesEncoder{w: w, model: model, named: r.Namespaced}
+		return &responsesEncoder{w: w, model: model, named: r.Namespaced, phase: r.phaseClient}
 	case provider.Gemini:
 		return &geminiEncoder{w: w, model: model}
 	}
@@ -10989,7 +11000,7 @@ func render(proto provider.Protocol, res Result, r *Request) []byte {
 	case provider.Chat:
 		return renderChat(res, model)
 	case provider.Responses:
-		return renderResponses(res, model, r.Namespaced)
+		return renderResponses(res, model, r.Namespaced, r.phaseClient)
 	case provider.Gemini:
 		return renderGemini(res, model)
 	}

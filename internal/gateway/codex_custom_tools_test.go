@@ -154,7 +154,7 @@ func TestCodexCustomToolNamespaced(t *testing.T) {
 func renderCall(t *testing.T, named map[string]nsTool) map[string]any {
 	t.Helper()
 	args, _ := json.Marshal(map[string]string{"input": "*** Begin Patch\n*** End Patch"})
-	out := renderResponses(Result{Parts: []Part{{Kind: ToolCall, ID: "c", Name: "apply_patch", Args: args}}}, "m", named)
+	out := renderResponses(Result{Parts: []Part{{Kind: ToolCall, ID: "c", Name: "apply_patch", Args: args}}}, "m", named, false)
 	var res struct {
 		Output []map[string]any `json:"output"`
 	}

@@ -268,7 +268,7 @@ func TestGeminiSignatureIsNotSealedAsClaudes(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "encrypted_content") || strings.Contains(rec.Body.String(), "gemini-") {
 		t.Fatalf("stream: %s", rec.Body)
 	}
-	b := renderResponses(Result{Parts: []Part{{Kind: Thinking, Text: "thought", Signature: "gemini-sig"}, {Kind: Thinking, Signature: "gemini-bare"}, {Kind: Text, Text: "hi"}}}, "m", nil)
+	b := renderResponses(Result{Parts: []Part{{Kind: Thinking, Text: "thought", Signature: "gemini-sig"}, {Kind: Thinking, Signature: "gemini-bare"}, {Kind: Text, Text: "hi"}}}, "m", nil, false)
 	if strings.Contains(string(b), "encrypted_content") || strings.Contains(string(b), "gemini-") {
 		t.Fatalf("render: %s", b)
 	}

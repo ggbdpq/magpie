@@ -100,9 +100,10 @@ func phaseOutput(output []any, done bool) bool {
 // that isn't reasoning (commentary) or the reply's end (final answer); a
 // reply that isn't a stream is held whole and gone through at the end.
 type phaseTidy struct {
-	sse  bool
-	buf  []byte   // a stream's part of an event, or a whole reply
-	held [][]byte // events waiting on the first's message's phase
+	sse   bool
+	codex bool    // the client folds by an assistant message's phase (Codex's alone, #4324); others still get their output_text parts' annotations
+	buf   []byte  // a stream's part of an event, or a whole reply
+	held  [][]byte // events waiting on the first's message's phase
 }
 
 func (t *phaseTidy) write(b []byte) []byte {
@@ -139,7 +140,7 @@ func (t *phaseTidy) flush() []byte {
 	b := t.buf
 	t.buf = nil
 	if !t.sse {
-		if out, ok := phaseWhole(b); ok {
+		if out, ok := phaseWhole(b, t.codex); ok {
 			return out
 		}
 		return b
@@ -222,6 +223,11 @@ func (t *phaseTidy) event(ev []byte) []byte {
 	case "response.output_item.done":
 		it := gjson.GetBytes(data, "item")
 		if it.Get("type").String() == "message" && it.Get("role").String() != "user" && it.Get("phase").String() == "" {
+			if !t.codex {
+				// another client reads the message's text as it streams:
+				// its done goes out at once, not held for a phase (#4324)
+				return ev
+			}
 			t.held = [][]byte{append([]byte(nil), ev...)}
 			return nil
 		}
@@ -249,7 +255,7 @@ func (t *phaseTidy) release(phase string) []byte {
 	if len(held) == 0 {
 		return nil
 	}
-	if phase != "" {
+	if phase != "" && t.codex {
 		if nb, ok := phasedEvent(eventData(held[0]), phase); ok {
 			held[0] = withData(held[0], nb)
 		}
@@ -269,7 +275,10 @@ func (t *phaseTidy) ended(ev, data []byte, done bool) []byte {
 	}
 	res, _ := e["response"].(map[string]any)
 	out, _ := res["output"].([]any)
-	phased := phaseOutput(out, done)
+	phased := false
+	if t.codex {
+		phased = phaseOutput(out, done)
+	}
 	if !annotateOutput(out) && !phased {
 		return ev
 	}
@@ -297,13 +306,16 @@ func phasedEvent(data []byte, phase string) ([]byte, bool) {
 
 // phaseWhole is a whole Responses reply with its messages' phases and
 // their parts' annotations.
-func phaseWhole(b []byte) ([]byte, bool) {
+func phaseWhole(b []byte, phase bool) ([]byte, bool) {
 	var res map[string]any
 	if decodeNumbers(b, &res) != nil || res == nil || res["object"] != "response" {
 		return nil, false
 	}
 	out, _ := res["output"].([]any)
-	phased := phaseOutput(out, res["status"] == "completed")
+	phased := false
+	if phase {
+		phased = phaseOutput(out, res["status"] == "completed")
+	}
 	if !annotateOutput(out) && !phased {
 		return nil, false
 	}

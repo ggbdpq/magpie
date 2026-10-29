@@ -211,9 +211,10 @@ func scanFrames(path string, off, skip int64, fn func([]byte) bool) (next, nextS
 		var n int64
 		frame, n, err = readFrame(r, frame, frameSize(f, at))
 		if err != nil {
-			// the end, a frame still being written, or not one at all:
-			// what was read stands, the rest waits for the next read
-			err = nil
+			// An incomplete frame waits; a malformed header has no safe boundary.
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				err = nil
+			}
 			return
 		}
 		start := at
@@ -226,9 +227,14 @@ func scanFrames(path string, off, skip int64, fn func([]byte) bool) (next, nextS
 			continue
 		}
 		if out, err = dec.DecodeAll(frame, out[:0]); err != nil {
+			if !errors.Is(err, zstd.ErrCRCMismatch) || len(pending) != 0 || first && skip != 0 {
+				end = start
+				return
+			}
+			// The complete frame has a known end, but its contents are lost.
+			next, nextSkip = at, 0
 			err = nil
-			end = start
-			return
+			continue
 		}
 		from := int64(0)
 		if first {

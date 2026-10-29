@@ -853,7 +853,15 @@ no pointer to the original, and is still counted twice (#5072).
 The other agents the Sessions page reads (Cline,
 Qoder, Grok, Droid, Cursor, Hermes, Alma) have no reader yet (#1607). The
 Context page reads the gateway's own traces, so it shows none of these
-calls. Verification: `TestMiniMaxCodeCalls`, `TestKimiCode*` (the
+calls. For packed dsh sessions, [`scanFrames`](../../internal/sessions/frames.go)
+passes a complete frame with a checksum mismatch when its boundary is known and
+no unfinished line crosses it. Other decoder errors and malformed headers stop
+the read; a missing dictionary or decoder limit does not prove corruption.
+Corruption within an unfinished line also stops the read.
+An incomplete frame waits for more bytes, since it can contain a valid frame's
+magic as data. The readers do not save a tail on an error and retry from the
+start; later records can remain unavailable until the source file is repaired.
+Verification: `TestMiniMaxCodeCalls`, `TestKimiCode*` (the
 reporter's real wire files), `TestCodeBuddyCalls`, `TestWorkBuddyCalls*`,
 `TestPiCalls*` (Pi 1.1.0's and omp 18.9.1's own files) and
 `TestWSLSessionsListed`.

@@ -854,13 +854,18 @@ The other agents the Sessions page reads (Cline,
 Qoder, Grok, Droid, Cursor, Hermes, Alma) have no reader yet (#1607). The
 Context page reads the gateway's own traces, so it shows none of these
 calls. For packed dsh sessions, [`scanFrames`](../../internal/sessions/frames.go)
-passes a complete frame with a checksum mismatch when its boundary is known and
-no unfinished line crosses it. Other decoder errors and malformed headers stop
-the read; a missing dictionary or decoder limit does not prove corruption.
-Corruption within an unfinished line also stops the read.
-An incomplete frame waits for more bytes, since it can contain a valid frame's
-magic as data. The readers do not save a tail on an error and retry from the
-start; later records can remain unavailable until the source file is repaired.
+stops at a malformed header or decoder error, including a checksum mismatch:
+the lost frame can contain a fork's end-seed marker or part of a line. An
+incomplete frame waits for more bytes, since it can contain a valid frame's
+magic as data. On a read error the summary retains its previous parse, if any,
+and the calls reader retains its previous cache; without one they expose no
+partial data. A changed size or modification time triggers a new read; the
+old tail is reused only if its sampled prefix still matches. A repair that
+preserves both may leave cached data unchanged until cache invalidation, and a
+rewrite missed by the sampled prefix can also retain an earlier parse. The
+summary and calls cache versions were raised to discard results produced by
+the former skip behavior. Later records remain unavailable until the source is
+repaired and detected.
 Verification: `TestMiniMaxCodeCalls`, `TestKimiCode*` (the
 reporter's real wire files), `TestCodeBuddyCalls`, `TestWorkBuddyCalls*`,
 `TestPiCalls*` (Pi 1.1.0's and omp 18.9.1's own files) and

@@ -325,6 +325,12 @@ func parseDsh(f file, old *state) *state {
 		// not a session's file: only its size and time
 		return &state{Size: f.size, Mod: f.mod.UnixNano()}
 	}
+	if err != nil {
+		if old != nil {
+			return old
+		}
+		return &state{}
+	}
 	c.Tail = nil
 	if err == nil {
 		c.Tail = markTail(f.path, next, nextSkip, end)

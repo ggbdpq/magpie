@@ -108,7 +108,7 @@ func readDshCalls(f file, old *callFile) (st *callFile, kept int, ok bool) {
 		next, err = scanAt(f.path, off, nil, func(b []byte, _, _ int64) bool { return each(b) })
 		end = next
 	}
-	if !ok || err != nil && !headed {
+	if !ok || err != nil {
 		return &callFile{Path: f.path, Agent: "dsh"}, 0, false
 	}
 	c.Tail = nil

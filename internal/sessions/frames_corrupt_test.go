@@ -24,13 +24,13 @@ func TestScanFramesCorruption(t *testing.T) {
 	malformed := []byte{0, 0, 0, 0}
 
 	for _, tc := range []struct {
-		name      string
-		middle    []byte
-		want      []string
-		badHeader bool
+		name    string
+		middle  []byte
+		want    []string
+		wantErr error
 	}{
-		{"complete corrupt frame", bad, []string{"first", "last"}, false},
-		{"malformed header", malformed, []string{"first"}, true},
+		{"complete corrupt frame", bad, []string{"first"}, zstd.ErrCRCMismatch},
+		{"malformed header", malformed, []string{"first"}, errFrame},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := filepath.Join(t.TempDir(), "session.zstd")
@@ -43,11 +43,7 @@ func TestScanFramesCorruption(t *testing.T) {
 			if !reflect.DeepEqual(lines, tc.want) {
 				t.Fatalf("lines = %q, want %q", lines, tc.want)
 			}
-			if tc.badHeader {
-				if !errors.Is(err, errFrame) || next != int64(len(first)) || end != next {
-					t.Fatalf("malformed header: next=%d skip=%d end=%d err=%v", next, skip, end, err)
-				}
-			} else if err != nil || next != int64(len(data)) || end != next || skip != 0 {
+			if !errors.Is(err, tc.wantErr) || next != int64(len(first)) || end != next || skip != 0 {
 				t.Fatalf("corrupt frame: next=%d skip=%d end=%d err=%v", next, skip, end, err)
 			}
 		})
@@ -87,7 +83,7 @@ func TestScanFramesIncompleteRetained(t *testing.T) {
 	}
 }
 
-func TestDshReadersRecoverAfterCorruptFrame(t *testing.T) {
+func TestDshReadersStopAtCorruptFrame(t *testing.T) {
 	enc, err := zstd.NewWriter(nil, zstd.WithEncoderCRC(true))
 	if err != nil {
 		t.Fatal(err)
@@ -106,17 +102,14 @@ func TestDshReadersRecoverAfterCorruptFrame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := file{path: p, size: info.Size(), mod: info.ModTime(), main: true}
+	f := file{path: p, size: info.Size(), mod: modOf(info.ModTime()), main: true}
 	s := parseDsh(f, nil)
-	if s.ID != "s" || s.Dsh == nil || s.Dsh.Tail == nil || s.Dsh.Tail.Off != int64(len(data)) {
+	if s.ID != "" || len(s.Models) != 0 {
 		t.Fatalf("summary: %+v", s)
 	}
 	calls, _, ok := readDshCalls(f, nil)
-	if !ok || len(calls.Calls) != 1 || calls.Calls[0].Input != 7 || calls.Dsh.Tail == nil || calls.Dsh.Tail.Off != int64(len(data)) {
+	if ok || len(calls.Calls) != 0 {
 		t.Fatalf("calls: %+v, ok=%v", calls, ok)
-	}
-	if again, kept, ok := readDshCalls(f, calls); !ok || kept != 1 || len(again.Calls) != 1 {
-		t.Fatalf("repeated read: %+v, kept=%d ok=%v", again, kept, ok)
 	}
 }
 

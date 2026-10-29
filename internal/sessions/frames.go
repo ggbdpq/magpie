@@ -227,14 +227,8 @@ func scanFrames(path string, off, skip int64, fn func([]byte) bool) (next, nextS
 			continue
 		}
 		if out, err = dec.DecodeAll(frame, out[:0]); err != nil {
-			if !errors.Is(err, zstd.ErrCRCMismatch) || len(pending) != 0 || first && skip != 0 {
-				end = start
-				return
-			}
-			// The complete frame has a known end, but its contents are lost.
-			next, nextSkip = at, 0
-			err = nil
-			continue
+			end = start
+			return
 		}
 		from := int64(0)
 		if first {

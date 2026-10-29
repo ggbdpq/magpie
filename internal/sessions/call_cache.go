@@ -44,6 +44,7 @@ import (
 // call's own time.
 // v14: Codex calls keep the thread that made the request.
 // v15: Codex calls keep the compaction marker independently of its duration.
+// v16: discard dsh calls read past a corrupt frame.
 // What each version names is what a cache of the one before it cannot serve:
 // the version is part of the directory's name, so a cache written by an older
 // one is never read (pruneCalls). It is raised for a change to every agent's
@@ -73,7 +74,9 @@ const callCacheVersion = "calls-v15"
 // pi 1, raft 1, cindy 2: a pi-subagents subagent's calls are its own
 // file's, on the model and provider it ran, not its tool result's on the
 // lead's (piSubagentsRead).
-var callParseVersions = map[string]int{"agy": 1, "antigravity": 1, "cindy": 2, "codex": 3, "pi": 1, "raft": 1, "zcode": 3}
+// dsh 1: a calls read that went past a corrupt frame (the skip the old code
+// did) kept what lay behind it; the read stops at the frame now (frames.go).
+var callParseVersions = map[string]int{"agy": 1, "antigravity": 1, "cindy": 2, "codex": 3, "dsh": 1, "pi": 1, "raft": 1, "zcode": 3}
 
 // CallCacheVersion is callCacheVersion and callParseVersions, for a cache
 // of what is made of the calls (usage's requests-v1.bin and heatmap): a

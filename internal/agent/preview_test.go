@@ -14,17 +14,18 @@ import (
 // a config of tens of thousands of lines (a Codex config.toml with its
 // [projects]).
 func TestDiffLines(t *testing.T) {
-	var big strings.Builder
-	for i := 0; i < 30000; i++ {
-		fmt.Fprintf(&big, "[projects.\"/p/%d\"]\ntrust_level = \"trusted\"\n", i)
+	// a config with n [projects] tables, and the few lines that changed
+	// around them
+	pair := func(n int) (before, after string) {
+		var big strings.Builder
+		for i := 0; i < n; i++ {
+			fmt.Fprintf(&big, "[projects.\"/p/%d\"]\ntrust_level = \"trusted\"\n", i)
+		}
+		return "model = \"magpie/deepseek/pro\"\nmodel_provider = \"magpie\"\napi_key = \"sk-live-123\"\n" + big.String() + "[model_providers.magpie]\nname = \"magpie\"\n",
+			"model = \"gpt-6\"\nopenai_key = \"sk-live-456\"\n" + big.String()
 	}
-	before := "model = \"magpie/deepseek/pro\"\nmodel_provider = \"magpie\"\napi_key = \"sk-live-123\"\n" + big.String() + "[model_providers.magpie]\nname = \"magpie\"\n"
-	after := "model = \"gpt-6\"\nopenai_key = \"sk-live-456\"\n" + big.String()
-	start := time.Now()
+	before, after := pair(30000)
 	got := diffLines(before, after)
-	if d := time.Since(start); d > 2*time.Second {
-		t.Fatalf("took %s", d)
-	}
 	want := []LineDiff{
 		{Op: "~", Text: `model = "gpt-6"`, Was: `model = "magpie/deepseek/pro"`},
 		{Op: "+", Text: "openai_key = ••••"},
@@ -35,6 +36,32 @@ func TestDiffLines(t *testing.T) {
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("got  %v\nwant %v", got, want)
+	}
+	// The 30,000-table diff is timed against eight 3,750-table ones on the
+	// same CPU budget, the shape #4109 left the TOML parse test with: a
+	// loaded runner slows both sides alike, when a bound in seconds cannot
+	// (#4104, the shape #2219 had). A diff that grows with size squared
+	// costs 8× the small budget where a linear one costs 1×, so the bound
+	// of 3 leaves about 3× on both sides.
+	smallBefore, smallAfter := pair(3750)
+	var best float64
+	var smallSum, largeAt time.Duration
+	for rep := 0; rep < 3; rep++ {
+		var sum time.Duration
+		for i := 0; i < 8; i++ {
+			start := time.Now()
+			diffLines(smallBefore, smallAfter)
+			sum += time.Since(start)
+		}
+		start := time.Now()
+		diffLines(before, after)
+		d := time.Since(start)
+		if r := float64(d) / float64(sum); rep == 0 || r < best {
+			best, smallSum, largeAt = r, sum, d
+		}
+	}
+	if best > 3 {
+		t.Fatalf("a 30k-table diff cost %.1f× the eight 3.75k ones (%v against %v): near the 8× of size squared, not the 1× of size", best, largeAt, smallSum)
 	}
 
 	// a key goes back to the line as deep as it, not one of the same name
@@ -54,7 +81,7 @@ func TestDiffLines(t *testing.T) {
 	for i := 0; i < 7000; i++ {
 		fmt.Fprintf(&table, "  \"m%d\": {\"name\": \"M %d\"},\n", i, i)
 	}
-	start = time.Now()
+	start := time.Now()
 	d := diffLines("{\n\"model\": \"magpie/x\",\n\"provider\": {\n"+table.String()+"}\n}\n", "{\n\"provider\": {\n}\n}\n")
 	if time.Since(start) > 2*time.Second || len(d) != 7001 || d[0] != (LineDiff{Op: "-", Text: `"model": "magpie/x",`}) {
 		t.Fatalf("a table taken out: %d lines in %s, first %v", len(d), time.Since(start), d[:min(len(d), 1)])

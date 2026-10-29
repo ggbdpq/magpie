@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // WindowSpec is what a plugin adds to magpie's window: its page
@@ -296,6 +298,136 @@ func htmlInside(dir, rel string) (string, bool) {
 	return file, true
 }
 
+// lstat and readlink stand in for the syscalls, for the tests.
+var (
+	lstat    = os.Lstat
+	readlink = os.Readlink
+)
+
+// evalLinks is filepath.EvalSymlinks that follows a Windows junction too
+// (an NTFS mount point): Go 1.23 marks a junction's Lstat neither
+// ModeSymlink nor ModeDir, and from then on EvalSymlinks gives up on any
+// path crossing one with ENOTDIR — with Scoop hanging magpie's data
+// folder off its install folder through a junction, that turned every
+// page of every plugin away (#4265). Here a component that reads a target
+// (a symbolic link, or a junction) is followed as the other one, and a
+// reparse point that reads no target (a OneDrive placeholder, say) counts
+// as the plain file or folder it serves. A link that leads nowhere, or a
+// loop of them, is an error for the caller to refuse.
+func evalLinks(path string) (string, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	volLen := len(filepath.VolumeName(path))
+	if volLen < len(path) && os.IsPathSeparator(path[volLen]) {
+		volLen++
+	}
+	vol := path[:volLen]
+	dest := vol
+	links := 0
+	for start, end := volLen, volLen; start < len(path); start = end {
+		for start < len(path) && os.IsPathSeparator(path[start]) {
+			start++
+		}
+		end = start
+		for end < len(path) && !os.IsPathSeparator(path[end]) {
+			end++
+		}
+		if end == start {
+			break
+		}
+		if path[start:end] == "." {
+			continue
+		}
+		if path[start:end] == ".." {
+			var r int
+			for r = len(dest) - 1; r >= volLen; r-- {
+				if os.IsPathSeparator(dest[r]) {
+					break
+				}
+			}
+			if r < volLen || dest[r+1:] == ".." {
+				if len(dest) > volLen {
+					dest += string(filepath.Separator)
+				}
+				dest += ".."
+			} else {
+				dest = dest[:r]
+			}
+			continue
+		}
+		if len(dest) > volLen && !os.IsPathSeparator(dest[len(dest)-1]) {
+			dest += string(filepath.Separator)
+		}
+		dest += path[start:end]
+
+		fi, err := lstat(dest)
+		if err != nil {
+			return "", err
+		}
+		// a link: a symbolic link anywhere, a junction on Windows
+		link := ""
+		if fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+			if s, err := readlink(dest); err == nil {
+				link = s
+			}
+		}
+		if link == "" {
+			// the name as the disk spells it, so both sides of the
+			// containment check read the same (Windows folds no case)
+			if name := fi.Name(); name != path[start:end] {
+				dest = dest[:len(dest)-(end-start)] + name
+			}
+			isDir := fi.Mode().IsDir()
+			if !isDir && fi.Mode()&os.ModeIrregular != 0 {
+				// a reparse point that reads no target reads no ModeDir
+				// on Windows either: ask the folder it serves
+				if s, err := os.Stat(dest); err == nil {
+					isDir = s.IsDir()
+				}
+			}
+			if !isDir && end < len(path) {
+				return "", syscall.ENOTDIR
+			}
+			continue
+		}
+		links++
+		if links > 255 {
+			return "", errors.New("evalLinks: too many links")
+		}
+		path = link + path[end:]
+		if v := len(filepath.VolumeName(link)); v > 0 {
+			// a link to another volume, or the whole of one
+			if v < len(link) && os.IsPathSeparator(link[v]) {
+				v++
+			}
+			vol = link[:v]
+			dest = vol
+			end = len(vol)
+		} else if len(link) > 0 && os.IsPathSeparator(link[0]) {
+			// a link to a path off the volume's root
+			volLen, dest, end = 1, link[:1], 1
+		} else {
+			// a link to a relative path: it hangs off the folder the
+			// link is in
+			var r int
+			for r = len(dest) - 1; r >= volLen; r-- {
+				if os.IsPathSeparator(dest[r]) {
+					break
+				}
+			}
+			if r < volLen {
+				dest = vol
+			} else {
+				dest = dest[:r]
+			}
+			end = 0
+		}
+	}
+	return filepath.Clean(dest), nil
+}
+
 // inside is rel joined to dir, if that stays inside dir: no "..", no
 // absolute path, and no symbolic link out of it.
 func inside(dir, rel string) (string, bool) {
@@ -308,11 +440,11 @@ func inside(dir, rel string) (string, bool) {
 		return "", false
 	}
 	full := filepath.Join(dir, clean)
-	realDir, err := filepath.EvalSymlinks(dir)
+	realDir, err := evalLinks(dir)
 	if err != nil {
 		return "", false
 	}
-	real, err := filepath.EvalSymlinks(full)
+	real, err := evalLinks(full)
 	if err != nil {
 		return "", false
 	}

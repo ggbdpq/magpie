@@ -651,6 +651,11 @@ func probe(ctx context.Context, p Provider, proto Protocol, url string, body []b
 		// a GLM Coding Plan's key at Zhipu's pay-as-you-go endpoint
 		res, err = RetryZhipuCoding(p, req, res, send)
 	}
+	if err == nil && proto == Chat {
+		// a model whose API takes the reply's length as
+		// max_completion_tokens alone (#4261)
+		res, err = RetryCompletionTokens(req, res, send)
+	}
 	if err == nil {
 		// Zhipu's Responses API refuses a key 200, in an envelope: the
 		// refusal it is, not a green check (@xanahopper on X)

@@ -4759,9 +4759,11 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// OpenAI as well
 			body = withoutFields(body, "enable_thinking", "thinking")
 		}
-		if p.IsBedrock() || p.IsAzure() {
+		if p.IsBedrock() || p.IsAzure() || !s.fits(p.ID, completionTokensRefused, proto) {
 			// Azure's reasoning deployments (o4-mini, gpt-5) turn
-			// max_tokens away as Bedrock's GPT models do
+			// max_tokens away as Bedrock's GPT models do, and so does an
+			// API that has said so by name (catalog.
+			// CompletionTokensRefused, #4261)
 			body = asCompletionTokens(body)
 		}
 	case provider.Gemini:
@@ -5064,6 +5066,23 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// from then on
 			if nb := plainItemIDs(body); !bytes.Equal(nb, body) {
 				refused = append(refused, itemIDsRefused(model))
+				body = nb
+				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
+					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+				}
+				continue
+			}
+		}
+		if len(fs) == 0 && len(ms) == 0 && proto == provider.Chat && catalog.CompletionTokensRefused(res.StatusCode, b) {
+			// a model whose API takes the reply's length as
+			// max_completion_tokens alone (OpenAI's own newest among them,
+			// #4261): asked again with the client's length under that
+			// name, and so from then on, as Bedrock's and Azure's are
+			// from the start (asCompletionTokens). Asked again in vain,
+			// the request names no max_tokens for the words to match, and
+			// the vendor's answer stands.
+			if nb := asCompletionTokens(body); !bytes.Equal(nb, body) {
+				refused = append(refused, completionTokensRefused)
 				body = nb
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
 					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
@@ -5846,7 +5865,9 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 				body = nb
 			}
 		}
-		if to == provider.Chat && (p.IsBedrock() || p.IsAzure()) {
+		if to == provider.Chat && (p.IsBedrock() || p.IsAzure() || !s.fits(p.ID, completionTokensRefused, to)) {
+			// Azure's reasoning deployments turn max_tokens away, and so
+			// does an API that has said so by name (#4261)
 			body = asCompletionTokens(body)
 		}
 		if to == provider.Responses && !keepsLoneNone(p) {
@@ -5914,6 +5935,17 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 			s.markUnfit(p.ID, outputFillRefused(model), to)
 			r := *req
 			r.MaxTokens, req, filledOutput = 0, &r, false
+			continue
+		}
+		if to == provider.Chat && catalog.CompletionTokensRefused(res.StatusCode, b) && !bytes.Equal(asCompletionTokens(body), body) {
+			// a model whose API takes the reply's length as
+			// max_completion_tokens alone (OpenAI's own newest among them,
+			// #4261): asked again with the length under that name, and so
+			// from then on. Asked again in vain, the body names no
+			// max_tokens for the words to match, and the vendor's answer
+			// stands.
+			log.Printf("gateway: %s turned away max_tokens for %s (%d); asked as max_completion_tokens from now on", p.ID, model, res.StatusCode)
+			s.markUnfit(p.ID, completionTokensRefused, to)
 			continue
 		}
 		if req.LoadedInPlace && refusesField(res.StatusCode, b, additionalToolsItem) && bytes.Contains(body, []byte(`"`+additionalToolsItem+`"`)) {
@@ -7685,6 +7717,13 @@ func withFields(body []byte, fields map[string]any) []byte {
 // asCompletionTokens asks a chat request's reply length as
 // max_completion_tokens in place of max_tokens, as Bedrock's OpenAI
 // endpoint takes it: its GPT models turn max_tokens away (#176).
+// completionTokensRefused is how unfit remembers a provider whose API
+// turned max_tokens away by name (OpenAI's "Unsupported parameter:
+// 'max_tokens' is not supported with this model. Use
+// 'max_completion_tokens' instead.", #4261): such a provider's chats are
+// asked with the reply's length under that name from the start.
+const completionTokensRefused = "max_tokens"
+
 func asCompletionTokens(body []byte) []byte {
 	if !bytes.Contains(body, []byte(`"max_tokens"`)) {
 		return body

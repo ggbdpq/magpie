@@ -1953,6 +1953,28 @@ func WrongEndpoint(status int, body []byte) bool {
 	return false
 }
 
+// CompletionTokensRefused is a 400 naming max_tokens as the parameter a
+// model won't take, asking for max_completion_tokens instead (OpenAI's
+// "Unsupported parameter: 'max_tokens' is not supported with this model.
+// Use 'max_completion_tokens' instead.", #4261): the gateway and a
+// provider's test ask such a request again with the reply's length under
+// the name it takes.
+func CompletionTokensRefused(status int, body []byte) bool {
+	if status != http.StatusBadRequest {
+		return false
+	}
+	msg := strings.ToLower(string(Words(body)))
+	for _, phrase := range []string{
+		"'max_tokens' is not supported with this model",
+		"max_tokens is not supported with this model",
+	} {
+		if strings.Contains(msg, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 // Words is an error body as its words are matched: a JSON body that
 // escapes what isn't ASCII as \uXXXX (Python's json.dumps does by default)
 // has its strings decoded and put after it, one to a line, so "用量",

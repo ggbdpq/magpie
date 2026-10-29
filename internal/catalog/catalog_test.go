@@ -478,3 +478,26 @@ func TestProviderAllocsGrowWithModels(t *testing.T) {
 		t.Errorf("after Reset, Provider(openai) = %v, want the new load's m-new", ms)
 	}
 }
+
+// A 400 naming max_tokens as the parameter a model won't take asks for
+// max_completion_tokens instead (#4261); a 400 over anything else, or over
+// another status, isn't one.
+func TestCompletionTokensRefused(t *testing.T) {
+	for _, c := range []struct {
+		status int
+		body   string
+		want   bool
+	}{
+		{400, `{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.","param":"max_tokens","code":"unsupported_parameter"}}`, true},
+		{400, `{"error":{"message":"'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead."}}`, true},
+		{400, `{"error":{"message":"max_tokens is not supported with this model"}}`, true},
+		{422, `{"error":{"message":"'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead."}}`, false},
+		{400, `{"error":{"message":"Invalid 'max_tokens': integer below minimum value.","param":"max_tokens"}}`, false},
+		{400, `{"error":{"message":"max_output_tokens is not supported with this model"}}`, false},
+		{400, `{"error":{"message":"this model requires max_completion_tokens"}}`, false},
+	} {
+		if got := CompletionTokensRefused(c.status, []byte(c.body)); got != c.want {
+			t.Errorf("CompletionTokensRefused(%d, %s) = %v", c.status, c.body, got)
+		}
+	}
+}

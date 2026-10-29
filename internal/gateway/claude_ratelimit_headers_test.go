@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -84,6 +85,32 @@ func TestClaudeSubscriptionReplySaysTheAllowance(t *testing.T) {
 	// another agent's run (Codex's, Cursor's) has no Claude allowance to say
 	if rec := ask("Agent", owner, true, answer); rec.Header().Get("anthropic-ratelimit-unified-5h-utilization") != "" {
 		t.Errorf("another agent's reply says %v", rec.Header())
+	}
+}
+
+// A usage-based enterprise seat has no 5-hour or 7-day window: its one
+// reading is the overage window Claude Code names rateLimitType "overage",
+// which renews when the billing period does, not at resetsAt. It is said as
+// anthropic-ratelimit-unified-overage-*, the window Claude Code reads
+// (#4241).
+func TestClaudeOverageSeatSaysItsWindow(t *testing.T) {
+	user := "overage-" + strconv.FormatInt(time.Now().UnixNano(), 36) + "@example.com"
+	reset := time.Now().Add(6 * 24 * time.Hour).Truncate(time.Second).Unix()
+	event := `{"status":"allowed","rateLimitType":"overage","utilization":0.84,"resetsAt":1,"overageResetsAt":` + strconv.FormatInt(reset, 10) + `}`
+	ls := claudeLimits(json.RawMessage(event))
+	if len(ls) != 1 || ls[0].Kind != "overage" || ls[0].Used != 0.84 || ls[0].ResetsAt != reset {
+		t.Fatalf("limits: %+v", ls)
+	}
+	provider.NoteClaudeLimits(user, ls)
+	rec := httptest.NewRecorder()
+	limitHeaders(rec, "claude\x00"+user)
+	for k, v := range map[string]string{
+		"anthropic-ratelimit-unified-overage-utilization": "0.84",
+		"anthropic-ratelimit-unified-overage-reset":       strconv.FormatInt(reset, 10),
+	} {
+		if got := rec.Header().Get(k); got != v {
+			t.Errorf("%s %q, want %q (headers %v)", k, got, v, rec.Header())
+		}
 	}
 }
 

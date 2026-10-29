@@ -149,6 +149,12 @@ func TestPluginPageServedShutIn(t *testing.T) {
 // What a page didn't declare it reads is refused by the server too, not
 // only by the window; a page sets its own options and no other plugin's.
 func TestPluginPageReadsWhatItDeclared(t *testing.T) {
+	// -count=2 runs twice in one binary: the last pageSetAllowed of the
+	// first run leaves a timestamp two seconds ahead, and that refusal
+	// would fail the second run's first set.
+	pageSets.Lock()
+	pageSets.at = map[string]time.Time{}
+	pageSets.Unlock()
 	on, off := pagePlugins(t)
 	h := pageMux()
 	post := func(path, body string) *httptest.ResponseRecorder {

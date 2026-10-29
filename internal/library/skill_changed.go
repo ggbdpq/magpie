@@ -66,7 +66,10 @@ func libraryHash(name string) string {
 	edits.Lock()
 	m, ok := edits.m[dir]
 	edits.Unlock()
-	if ok && !at.IsZero() && m.at.Equal(at) {
+	// a folder written in the last settleFor is kept from the memo: a
+	// write within the time the file system can tell apart keeps the
+	// time the memo was kept by (treememo.go)
+	if ok && !at.IsZero() && m.at.Equal(at) && time.Since(at) > settleFor {
 		return m.hash
 	}
 	h := hashFiles(dir, true)

@@ -122,6 +122,33 @@ func TestUpdateKeepsASkillChangedHere(t *testing.T) {
 	}
 }
 
+// An edit through an agent's link can land in the same tick of the file
+// system's times as the files the page has already seen (under the full
+// suite's load on Linux, #4106): a folder whose newest change is that
+// fresh can't be told from what was seen by the memo's time alone.
+func TestUpdateSeesAnEditInTheSameTick(t *testing.T) {
+	h := sandbox(t)
+	version := "one"
+	fakeSkillTarball(t, &version)
+	ok(t)(InstallSkills("owner/repo", []string{"skills/pdf"}, []string{"claude"}))
+	if s := skillView(t, "pdf"); s.Edited {
+		t.Fatal("pdf is said to be changed as installed")
+	}
+	// the edit's write pinned to the time the page last saw, as a write
+	// within the file system's granularity keeps: the memo of the
+	// library's hash mustn't answer for a folder written that recently
+	at, err := changedAt(skillDir("pdf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(h, ".claude/skills/pdf/forms.md")
+	write(t, p, "my forms")
+	os.Chtimes(p, at, at)
+	if s := skillView(t, "pdf"); !s.Edited {
+		t.Fatal("an edit in the same tick isn't said to be")
+	}
+}
+
 // An agent given its skills as copies edits one: until a sync takes the
 // edit in, the library's folder is GitHub's, and the copy is what was
 // changed. An update asks all the same.

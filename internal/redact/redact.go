@@ -915,6 +915,9 @@ func Preview(s string, o Options) string {
 		if kind == "USERNAME" {
 			return standInOf(v) // a user name's made-up name (shape.go)
 		}
+		if kind == "HOSTNAME" {
+			return hostStandInOf(v) // a host's stand-in under .example (shape.go)
+		}
 		if kind == "IP" {
 			if at, _, ok := ipStandIns(v); ok {
 				return at(0) // an address's public-ip- name (shape.go)

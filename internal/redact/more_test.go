@@ -100,6 +100,9 @@ func TestMoreKinds(t *testing.T) {
 			if g.kind == "USERNAME" {
 				p = standInOf(g.value) // a made-up name (shape.go)
 			}
+			if g.kind == "HOSTNAME" {
+				p = hostStandInOf(g.value) // a stand-in under .example (shape.go)
+			}
 			if at, n, ok := ipStandIns(g.value); g.kind == "IP" && ok {
 				for i := 0; i < n; i++ { // a public-ip- name (shape.go)
 					if strings.Contains(out, at(i)) {

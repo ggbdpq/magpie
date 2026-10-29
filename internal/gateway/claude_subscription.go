@@ -4094,14 +4094,21 @@ func claudeLimits(raw json.RawMessage) []provider.ClaudeLimit {
 		ResetsAt    int64   `json:"resetsAt"`
 	}
 	var info struct {
-		Status         string            `json:"status"`
-		RateLimitType  string            `json:"rateLimitType"`
-		Utilization    *float64          `json:"utilization"`
-		ResetsAt       int64             `json:"resetsAt"`
-		UnifiedWindows map[string]window `json:"unifiedWindows"`
+		Status          string            `json:"status"`
+		RateLimitType   string            `json:"rateLimitType"`
+		Utilization     *float64          `json:"utilization"`
+		ResetsAt        int64             `json:"resetsAt"`
+		OverageResetsAt int64             `json:"overageResetsAt"`
+		UnifiedWindows  map[string]window `json:"unifiedWindows"`
 	}
 	if json.Unmarshal(raw, &info) != nil {
 		return nil
+	}
+	// a usage-based seat's overage window renews when its billing period
+	// does, which Claude Code names apart from resetsAt (#4241)
+	resets := info.ResetsAt
+	if info.RateLimitType == "overage" && info.OverageResetsAt > 0 {
+		resets = info.OverageResetsAt
 	}
 	var out []provider.ClaudeLimit
 	for kind, w := range info.UnifiedWindows {
@@ -4110,9 +4117,9 @@ func claudeLimits(raw json.RawMessage) []provider.ClaudeLimit {
 	if _, told := info.UnifiedWindows[info.RateLimitType]; !told && info.RateLimitType != "" {
 		switch {
 		case info.Utilization != nil:
-			out = append(out, provider.ClaudeLimit{Kind: info.RateLimitType, Used: *info.Utilization, ResetsAt: info.ResetsAt})
+			out = append(out, provider.ClaudeLimit{Kind: info.RateLimitType, Used: *info.Utilization, ResetsAt: resets})
 		case info.Status == "rejected":
-			out = append(out, provider.ClaudeLimit{Kind: info.RateLimitType, Used: 1, ResetsAt: info.ResetsAt})
+			out = append(out, provider.ClaudeLimit{Kind: info.RateLimitType, Used: 1, ResetsAt: resets})
 		}
 	}
 	return out
@@ -6083,6 +6090,7 @@ var ratelimitWindows = map[string]string{
 	"five_hour":                  "5h",
 	"seven_day":                  "7d",
 	"seven_day_overage_included": "7d_oi",
+	"overage":                    "overage",
 }
 
 // serveSubscription answers a request through an agent's own binary: a new

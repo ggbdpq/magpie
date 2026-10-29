@@ -258,6 +258,14 @@ type Request struct {
 	// draws asks the model for images beside text: a drawing asked on
 	// Gemini's API of a model not named for images (drawCodeAssist).
 	draws bool
+	// phaseClient: the caller reads an assistant message's phase
+	// (phase.go) — Codex folds what was said on the way to a call by it.
+	// Only Codex asks for the field; a client magpie doesn't know may
+	// read a streamed message's text as the final answer and refuse the
+	// reply when the item's done says commentary after it (Muse Code
+	// kills its run: "message item … changed phase from final_answer to
+	// commentary").
+	phaseClient bool
 
 	// strictSaid has a Chat request's tools say strict as each is set,
 	// false included, as OpenCode's own do: Zen's free tier

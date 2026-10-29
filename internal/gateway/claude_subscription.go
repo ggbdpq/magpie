@@ -7651,6 +7651,7 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name 
 // is answered with (bridgeFailed).
 func relayFailing(w http.ResponseWriter, r *http.Request, from provider.Protocol, name string, req *Request, events <-chan Event, usage *Usage,
 	abort func(code int, msg string), begin func(), ended func(said, stop string, ok bool)) (int, string) {
+	req.phaseClient = codexPhase(r)
 	stream := req.Stream
 	if stream {
 		// an error before any of the answer — out of quota, rate limited —

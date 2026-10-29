@@ -37,7 +37,7 @@ func phases(body string) (streamed, ended []string) {
 
 func encoded(evs ...Event) string {
 	rec := httptest.NewRecorder()
-	enc := encoder(provider.Responses, newSSEWriter(rec), &Request{Model: "m"})
+	enc := encoder(provider.Responses, newSSEWriter(rec), &Request{Model: "m", phaseClient: true})
 	for _, ev := range evs {
 		enc.event(ev)
 	}
@@ -120,7 +120,7 @@ func TestRenderedMessagesSayPhase(t *testing.T) {
 	var out struct {
 		Output []map[string]any `json:"output"`
 	}
-	if err := json.Unmarshal(renderResponses(res, "m", nil), &out); err != nil {
+	if err := json.Unmarshal(renderResponses(res, "m", nil, true), &out); err != nil {
 		t.Fatal(err)
 	}
 	if out.Output[0]["phase"] != "commentary" {
@@ -128,7 +128,7 @@ func TestRenderedMessagesSayPhase(t *testing.T) {
 	}
 	res = Result{Stop: "stop", Parts: []Part{{Kind: Text, Text: "Done."}}}
 	out.Output = nil
-	if err := json.Unmarshal(renderResponses(res, "m", nil), &out); err != nil {
+	if err := json.Unmarshal(renderResponses(res, "m", nil, true), &out); err != nil {
 		t.Fatal(err)
 	}
 	if out.Output[0]["phase"] != "final_answer" {
@@ -223,6 +223,73 @@ func TestRelayedStreamSaysPhase(t *testing.T) {
 	}
 	rec := codexPostTo(New(), `{"model":"relay/gpt-5.4","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`)
 	if streamed, ended := phases(rec.Body.String()); rec.Code != 200 || strings.Join(streamed, ",") != "commentary" || strings.Join(ended, ",") != "commentary" {
+		t.Fatalf("%d streamed %q ended %q\n%s", rec.Code, streamed, ended, rec.Body)
+	}
+}
+
+// A client magpie doesn't know (Muse Code) gets no phase: it reads a
+// streamed message's text as the final answer and kills its run when the
+// item's done says commentary after it ("message item … changed phase from
+// final_answer to commentary"). Its done goes out at once, too, where
+// Codex's waits for its phase.
+func TestOtherClientGetsNoPhase(t *testing.T) {
+	rec := httptest.NewRecorder()
+	enc := encoder(provider.Responses, newSSEWriter(rec), &Request{Model: "m"})
+	for _, ev := range []Event{
+		{Kind: KText, Text: "Let me look."},
+		{Kind: KToolStart, ID: "c1", Name: "shell"},
+		{Kind: KToolArgs, Text: `{}`},
+		{Kind: KStop, Stop: "tool"},
+	} {
+		enc.event(ev)
+	}
+	enc.finish()
+	body := rec.Body.String()
+	if strings.Contains(body, "phase") {
+		t.Fatalf("a client magpie doesn't know got a phase\n%s", body)
+	}
+	streamed, _ := phases(body)
+	if len(streamed) != 1 || streamed[0] != "" {
+		t.Fatalf("streamed phases %q, want none\n%s", streamed, body)
+	}
+	done, added := -1, -1
+	for i, ev := range events(body) {
+		switch ev["type"] {
+		case "response.output_item.done":
+			if it, _ := ev["item"].(map[string]any); it["type"] == "message" && done < 0 {
+				done = i
+			}
+		case "response.output_item.added":
+			if it, _ := ev["item"].(map[string]any); it["type"] == "function_call" && added < 0 {
+				added = i
+			}
+		}
+	}
+	if done < 0 || added < 0 || done > added {
+		t.Fatalf("message done at %d, function call added at %d\n%s", done, added, body)
+	}
+}
+
+// Through the gateway: Muse Code's own User-Agent gets no phase, Codex's
+// still does (TestRelayedStreamSaysPhase).
+func TestMuseClientStreamHasNoPhase(t *testing.T) {
+	fresh(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse(evMsg, evFcAdd,
+			`data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc1","call_id":"c1","name":"shell","arguments":"{}"}}`,
+			`data: {"type":"response.completed","response":{"id":"r","status":"completed","output":[{"type":"message","id":"m1","role":"assistant","content":[]},{"type":"function_call","id":"fc1","call_id":"c1","name":"shell","arguments":"{}"}]}}`))
+	}))
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Models: []string{"gpt-5.4"}, Responses: up.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"relay/gpt-5.4","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`))
+	req.Header.Set("User-Agent", "muse-build/1.4.14 (non-interactive; linux-x86_64)")
+	New().Handler().ServeHTTP(rec, req)
+	if streamed, ended := phases(rec.Body.String()); rec.Code != 200 || strings.Join(streamed, ",") != "" || strings.Join(ended, ",") != "" {
 		t.Fatalf("%d streamed %q ended %q\n%s", rec.Code, streamed, ended, rec.Body)
 	}
 }

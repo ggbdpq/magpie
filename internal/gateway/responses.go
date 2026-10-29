@@ -2099,6 +2099,10 @@ type responsesEncoder struct {
 	// until its phase is known (phase.go, #2437)
 	heldMsg map[string]any
 	held    []heldEvent
+	// phase writes assistant messages their phase: Codex's alone (ir.go's
+	// phaseClient), which folds by the field. A client magpie doesn't
+	// know gets no phase and no wait for one.
+	phase bool
 }
 
 type heldEvent struct {
@@ -2169,12 +2173,12 @@ func (e *responsesEncoder) write(typ string, fields map[string]any) {
 }
 
 // release sends the waiting message's events, the message given phase
-// (or none, for "").
+// (or none, for ""). The phase goes on Codex's replies alone.
 func (e *responsesEncoder) release(phase string) {
 	if e.heldMsg == nil {
 		return
 	}
-	if phase != "" {
+	if phase != "" && e.phase {
 		e.heldMsg["phase"] = phase
 	}
 	held := e.held
@@ -2236,9 +2240,14 @@ func (e *responsesEncoder) closeAs(sealed json.RawMessage) {
 		part := map[string]any{"type": "output_text", "text": t, "annotations": []any{}, "logprobs": []any{}}
 		e.send("response.content_part.done", map[string]any{"item_id": e.itemID, "output_index": e.item, "content_index": 0, "part": part})
 		m := map[string]any{"id": e.itemID, "type": "message", "role": "assistant", "status": "completed", "content": []map[string]any{part}}
-		// its done waits for what comes next to say its phase
-		e.release(phaseCommentary)
-		item, e.heldMsg = m, m
+		// its done waits for what comes next to say its phase — Codex's
+		// alone; every other client reads the item as it streamed
+		if e.phase {
+			e.release(phaseCommentary)
+			item, e.heldMsg = m, m
+		} else {
+			item = m
+		}
 	case Thinking:
 		t := e.text.String()
 		summary := []map[string]any{}
@@ -2482,7 +2491,7 @@ func responsesSearchItem(query string, hits []Hit) map[string]any {
 }
 
 // renderResponses is the non-streaming reply.
-func renderResponses(res Result, model string, named map[string]nsTool) []byte {
+func renderResponses(res Result, model string, named map[string]nsTool, phase bool) []byte {
 	output := []any{}
 	for _, p := range res.Parts {
 		switch p.Kind {
@@ -2551,7 +2560,9 @@ func renderResponses(res Result, model string, named map[string]nsTool) []byte {
 		// as the stream says it (#248)
 		status, incomplete = "incomplete", map[string]any{"reason": "content_filter"}
 	}
-	phaseOutput(output, status == "completed")
+	if phase {
+		phaseOutput(output, status == "completed")
+	}
 	b, _ := json.Marshal(map[string]any{"id": id, "object": "response", "created_at": time.Now().Unix(), "status": status,
 		"model": model, "output": output, "usage": res.Usage.responses(), "incomplete_details": incomplete,
 		"parallel_tool_calls": true, "tool_choice": "auto", "tools": []any{}, "error": nil})

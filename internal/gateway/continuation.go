@@ -453,6 +453,7 @@ func (c *continuation) unecho(s string) string {
 // streamRetries times; one that can't go on ends with the error in the
 // client's own protocol, as it used to.
 func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p provider.Provider, from, to provider.Protocol, request *Request, model string, zen *zenReply, u *Usage) (int, string) {
+	request.phaseClient = codexPhase(r)
 	sw := newSSEWriter(w)
 	enc := encoder(from, sw, request, u)
 	cont := &continuation{mode: prefillHow(p, to, model)}

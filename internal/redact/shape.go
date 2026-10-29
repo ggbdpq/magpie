@@ -200,6 +200,10 @@ func restoreShapes(s string, put map[string]int) string {
 			s = restoreAddr(s, f, values[f], put)
 			continue
 		}
+		if kind == "HOSTNAME" {
+			s = restoreHost(s, f, values[f], put)
+			continue
+		}
 		if n := strings.Count(s, f); n > 0 {
 			s = strings.ReplaceAll(s, f, values[f])
 			if put != nil {
@@ -208,6 +212,50 @@ func restoreShapes(s string, put map[string]int) string {
 		}
 	}
 	return s
+}
+
+// restoreHost is s with each whole stand-in host name f in it put back as
+// v, counted in put where put isn't nil. A name with a letter, a digit, a
+// hyphen or a dot against it is a longer one's piece: sub.qmvkrta.example
+// is another host, and qmvkrta.example.net takes the stand-in for part of
+// itself. A full stop after it with none of those after the stop ends the
+// sentence, and the name after it is put back.
+func restoreHost(s, f, v string, put map[string]int) string {
+	if !strings.Contains(s, f) {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for i := 0; ; {
+		j := strings.Index(s[i:], f)
+		if j < 0 {
+			break
+		}
+		a, z := i+j, i+j+len(f)
+		i = a + 1
+		if a > 0 && hostByte(s[a-1]) ||
+			z < len(s) && (hostByte(s[z]) && s[z] != '.' ||
+				s[z] == '.' && z+1 < len(s) && hostByte(s[z+1])) {
+			continue
+		}
+		b.WriteString(s[last:a])
+		b.WriteString(v)
+		last, i = z, z
+		if put != nil {
+			put[f]++
+		}
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// hostByte says c may be part of a host's name, so a stand-in beside it is
+// a piece of a longer one.
+func hostByte(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '-' || c == '.'
 }
 
 // restoreAddr is s with each whole stand-in f in it put back as the
@@ -361,6 +409,52 @@ func standInOf(v string) string {
 // every turn while magpie runs, and two addresses never share one; it is
 // put back only as a whole name (restoreAddr).
 
+// A host's name goes to the vendor as one under a name set aside for it
+// (RFC 2606's .example), not a placeholder: told "ssh to {{HOSTNAME_…}}",
+// the model asked the user for the real host rather than running ssh, as
+// it did for an address before its documentation one (#4063). No one's
+// host ends in .example (hostOK never masks one), so a stand-in is never
+// taken for a host the user wrote, and the model has one it can copy into
+// its commands, where it comes back as the real host (restoreHost). It is
+// made from the host as a user name's stand-in is, so it is the same
+// every turn and a vendor's cache still matches.
+
+// hostStandInOf is the stand-in the host name v goes as.
+func hostStandInOf(v string) string {
+	h := hmac.New(sha256.New, key())
+	h.Write([]byte("host\x00" + v))
+	sum := h.Sum(nil)
+	out := make([]byte, standInLen)
+	for i := range out {
+		out[i] = 'a' + sum[i]%26
+	}
+	return string(out) + ".example"
+}
+
+// hostStandIn is the stand-in the host name v goes as, kept to be put
+// back as a made-up key is; "" where the one it would go as is another
+// value's already.
+func hostStandIn(v string) string {
+	f := hostStandInOf(v)
+	if f == v {
+		return ""
+	}
+	mu.Lock()
+	have, taken := values[f]
+	if !taken {
+		makeRoom()
+		values[f] = v
+		kinds["HOSTNAME"] = true
+		shapes[f] = "HOSTNAME"
+		addKnown(f, v)
+	}
+	mu.Unlock()
+	if taken && have != v {
+		return ""
+	}
+	return f
+}
+
 // ipStandInHead starts every address's stand-in, and ipStandInLen
 // letters follow it.
 const (
@@ -433,6 +527,12 @@ func standIn(put func(kind, v string) string) func(kind, v string) string {
 	return func(kind, v string) string {
 		if kind == "IP" {
 			if f, ok := ipStandIn(v); ok {
+				return f
+			}
+			return put(kind, v)
+		}
+		if kind == "HOSTNAME" {
+			if f := hostStandIn(v); f != "" {
 				return f
 			}
 			return put(kind, v)

@@ -35,6 +35,11 @@ var claudeKinds = []struct {
 	// usage credits past it ("Fable", "Fable 5", "Fable 5.1"), which it
 	// calls the Fable limit: the usage endpoint's weekly_scoped Fable
 	{"seven_day_overage_included", "7 days · Fable", "fable", 7 * 24 * time.Hour},
+	// an enterprise seat billed by usage has no window of its own: its
+	// allowance is the monthly credits, which Claude Code tells as
+	// rateLimitType "overage" and renews when the billing period does
+	// (#4241)
+	{"overage", "Extra usage", "", 0},
 }
 
 // claudeKindOrder is w's place among claudeKinds, the windows Claude Code

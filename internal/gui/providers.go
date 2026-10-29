@@ -2155,7 +2155,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
-			ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+			// as long as the plugins' host bounds one providers RPC itself
+			// (30s, plugin.refreshDeadline): a plugin's Fetch models is one
+			// listing of every provider, which may spend all of it (#4065)
+			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 			defer cancel()
 			ask := *p
 			if req.Typed {

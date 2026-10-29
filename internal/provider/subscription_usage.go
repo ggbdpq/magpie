@@ -987,6 +987,9 @@ func codexWindows(ctx context.Context, token, accountID string) (plan string, ou
 			out[i].Credits = true
 		}
 	}
+	if w, ok := codexSpendWindow(data); ok {
+		out = append(out, w)
+	}
 	return data.PlanType, out, resets, credits, codexHeld(data), nil
 }
 
@@ -1007,6 +1010,74 @@ func codexGoesOnCredits(u codexUsage) bool {
 	}
 	n, err := strconv.ParseFloat(strings.TrimSpace(c.Balance), 64)
 	return err != nil || n > 0
+}
+
+// codexFigure is a figure /wham/usage names as a number or as its text,
+// both ways round (a spend control's "limit": 5100 or "5100", #4259). A
+// figure the reply doesn't name — null, or a word no number reads as — is
+// not said: what is reckoned from it alone is unknown then, never 0 or
+// full, and it can't turn the whole reading away.
+type codexFigure struct {
+	n    float64
+	said bool
+}
+
+func (f *codexFigure) UnmarshalJSON(b []byte) error {
+	*f = codexFigure{}
+	s := strings.Trim(string(b), `"`)
+	if s == "" || s == "null" {
+		return nil
+	}
+	n, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return nil // unreadable: not said
+	}
+	f.n, f.said = n, true
+	return nil
+}
+
+// codexSpendWindow is a usage-based workspace's individual spend limit as
+// the window of an account with no rate-limit window of its own (#4259):
+// such a seat's /wham/usage answers rate_limit null and the allowance under
+// spend_control instead — a cap in credits the account spends against
+// ("5100" credits, 186.58 used, reset with the billing period), which the
+// Codex app itself shows as "Credits 4%". The share is used_percent, or
+// the count used of limit when no percent is said. A Plus or Pro plan
+// keeps the windows it has; this reads a seat that has none. The window is
+// no credits to go on past: the cap is what the credits are spent against,
+// and spend_control.reached, not it, tells when the account is out
+// (codexHeld). What the cap doesn't say is no window at all — no
+// individual limit, a cap of nothing or unreadable, or neither a
+// used_percent nor a used to reckon the share from — which reads unknown,
+// never 0 or full.
+func codexSpendWindow(u codexUsage) (QuotaWindow, bool) {
+	if u.RateLimit.Primary != nil || u.RateLimit.Secondary != nil || u.SpendControl == nil {
+		return QuotaWindow{}, false
+	}
+	lim := u.SpendControl.IndividualLimit
+	if lim == nil || !lim.Limit.said || lim.Limit.n <= 0 {
+		return QuotaWindow{}, false
+	}
+	w := QuotaWindow{Name: "Credits", Limit: lim.Limit.n, Unit: lim.Unit}
+	switch {
+	case lim.UsedPercent.said:
+		w.Used = lim.UsedPercent.n
+		if lim.Used.said {
+			w.Amount = lim.Used.n
+		}
+	case lim.Used.said:
+		w.Used, w.Amount = lim.Used.n/lim.Limit.n*100, lim.Used.n
+	default:
+		return QuotaWindow{}, false
+	}
+	if lim.ResetAt.said && lim.ResetAt.n > 0 {
+		t := time.Unix(int64(lim.ResetAt.n), 0)
+		w.ResetsAt = &t
+	}
+	if lim.ResetAfter.said && lim.ResetAfter.n > 0 {
+		w.ResetSecs = int64(lim.ResetAfter.n)
+	}
+	return w, true
 }
 
 // codexUsage is what /wham/usage tells of a ChatGPT account.
@@ -1030,6 +1101,16 @@ type codexUsage struct {
 	} `json:"rate_limit"`
 	SpendControl *struct {
 		Reached bool `json:"reached"`
+		// a usage-based workspace's own cap, in credits (#4259): rate_limit
+		// null, the account's allowance here (codexSpendWindow)
+		IndividualLimit *struct {
+			Unit        string      `json:"unit"`
+			Limit       codexFigure `json:"limit"`
+			Used        codexFigure `json:"used"`
+			UsedPercent codexFigure `json:"used_percent"`
+			ResetAt     codexFigure `json:"reset_at"`
+			ResetAfter  codexFigure `json:"reset_after_seconds"`
+		} `json:"individual_limit"`
 	} `json:"spend_control"`
 	// why the account is held: "rate_limit_reached", or a workspace's
 	// "workspace_owner_usage_limit_reached" and the like

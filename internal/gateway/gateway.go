@@ -5407,6 +5407,13 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	if (proto == provider.Responses || proto == provider.Chat || proto == provider.Anthropic) && (grokModel(model) || grokModel(upstream)) {
 		ints = &intTidy{proto: proto, sse: sse}
 	}
+	// a glm-5.3-flash* replica's CR stitched into a call's argument
+	// fragments goes (tool_args_cr.go, #4256); any other model's reply
+	// goes as it came
+	var crArgs *crTidy
+	if (proto == provider.Responses || proto == provider.Chat || proto == provider.Anthropic) && (glmFlash(model) || glmFlash(upstream)) {
+		crArgs = &crTidy{proto: proto, sse: sse}
+	}
 	// a message the upstream gave no phase gets one, as OpenAI's own
 	// models' do (phase.go, #2437); it goes last, as it holds events back
 	var phases *phaseTidy
@@ -5485,6 +5492,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			if ints != nil {
 				out = ints.write(out)
 			}
+			if crArgs != nil {
+				out = crArgs.write(out)
+			}
 			if sigs != nil {
 				out = sigs.write(out)
 			}
@@ -5514,6 +5524,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	sign := func(b []byte) []byte {
 		if ints != nil {
 			b = ints.write(b)
+		}
+		if crArgs != nil {
+			b = crArgs.write(b)
 		}
 		if sigs != nil {
 			b = sigs.write(b)
@@ -5548,6 +5561,13 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	}
 	if ints != nil {
 		b := ints.flush()
+		if sigs != nil {
+			b = sigs.write(b)
+		}
+		write(out(b))
+	}
+	if crArgs != nil {
+		b := crArgs.flush()
 		if sigs != nil {
 			b = sigs.write(b)
 		}
@@ -6739,6 +6759,9 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	// a Grok model's 2500.0 in a call's arguments, which Codex turns away
 	// (grok_integral.go, #1431)
 	request.Grok = grokServed(wiresOf(r.Context()), p, model)
+	// a glm-5.3-flash* replica's CR stitched into a call's arguments
+	// (tool_args_cr.go, #4256)
+	request.CR = glmServed(wiresOf(r.Context()), p, model)
 	if from == provider.Anthropic {
 		// Claude Code's auto mode classifier, on a model that reasons
 		// whatever it is told (#250)
@@ -7220,6 +7243,9 @@ func encoder(proto provider.Protocol, w *sseWriter, r *Request, usage ...*Usage)
 		// outside usageEncoder, which reads its encoder's reply id
 		enc = &wholeEncoder{streamEncoder: enc}
 	}
+	if r.CR {
+		enc = &crEncoder{streamEncoder: enc}
+	}
 	if r.wantsJSON() {
 		// a fenced JSON answer reaches a structured-output client as the
 		// JSON it asked for (format_fence.go)
@@ -7245,6 +7271,9 @@ func render(proto provider.Protocol, res Result, r *Request) []byte {
 	model := r.Model
 	if r.Grok {
 		res = wholeResult(res)
+	}
+	if r.CR {
+		res = crResult(res)
 	}
 	res = unfencedResult(res, r)
 	switch proto {

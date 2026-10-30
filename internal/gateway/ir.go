@@ -318,6 +318,11 @@ type Request struct {
 	// arguments reach the client with their zero fractions dropped
 	// (grok_integral.go).
 	Grok bool
+	// CR is set when the model asked is one of the glm-5.3-flash* routes
+	// whose replicas stitch CR into a call's arguments (#4256): the
+	// arguments reach the client with the stitched CR dropped
+	// (tool_args_cr.go).
+	CR bool
 }
 
 // nsTool is a tool as a Responses client knows it: by its namespace and its

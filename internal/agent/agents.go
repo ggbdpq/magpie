@@ -488,7 +488,10 @@ func magpieProviderJSONAt(shape, catalog, gw string) any {
 	models := magpieModels(catalog) // the catalog is the agent's
 	switch shape {
 	case "opencode":
-		ms := map[string]any{}
+		// models in the order magpieModels has them (#4575): OpenCode lists
+		// the models in the file's key order, and a map's keys marshal
+		// sorted — the variants under each kept theirs since #713
+		ms := orderedJSON{}
 		for _, m := range models {
 			e := map[string]any{"name": m.Name}
 			// modalities alone says a model takes images: OpenCode 1 takes
@@ -514,7 +517,7 @@ func magpieProviderJSONAt(shape, catalog, gw string) any {
 			if p := m.Price; p != nil {
 				e["cost"] = map[string]any{"input": p.Input, "output": p.Output, "cache_read": p.CacheRead, "cache_write": p.CacheWrite}
 			}
-			ms[m.ID] = e
+			ms = append(ms, jsonPair{m.ID, e})
 		}
 		return map[string]any{"npm": "@ai-sdk/openai-compatible", "name": "magpie",
 			"options": map[string]any{"baseURL": gw + "/v1", "apiKey": openCodeKeyAt(catalog, gw)}, "models": ms}
@@ -604,12 +607,16 @@ func openCodeKept(path string, value func() any) func() any {
 		}
 		var have map[string]json.RawMessage
 		block, _ := v.(map[string]any)
-		ms, _ := block["models"].(map[string]any)
+		ms, _ := block["models"].(orderedJSON)
 		if json.Unmarshal([]byte(raw), &have) != nil || ms == nil {
 			return v
 		}
 		for id, h := range have {
-			e, _ := ms[id].(map[string]any)
+			i := slices.IndexFunc(ms, func(p jsonPair) bool { return p.k == id })
+			if i < 0 {
+				continue
+			}
+			e, _ := ms[i].v.(map[string]any)
 			ours, ok := e["variants"].(orderedJSON)
 			var was struct {
 				Variants json.RawMessage `json:"variants"`

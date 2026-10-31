@@ -1063,7 +1063,7 @@ func SetRTK(id string, on bool) (*RTKView, error) {
 
 func rtkInstall(bin string, a *agent.Agent) error {
 	sp := rtkSpecs[rtkKind(a.ID)]
-	if err := os.MkdirAll(sp.dir(a), 0o755); err != nil {
+	if err := ensureDir(sp.dir(a)); err != nil {
 		return err
 	}
 	if a.WSL != "" {

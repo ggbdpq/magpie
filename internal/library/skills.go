@@ -255,12 +255,32 @@ func markedHash(p string) (string, bool) {
 	return "", false
 }
 
+// ensureDir makes dir a folder, as MkdirAll does, and takes "already
+// there" for an answer when nothing from here can say otherwise (#4502).
+// A Codex in a WSL distro may keep its ~/.codex as a symlink to the
+// user's Windows folder, and the \\wsl.localhost view of the distro
+// answers a mkdir of the name with EEXIST while stat and lstat can't say
+// what it is — Go's MkdirAll forgives EEXIST only when lstat says folder
+// (os.MkdirAll), so the raw error reached the library page, and neither
+// a skill nor RTK could be given to Codex there. What is left of EEXIST
+// here is a name stat and lstat both failed to describe: there the files
+// are kept, or mkdir wouldn't say so, and the writes that follow go
+// through the folder and tell, if it isn't one after all. A file in the
+// way is no folder, and MkdirAll says so itself (not a directory).
+func ensureDir(dir string) error {
+	err := os.MkdirAll(dir, 0o755)
+	if err == nil || !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	return nil
+}
+
 // copyIn puts a copy of the library's skill at p, marked as magpie's, in
 // place of a link: made beside it and put in the place of what is there,
 // so the agent never finds half of one.
 func copyIn(p, name string) error {
 	lib := skillDir(name)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+	if err := ensureDir(filepath.Dir(p)); err != nil {
 		return err
 	}
 	// an old copy a previous swap couldn't remove is tried again

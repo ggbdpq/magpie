@@ -127,6 +127,38 @@ func TestWSLSkillsCopied(t *testing.T) {
 	}
 }
 
+// The distro's ~/.codex may be a link to elsewhere: linusxiong's #4502
+// has /root/.codex -> /mnt/c/Users/<user>/.codex, and giving Codex there
+// a skill failed at `mkdir \\wsl.localhost\Ubuntu\root\.codex`, "already
+// exists". The link is where Codex keeps its files: a skill goes through
+// it, not over it.
+func TestWSLCodexFolderIsALink(t *testing.T) {
+	sandbox(t)
+	root := t.TempDir()
+	h := filepath.Join(root, "home", "me")
+	real := filepath.Join(root, "mnt", "c", "Users", "me", ".codex")
+	write(t, filepath.Join(real, "config.toml"), "model = \"gpt-5.5\"\n")
+	if err := os.MkdirAll(h, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(h, ".codex")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(agent.FakeWSL(map[string]string{
+		"Ubuntu-24.04": "home:/home/me\ndir:.codex\n",
+	}, map[string]string{"Ubuntu-24.04": root}))
+	src := filepath.Join(home(), "src", "skills")
+	skill(t, filepath.Join(src, "pdf"), "pdf", "Read PDFs")
+	ok(t)(InstallSkills(src, []string{"pdf"}, []string{wslCodex}))
+	p := filepath.Join(real, "skills", "pdf")
+	if fi, err := os.Lstat(p); err != nil || !fi.IsDir() {
+		t.Fatalf("%s: not a folder: %v", p, err)
+	}
+	if !strings.Contains(read(t, filepath.Join(p, "SKILL.md")), "Read PDFs") {
+		t.Errorf("%s isn't the library's skill", p)
+	}
+}
+
 // MCP servers are written into the distro's files in each agent's own
 // format; one that runs a Windows program isn't given to them.
 func TestWSLServers(t *testing.T) {

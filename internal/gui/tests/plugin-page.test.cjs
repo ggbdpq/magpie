@@ -38,11 +38,15 @@ const pages = [
   entry(BROKEN, "broken", "Broken", []),
 ];
 
-// what pluginpage.go's pagePolicy sends, for this host: the page's folder
-// under each scheme the window is served on
-const policy = (tok) => {
+// what pluginpage.go's pagePolicy sends, for this host, built the way it
+// builds it per route: the page's own folder, one source, named with the
+// scheme only the native window's handler puts in the request (wails, or
+// http on Windows); over the web the source keeps no scheme, so HTTP,
+// HTTPS and a reverse proxy all match it. A browser here reads the window
+// the way magpie web serves one, so the pages get the scheme-less shape.
+const policy = (tok, scheme = "") => {
   const dir = `magpie.test/_magpie/plugin/${tok}/`;
-  const own = `wails://${dir} http://${dir} https://${dir}`;
+  const own = scheme ? `${scheme}://${dir}` : dir;
   return [
     "sandbox allow-scripts", "default-src 'none'", `script-src ${own}`, `style-src ${own} 'unsafe-inline'`,
     `img-src ${own} data:`, `font-src ${own}`, `media-src ${own}`, "connect-src 'none'", "frame-src 'none'",
@@ -105,7 +109,7 @@ function server(lang, seen, plugins) {
     if (m) {
       const [, tok, rel] = m;
       const headers = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-cache" };
-      if (tok !== OPEN) headers["Content-Security-Policy"] = policy(tok);
+      if (tok !== OPEN) headers["Content-Security-Policy"] = policy(tok, seen.scheme);
       const type = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" }[path.extname(rel)];
       let body;
       if (rel === "_magpie/bridge.js") body = await fs.readFile(bridge);
@@ -345,5 +349,32 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.context().close();
       }
     }
+  });
+
+  // the native window's route names its scheme in the source (wails, or
+  // http on Windows — ownWindow puts it in the request). A browser can't
+  // resolve wails://, so here the http shape a Windows window sends: the
+  // page draws (its script's source matches with the scheme named) and
+  // stays shut in as over the web. The wails:// shape itself is the
+  // darwin window test's (pluginpage_webkit_darwin_test.go).
+  test(`${engine}: a page under the native window's policy draws and stays shut in`, async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    t.after(() => browser.close());
+    const page = await (await browser.newContext({ viewport: { width: 1100, height: 700 } })).newPage();
+    page.setDefaultTimeout(8000);
+    page.setDefaultNavigationTimeout(60000);
+    const seen = { api: [], reads: [], options: [], scheme: "http" };
+    await page.route("**/*", server("en", seen, plugins));
+    await page.goto("http://magpie.test/");
+    await page.evaluate(() => {
+      window.__probe = null;
+      addEventListener("message", (e) => { if (e.data?.probe) window.__probe = e.data.probe; });
+    });
+    await page.evaluate(() => show("plugin-probe"));
+    await page.waitForFunction(() => window.__probe, undefined, { timeout: 8000 });
+    const probe = await page.evaluate(() => window.__probe);
+    assert.equal(probe.fetch, "refused", "the policy stops a fetch of /api");
+    assert.equal(seen.api.length, 0, "nothing reached /api");
+    await page.context().close();
   });
 }

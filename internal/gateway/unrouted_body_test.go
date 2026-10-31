@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -98,4 +99,55 @@ func TestUnroutedTrickledBodyAnswered408(t *testing.T) {
 
 func isClosedConn(err error) bool {
 	return err != nil && (strings.Contains(err.Error(), "connection reset") || strings.Contains(err.Error(), "closed"))
+}
+
+// A full run caught the trickle above red with a 504 (#4511): the hold
+// ran out between two of its reads, and the read's absence alone was
+// taken for a hold of magpie's own. Less of the body having come than
+// the request's own Content-Length says, the body is still arriving and
+// the time is the client's, whether its handler was inside a read when
+// the hold ran out or between two, or before its first. Here the hold
+// runs out before the first read, in the wait for body room.
+func TestUnroutedBodyShortOfItsLengthAnswered408(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	unroutedLimits(t, 20*time.Millisecond, 1500*time.Millisecond)
+	// the room holds 2 MiB and this test holds 3 of it, so a request
+	// with a 1 MiB body waits for room before its first read, and keeps
+	// waiting while unroutedMost runs out
+	wasRoom := bodyRoom
+	bodyRoom = roomOf(2 << 20)
+	t.Cleanup(func() { bodyRoom = wasRoom })
+	hold, end := context.WithCancel(context.Background())
+	defer end()
+	if err := bodyRoom.take(hold, 3<<20); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := slowEyed(t, 0)
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	// a body of a declared 1 MiB, none of it sent
+	conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	conn.SetDeadline(time.Now().Add(20 * time.Second))
+	fmt.Fprintf(conn, "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n", 1<<20)
+
+	br := bufio.NewReader(conn)
+	res, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusRequestTimeout || !strings.Contains(string(b), "its body was still arriving") || !strings.Contains(string(b), "read: none of 1.0 MB") {
+		t.Fatalf("a body none of which had come was answered %d %s", res.StatusCode, b)
+	}
+	// the connection ends with the answer
+	if _, err := br.ReadByte(); err != io.EOF && !isClosedConn(err) {
+		t.Fatalf("after the 408 the connection read %v, not its end", err)
+	}
 }

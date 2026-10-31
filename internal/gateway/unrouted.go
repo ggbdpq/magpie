@@ -474,6 +474,18 @@ func (u *unroutedHold) inBody() bool {
 	return false
 }
 
+// bodyArriving is whether less of the body has come than the request's
+// own Content-Length says. The hold can run out between two reads, or
+// before the first, and a read's absence alone answered such a request
+// 504, as if magpie held it of its own (a full run raced one out there,
+// #4511); a body short of its length is still arriving, and the time is
+// the client's. A body read whole, a length never said and an empty one
+// are judged by the read alone.
+func (u *unroutedHold) bodyArriving() bool {
+	d := u.r.ContentLength
+	return d > 0 && u.bodyRead.Load() < d
+}
+
 // bodySaid is how much of u's request's body had come, and when the last
 // of it did: "12 KB of 3 MB, the last 2s ago".
 func (u *unroutedHold) bodySaid() string {
@@ -602,7 +614,7 @@ func (u *unroutedHold) giveUp(unknown bool) {
 		where = fmt.Sprintf(" %s of it in no wait magpie knows of", unroutedUnknown)
 	case u.masking.Load() > 0:
 		where = " masking it"
-	case u.inBody():
+	case u.inBody() || u.bodyArriving():
 		// the client was still sending it (heatonz on Discord: 2m0s
 		// "without routing" with the body half in): a 408 says whose
 		// the time was, and an SDK sends it again at once

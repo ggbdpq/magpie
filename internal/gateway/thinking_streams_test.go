@@ -143,6 +143,58 @@ func TestThinkingHeldFor(t *testing.T) {
 	}
 }
 
+// A try that is asked again asks the same fake vendor again: a reply
+// that only reasoned is asked again in place (#667), and a full run's
+// state may have any ask retried. The fake's done holds one send, and
+// the ask's first serve has filled it: a second handler that blocks on
+// the send never returns, the reply it serves never ends, and the
+// package hangs on vendor's Close until go test's own timeout (#4530).
+// Asked again, the fake must serve to its end regardless.
+func TestThinkingVendorAskedAgainStillEnds(t *testing.T) {
+	fresh(t)
+	thinks := []string{
+		`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"first thought","thought":true}]}}],"modelVersion":"gemini-3-pro"}`,
+		`data: {"candidates":[{"content":{"role":"model","parts":[{"text":" second thought","thought":true}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"thoughtsTokenCount":8},"modelVersion":"gemini-3-pro"}`,
+	}
+	up := &slowThinker{events: thinks, gap: 0, done: make(chan time.Time, 1)}
+	vendor := httptest.NewServer(up)
+	t.Cleanup(vendor.Close)
+	p := provider.Provider{ID: "relay", Name: "Relay", Key: "k", Models: []string{"gemini-3-pro"}}
+	p.Gemini = vendor.URL + "/v1beta"
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	gw := httptest.NewServer(New().Handler())
+	t.Cleanup(gw.Close)
+
+	res, err := http.Post(gw.URL+"/v1/messages", "application/json",
+		strings.NewReader(strings.Replace(claudeCodeAsk, "group/g", "relay/gemini-3-pro", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	// the reply that said nothing is asked again in place: read it to its
+	// end, whichever try ends it — a handler stuck on done never ends it
+	rd := bufio.NewReader(res.Body)
+	for {
+		ln, err := rd.ReadString('\n')
+		t.Log("LINE:", strings.TrimRight(ln, "\n"))
+		if err != nil {
+			break
+		}
+	}
+	select {
+	case <-up.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the vendor never finished")
+	}
+	// the ask-again came: the second serve went to its end, its events
+	// noted after the first serve's
+	if len(up.sent) < 2*len(thinks) {
+		t.Fatalf("the vendor served %d events of %d asks, the ask-again never ended", len(up.sent), 2)
+	}
+}
+
 // Claude's or OpenAI's reasoning at a provider nothing else stands behind
 // is streamed as it comes: held for a refusal (#248) that would go to the
 // agent anyway, as the last candidate's does, a relay's Claude showed

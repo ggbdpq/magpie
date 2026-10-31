@@ -338,9 +338,13 @@ func pluginCatalog(pp plugin.Provider) []catalog.Model {
 		}
 		if m.ImageSaid {
 			c.ImageInput = &m.Image
-			// what else it takes (audio, video, pdf), only where the
-			// plugin said what it takes: the host's default for a model
-			// it said nothing of is text alone (#1595)
+		}
+		// what else it takes (audio, video, pdf), only where the
+		// plugin said what it takes: the host's default for a model
+		// it said nothing of is text alone (#1595). Its word stands
+		// whether or not it spoke of images: a model said text alone
+		// (no word of images) kept no modalities at all (#4436).
+		if len(m.Inputs) > 0 {
 			c.InputModalities = m.Inputs
 		}
 		c.OutputModalities = m.Outputs

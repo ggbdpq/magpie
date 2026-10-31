@@ -75,9 +75,13 @@ func TestPluginModelModalities(t *testing.T) {
 	got := models()
 	check(got, "muse-spark-1.3-contributor-free", []string{"text", "image", "audio", "video", "pdf"}, []string{"text"}, []string{"minimal", "low", "medium", "high", "xhigh"})
 	check(got, "mimo-v2.6-flash-free", []string{"text", "image", "audio", "video"}, []string{"text"}, []string{})
-	// a model the plugin says nothing of takes what isn't known
-	if m := got[pid+"/fake-1"]; m.Modalities != nil && m.Modalities.Input != nil {
-		t.Errorf("fake-1, not said of, takes %v", m.Modalities.Input)
+	// a model the plugin says nothing of lists the host's own default,
+	// text in and text out: its word on the output always was that, and
+	// its word on the input is listed the same way now, not dropped
+	// (#4436)
+	if m := got[pid+"/fake-1"]; m.Modalities == nil ||
+		!reflect.DeepEqual(m.Modalities.Input, []string{"text"}) || !reflect.DeepEqual(m.Modalities.Output, []string{"text"}) {
+		t.Errorf("fake-1, nothing said: modalities %+v, want in [text] out [text]", m.Modalities)
 	}
 
 	// the user says mimo takes no images: the rest it takes stays

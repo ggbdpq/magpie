@@ -49,6 +49,45 @@ func budgetPath(id string) string {
 	return "modelSettings." + strings.ReplaceAll(strings.TrimSuffix(id, "[1m]"), ".", `\.`) + ".autoCompactWindow"
 }
 
+// budgetShaped says a modelSettings key is one of the ids magpie itself
+// mints for Claude Desktop (gateway.DesktopID): mythos-magpie-<n>,
+// magpie-<n>.anthropic.<model>, anthropic/magpie-<n>, the <n> ten digits
+// (aliasFor). No model of anyone else's is named one, so a row under such
+// a key whose value is one magpie's own plan would write is magpie's even
+// when the stash mark that said so is gone (#4574); a row of any other
+// value there is the user's — the /autocompact of the session the id was
+// handed to — and stays theirs.
+func budgetShaped(k string) bool {
+	l := strings.ToLower(k)
+	rest, ok := strings.CutPrefix(l, "mythos-magpie-")
+	if ok {
+		return aliasDigits(rest)
+	}
+	rest, ok = strings.CutPrefix(l, "anthropic/magpie-")
+	if ok {
+		return aliasDigits(rest)
+	}
+	rest, ok = strings.CutPrefix(l, "magpie-")
+	if !ok {
+		return false
+	}
+	digits, model, dotted := strings.Cut(rest, ".anthropic.")
+	return dotted && aliasDigits(digits) && model != ""
+}
+
+// aliasDigits says s is the ten digits an alias number is.
+func aliasDigits(s string) bool {
+	if len(s) != 10 {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // claudePlan is the window to tell Claude Code (top) and the
 // auto-compact window to give each model whose own differs from what it
 // would run at without one (entries, by id without "[1m]"). base is the

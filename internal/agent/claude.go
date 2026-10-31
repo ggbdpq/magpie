@@ -749,7 +749,9 @@ func claudeIn(at place) *Agent {
 	// on magpie (claudePlan, #2025), as JSON {id: window}, and the
 	// top-level autoCompactWindow it wrote beside them: each is magpie's
 	// only while it still says what magpie wrote, so the user's own, an
-	// /autocompact among them, is never taken for magpie's
+	// /autocompact among them, is never taken for magpie's; a row under an
+	// id magpie mints for Desktop (budgetShaped) is magpie's with its mark
+	// gone only while its value is one the plan itself would write (#4574)
 	budgetsKey := at.key("claude.model_budgets")
 	defaultKey := at.key("claude.compact_default")
 	budgetsOurs := func() map[string]int {
@@ -766,13 +768,18 @@ func claudeIn(at place) *Agent {
 	writeBudgets := func(def int, entries map[string]int) error {
 		raw, _ := edit.GetJSON(path, "modelSettings")
 		cur := budgetsRead(raw)
+		ours := budgetsOurs()
 		var del []string
-		for id, v := range budgetsOurs() {
+		for id, v := range ours {
 			if _, keep := entries[id]; keep || cur[id] != strconv.Itoa(v) {
 				continue
 			}
 			del = append(del, budgetPath(id))
 		}
+		// a row under an id magpie mints whose mark is gone is not taken
+		// here: the plan took one whose value it would write itself
+		// (#4574), and one of any other value is the user's, as is every
+		// such row while no plan runs — nothing unmarked is deleted
 		if len(del) > 0 {
 			if err := edit.DelJSON(path, del...); err != nil {
 				return err
@@ -804,8 +811,24 @@ func claudeIn(at place) *Agent {
 				kvs = append(kvs, edit.KV{Path: budgetPath(id), Value: v})
 			}
 		}
-		if len(entries) > 0 {
-			b, _ := json.Marshal(entries)
+		// a mark whose row it disagrees with is the user's row kept: the
+		// mark is carried while the row stands, so it stays theirs
+		rec := map[string]int{}
+		for id, v := range ours {
+			if _, ok := entries[id]; ok || cur[id] == "" || cur[id] == strconv.Itoa(v) {
+				continue
+			}
+			rec[id] = v
+		}
+		if len(entries) > 0 || len(rec) > 0 {
+			m := make(map[string]int, len(entries)+len(rec))
+			for id, v := range rec {
+				m[id] = v
+			}
+			for id, v := range entries {
+				m[id] = v
+			}
+			b, _ := json.Marshal(m)
 			stash(map[string]string{budgetsKey: string(b)})
 		} else {
 			forget(budgetsKey)
@@ -1222,11 +1245,36 @@ func claudeIn(at place) *Agent {
 		raw, _ := edit.GetJSON(path, "modelSettings")
 		ours := budgetsOurs()
 		theirs := map[string]string{}
+		// a row under an id magpie mints whose mark is gone waits on the
+		// plan: one whose value is the window magpie itself would hold the
+		// model at is magpie's with its mark gone (#4574), and any other
+		// value is the user's — the /autocompact of the session the id was
+		// handed to — and stays theirs
+		pending := map[string]string{}
 		for k, v := range budgetsRead(raw) {
+			if _, marked := ours[k]; !marked && budgetShaped(k) {
+				pending[budgetKey(k)] = v
+				continue
+			}
 			if n, ok := ours[k]; ok && v == strconv.Itoa(n) {
 				continue
 			}
 			theirs[budgetKey(k)] = v
+		}
+		if len(pending) > 0 {
+			// the plan without them is what magpie would write
+			_, probe := claudePlan(models, base, theirs)
+			hold := map[string]int{}
+			if probe != nil {
+				for id, v := range probe {
+					hold[budgetKey(id)] = v
+				}
+			}
+			for k, v := range pending {
+				if n, err := strconv.Atoi(v); probe == nil || err != nil || n <= 0 || hold[k] != n {
+					theirs[k] = v
+				}
+			}
 		}
 		top, entries = claudePlan(models, base, theirs)
 		return top, def, entries

@@ -488,6 +488,11 @@ type Server struct {
 	// (UnixNano, 0 for never): while that is recent, a group skips it for
 	// such a request when someone is left after it (antigravityForeseen)
 	agTurnedAway atomic.Int64
+	// thoughtMu keeps the count of each DeepSeek member's thinking replies
+	// that went on to an answer in a row, by "<provider>/<model>"
+	// (holdsThinking, #4512)
+	thoughtMu    sync.Mutex
+	thoughtClean map[string]int
 }
 
 // New makes a gateway.
@@ -2763,8 +2768,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		// kept and the next try's after it (streamTranslated, #667), so
 		// holding it kept Codex on a Gemini model with nothing at all,
 		// not even response.created, for the whole of its thinking
-		// (LuckymanJC on Discord).
-		hw.thinkingShown = !refusesAfterThinking(c.model) || last
+		// (LuckymanJC on Discord). DeepSeek's goes as it comes there too
+		// once its member has gone on from its thinking to an answer
+		// thoughtCleanMost times running (holdsThinking, #4512): its
+		// filter refuses after thinking hardly ever, and held, the agent
+		// waited every request's whole thinking out.
+		hw.thinkingShown = !s.holdsThinking(c) || last
 		hw.ctx, hw.alive, hw.streams = r.Context(), kept, streams
 		report := cacheReport
 		if c.p.Account == nil || c.p.Account.Agent != "claude" {
@@ -3380,6 +3389,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		}
 		if hw.failed() && hw.refused {
 			refusals++
+			// the member's filter refused beside its thinking: its
+			// reasoning is held again (holdsThinking, #4512)
+			s.thoughtRefused(c)
 			if !refusalAsksAgain(refusals) {
 				// asked as many times as Settings' RefusalRetries lets a
 				// refusal be: nobody else is, and the agent has it now
@@ -4024,6 +4036,15 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			}
 		} else if call.Status < 400 {
 			servedCandidate(c, call.Usage.Input+call.Usage.Output+call.Usage.CacheRead+call.Usage.CacheWrite)
+			// a thinking reply that went on to an answer is one more in the
+			// row that trusts the member's reasoning as it comes
+			// (holdsThinking, #4512); one whose filter's content_filter
+			// ended it with nothing said takes the trust back (plugins #540)
+			if hw.refusedAfter {
+				s.thoughtRefused(c)
+			} else if hw.sawThinking() && call.Usage.Output > 0 {
+				s.thoughtAnswered(c)
+			}
 			// how fast it answered, for Speed first (speed.go)
 			noteTrySpeed(c, try, call.Usage.Output, call.Usage.Reasoning, ended)
 			// a compaction a rule sent to a model of its own leaves the
@@ -4057,6 +4078,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				rest := s.restAfter(c, call.Status, hw.header, []byte(call.Error))
 				try.Rest = &rest
 			}
+		}
+		if try.Fail == failRefused {
+			// the filter refused after (or beside) the try's thinking: the
+			// member's reasoning is held again (holdsThinking, #4512)
+			s.thoughtRefused(c)
 		}
 		s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
 		break

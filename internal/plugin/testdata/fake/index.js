@@ -375,6 +375,11 @@ export const FakePlugin = async ({ client }) => ({
       if (process.env.FAKE_ZEN) {
         p.models["mimo-v2.6-flash-free"] = { ...p.models["fake-1"], id: "mimo-v2.6-flash-free", name: "MiMo V2.6 Flash Free", api: { ...p.models["fake-1"].api, id: "mimo-v2.6-flash-free" }, free: true, variants: {},
           capabilities: {"temperature":true,"reasoning":true,"attachment":true,"toolcall":true,"input":{"text":true,"image":true,"audio":true,"video":true,"pdf":false},"output":{"text":true,"image":false,"audio":false,"video":false,"pdf":false},"interleaved":{"field":"reasoning_content"}} }
+        // a model as Command Code's plugin lists its plan's (#4436): it
+        // says what the model takes (text; audio, video, pdf no) and says
+        // nothing of images (m.images not a boolean there)
+        p.models["cc-plan-1"] = { ...p.models["fake-1"], id: "cc-plan-1", name: "CC Plan 1", api: { ...p.models["fake-1"].api, id: "cc-plan-1" }, free: true,
+          capabilities: {"temperature":true,"reasoning":true,"toolcall":true,"input":{"text":true,"audio":false,"video":false,"pdf":false},"output":{"text":true}} }
       }
       // $FAKE_KINDS: models as XYenon's magpie-google-ai-studio lists them
       // (#3279): the embedding as the report gives it (output text false,

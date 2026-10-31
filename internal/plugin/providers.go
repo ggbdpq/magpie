@@ -100,6 +100,11 @@ type Model struct {
 	// route, plugins#154), models.dev's own, or the models hook's. Unsaid
 	// is nil, which keeps what the client sent.
 	Temperature *bool `json:"temperature,omitempty"`
+	// InputsSaid is whether capabilities.input is someone's word on what
+	// the model takes (models.dev, the config, the plugin's own models
+	// hook): the host's default for a config model said nothing of, input
+	// {"text": true} alone, is nobody's word (#1595, #4436)
+	InputsSaid bool `json:"inputsSaid,omitempty"`
 	// Fast is set by the plugin on a model it runs in its vendor's fast
 	// mode when the request says service_tier "priority" (m.fast: Cursor's
 	// plugin from 0.2.2, for a model Cursor has a fast variant of)

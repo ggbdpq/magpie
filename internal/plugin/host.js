@@ -1724,6 +1724,13 @@ function kinds(c) {
 // gives no kinds, and is not one that said nothing.
 const kindsSaid = (c) => !!c && typeof c === "object" && MODALITIES.some((k) => typeof c[k] === "boolean")
 
+// inputSaid is whether a capabilities.input is someone's word on what the
+// model takes: the host's default for a config model said nothing of,
+// {"text": true} alone, is nobody's word (#1595). Whoever says the kinds
+// says them each — models.dev and the config expand them all, and a
+// plugin's models hook gives its own (#4436).
+const inputSaid = (c) => kindsSaid(c) && (Object.keys(c).length > 1 || c.text !== true)
+
 // fromModelsDev is a models.dev model as OpenCode's provider list has it.
 // temperature is what models.dev itself said of it, left out where it said
 // nothing: capabilities.temperature is OpenCode's own, and its false is
@@ -2135,6 +2142,7 @@ async function providers({ proxies } = {}) {
           imageSaid: typeof m.capabilities?.input?.image === "boolean",
           // every kind it takes and gives, not image alone (#1595)
           inputs: kinds(m.capabilities?.input),
+          inputsSaid: inputSaid(m.capabilities?.input),
           outputs: kinds(m.capabilities?.output),
           outputsSaid: kindsSaid(m.capabilities?.output),
           // whether the model takes temperature and top_p, where something

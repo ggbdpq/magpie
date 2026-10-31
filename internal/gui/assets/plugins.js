@@ -1154,10 +1154,11 @@
   }
 
   // an installed plugin's name as its row shows it: the market's, else the
+  // one its own package.json gives (magpie.name, #4558), else the
   // package's or the folder's
   function shownName(e) {
     const pkg = name(e.spec);
-    return (listings || []).find((x) => x.package === pkg)?.name || (isGit(e.spec) && e.package) || label(e.spec);
+    return (listings || []).find((x) => x.package === pkg)?.name || e.name || (isGit(e.spec) && e.package) || label(e.spec);
   }
 
   function installedRow(e) {

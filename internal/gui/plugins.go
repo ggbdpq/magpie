@@ -105,6 +105,10 @@ type pluginEntryJSON struct {
 	// Package is the package installed from a git repository, which its
 	// own package.json names
 	Package string `json:"package,omitempty"`
+	// Name is the one its own package.json gives itself (magpie.name),
+	// which its row shows when the market names no entry of the package
+	// (#4558); Package stays the key the dependency is installed under
+	Name string `json:"name,omitempty"`
 	// Commit is the commit of its repository a git one was installed at,
 	// and Head the commit the repository was at when last asked (asking
 	// it again is /api/plugins/git's): an update is out only when they
@@ -297,7 +301,7 @@ func pluginsState(ctx context.Context, w Windows) pluginsJSON {
 		}
 	}
 	for _, e := range l.Plugins {
-		j := pluginEntryJSON{Entry: e, Error: errs[e.Spec], Providers: names[e.Spec], Version: plugin.Installed(e.Spec), Named: answered}
+		j := pluginEntryJSON{Entry: e, Error: errs[e.Spec], Providers: names[e.Spec], Version: plugin.Installed(e.Spec), Name: plugin.InstalledName(e.Spec), Named: answered}
 		if plugin.Gateway(plugin.Target(e.Spec)) != "" {
 			j.IsGateway = true
 			j.GatewayOnly = plugin.GatewayOnly(plugin.Target(e.Spec))

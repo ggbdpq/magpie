@@ -1006,8 +1006,18 @@ func claudeIn(at place) *Agent {
 		if len(rows) == 0 {
 			return dropPicker()
 		}
+		// the switch that leaves a picker's own models out (#1642) reaches
+		// here too (#4548, raclen): /model is fed by magpie all the same, so
+		// with the switch off it says replaceBuiltInOptions, which takes
+		// Claude Code's built-in lineup rows back out of /model — the Default
+		// row stays, Claude Code keeping it as its own fallback. The flag
+		// goes again with the switch on, the whole picker written either way.
+		picker := map[string]any{"options": rows}
+		if provider.OwnModelsHidden("claude") {
+			picker["replaceBuiltInOptions"] = true
+		}
 		stash(map[string]string{pickerKey: "1"})
-		return edit.SetJSON(path, edit.KV{Path: "modelPicker", Value: map[string]any{"options": rows}})
+		return edit.SetJSON(path, edit.KV{Path: "modelPicker", Value: picker})
 	}
 	// pickerRefs are the models writePicker lists in /model, as it lists
 	// them ("[1m]" on a 1M one), none while the picker is the user's.

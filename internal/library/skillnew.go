@@ -151,10 +151,33 @@ func skillDirsIn(t *gitTree, base string) []string {
 		dirs = append(dirs, dir)
 	}
 	sort.Strings(dirs)
-	// one inside another skill isn't a skill of its own
+	// one inside another skill isn't a skill of its own, beside the skills
+	// of a collection: a folder that holds a SKILL.md and several skills
+	// under it lists them beside it (#4572), and a lone SKILL.md inside
+	// another skill still isn't one of its own
+	collection := func(o string) bool {
+		n := 0
+		for _, d := range dirs {
+			below := ""
+			if o == "" {
+				below = d // the repository itself is the skill
+			} else if rest, in := strings.CutPrefix(d, o+"/"); in {
+				below = rest
+			}
+			if below == "" || strings.Contains(below, "/") {
+				continue
+			}
+			if n++; n > 1 {
+				return true
+			}
+		}
+		return false
+	}
 	out := dirs[:0]
 	for _, d := range dirs {
-		if !slices.ContainsFunc(out, func(o string) bool { return o == "" && d != "" || strings.HasPrefix(d, o+"/") }) {
+		if !slices.ContainsFunc(out, func(o string) bool {
+			return (o == "" && d != "" || strings.HasPrefix(d, o+"/")) && !collection(o)
+		}) {
 			out = append(out, d)
 		}
 	}

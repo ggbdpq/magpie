@@ -987,7 +987,10 @@ func untar(r io.Reader, dst string) error {
 }
 
 // candidates are the skills under root/sub: a folder with a SKILL.md,
-// looked for a few folders deep, and not inside another skill. A hidden
+// looked for a few folders deep, and not inside another skill — beside
+// the skills of a collection: a folder that holds a SKILL.md and several
+// skills under it is a collection with a router (#4572), and lists the
+// skills under it beside it. A hidden
 // folder is an agent's own (.claude, .agents) and is looked in only for its
 // skills folder: some repositories keep their skill only in
 // .claude/skills (#1964, UFO404). A skill the repository holds twice, in a
@@ -1004,7 +1007,9 @@ func candidates(root, sub, top string) []Candidate {
 				rel, folder = "", top
 			}
 			out = append(out, Candidate{Path: filepath.ToSlash(rel), Name: nameFor(folder, m), Description: m.Description})
-			return
+			if skillsBeside(dir) < 2 {
+				return
+			}
 		}
 		if depth == 0 {
 			return
@@ -1032,6 +1037,31 @@ func candidates(root, sub, top string) []Candidate {
 	return unhiddenFirst(out, func(c Candidate) string { return c.Path }, func(a, b Candidate) bool {
 		return a.Name == b.Name || lastPart(a.Path) == lastPart(b.Path)
 	})
+}
+
+// skillsBeside is how many folders directly under dir hold a SKILL.md of
+// their own. A folder that is a skill and holds several skills beside its
+// own files is a collection with a router (#4572): the router is listed,
+// and so are the skills under it. A lone SKILL.md inside another skill
+// (dbs-save/inner in dontbesilent2025/dbskill) is none of its own, as
+// before.
+func skillsBeside(dir string) int {
+	es, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range es {
+		if !e.IsDir() || e.Name() == "node_modules" || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		if _, ok := readMeta(filepath.Join(dir, e.Name())); ok {
+			if n++; n > 1 {
+				return n
+			}
+		}
+	}
+	return n
 }
 
 // inHidden is whether a skill's path, from the repository's top, goes

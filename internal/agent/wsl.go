@@ -751,6 +751,7 @@ func wslAgent(k wslKind, d distro) *Agent {
 	}
 	if d.Running {
 		a.Home = d.local(d.Home)
+		a.HomeLinux = d.Home
 	}
 	a.detect = func() bool { return k.found(d) }
 	// its requests carry the agent's User-Agent and are counted as its

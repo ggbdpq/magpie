@@ -256,6 +256,9 @@ type Agent struct {
 	// for this machine's, and while the distro is stopped: opening it
 	// would start it.
 	Home string
+	// HomeLinux is that $HOME as the distro spells it (/home/me): how the
+	// distro is asked of its own files there (#4502).
+	HomeLinux string
 	// Gateway is the gateway's address as the agent reaches it, a WSL
 	// distro's own way to it; nil is gateway.URL.
 	Gateway func() string

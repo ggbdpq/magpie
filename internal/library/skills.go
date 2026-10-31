@@ -668,7 +668,7 @@ func (l *Library) syncSkills(t *Target, res *Result, all []*Target) {
 				again = !current
 			}
 			if ours(p, s.Name) && again {
-				if err := copyIn(p, s.Name); err != nil {
+				if err := copyIn(wslLink(t.Agent, p), s.Name); err != nil {
 					res.fail(id, "skill:"+s.Name, err)
 				} else {
 					res.changed(id)
@@ -692,9 +692,9 @@ func (l *Library) syncSkills(t *Target, res *Result, all []*Target) {
 				continue
 			}
 		}
-		put := link
-		if cp {
-			put = copyIn
+		put := func(p, name string) error { return copyIn(wslLink(t.Agent, p), name) }
+		if !cp {
+			put = link
 		}
 		if err := put(p, s.Name); err != nil {
 			res.fail(id, "skill:"+s.Name, err)

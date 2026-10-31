@@ -128,6 +128,90 @@ func TestWSLSkillsCopied(t *testing.T) {
 	}
 }
 
+// The distro's ~/.codex may be a link to elsewhere: linusxiong's #4502
+// has /root/.codex -> /mnt/c/Users/<user>/.codex, and giving Codex there
+// a skill failed at `mkdir \\wsl.localhost\Ubuntu\root\.codex`, "already
+// exists". On the report's Windows 11 the share cannot follow the link
+// at all: lstat finds it, stat cannot say what it is, and a mkdir, write
+// or readdir under it all fail — here a link to nothing stands for it,
+// refusing every path below, as the share refuses them, so a fix that
+// only takes a mkdir's "already there" stays red. The distro is asked
+// where its link goes; under /mnt/c/ it is the user's Windows folder,
+// and the skill is written there, as Windows spells the path.
+func TestWSLCodexFolderIsALink(t *testing.T) {
+	sandbox(t)
+	root := t.TempDir()
+	h := filepath.Join(root, "home", "me")
+	win := filepath.Join(root, "windows") // stands for C:\
+	real := filepath.Join(win, "Users", "me", ".codex")
+	write(t, filepath.Join(real, "config.toml"), "model = \"gpt-5.5\"\n")
+	if err := os.MkdirAll(h, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "mnt", "c", "Users", "me", ".codex"), filepath.Join(h, ".codex")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(agent.FakeWSL(map[string]string{
+		"Ubuntu-24.04": "home:/home/me\ndir:.codex\n",
+	}, map[string]string{"Ubuntu-24.04": root}))
+	wslLinkSeams(t,
+		map[string]string{"Ubuntu-24.04\x00/home/me/.codex": "/mnt/c/Users/me/.codex"},
+		nil,
+		map[string]string{"c": win})
+	src := filepath.Join(home(), "src", "skills")
+	skill(t, filepath.Join(src, "pdf"), "pdf", "Read PDFs")
+	ok(t)(InstallSkills(src, []string{"pdf"}, []string{wslCodex}))
+	p := filepath.Join(real, "skills", "pdf")
+	if fi, err := os.Lstat(p); err != nil || !fi.IsDir() {
+		t.Fatalf("%s: not a folder: %v", p, err)
+	}
+	if !strings.Contains(read(t, filepath.Join(p, "SKILL.md")), "Read PDFs") {
+		t.Errorf("%s isn't the library's skill", p)
+	}
+	// the share was never written through: the link it cannot follow is
+	// still the link, and nothing appeared beside it
+	if fi, err := os.Lstat(filepath.Join(h, ".codex")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the link didn't survive as it was: %v", err)
+	}
+}
+
+// A link to anywhere else in the distro opens through the share, by the
+// path resolved: the distro says the link goes to ~/.codex-real, and the
+// skill is written there (#4502).
+func TestWSLCodexFolderIsALinkInTheDistro(t *testing.T) {
+	sandbox(t)
+	root := t.TempDir()
+	h := filepath.Join(root, "home", "me")
+	real := filepath.Join(h, ".codex-real")
+	write(t, filepath.Join(real, "config.toml"), "model = \"gpt-5.5\"\n")
+	if err := os.MkdirAll(h, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(h, ".codex-gone"), filepath.Join(h, ".codex")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(agent.FakeWSL(map[string]string{
+		"Ubuntu-24.04": "home:/home/me\ndir:.codex\n",
+	}, map[string]string{"Ubuntu-24.04": root}))
+	wslLinkSeams(t,
+		map[string]string{"Ubuntu-24.04\x00/home/me/.codex": "/home/me/.codex-real"},
+		map[string]string{"Ubuntu-24.04": root},
+		nil)
+	src := filepath.Join(home(), "src", "skills")
+	skill(t, filepath.Join(src, "pdf"), "pdf", "Read PDFs")
+	ok(t)(InstallSkills(src, []string{"pdf"}, []string{wslCodex}))
+	p := filepath.Join(real, "skills", "pdf")
+	if fi, err := os.Lstat(p); err != nil || !fi.IsDir() {
+		t.Fatalf("%s: not a folder: %v", p, err)
+	}
+	if !strings.Contains(read(t, filepath.Join(p, "SKILL.md")), "Read PDFs") {
+		t.Errorf("%s isn't the library's skill", p)
+	}
+	if fi, err := os.Lstat(filepath.Join(h, ".codex")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the link didn't survive as it was: %v", err)
+	}
+}
+
 // MCP servers are written into the distro's files in each agent's own
 // format; one that runs a Windows program isn't given to them.
 func TestWSLServers(t *testing.T) {

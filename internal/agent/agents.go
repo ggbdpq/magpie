@@ -1636,6 +1636,15 @@ func copilot(home string) *Agent {
 // product.json of its own. A link on PATH is judged where it points.
 // A copilot a user installed itself, in npm's global folder, Homebrew's,
 // winget's Links or scoop's shims, is still the CLI.
+//
+// VS Code's versioned Windows layout (1.139's win32VersionedUpdate) moves
+// that product.json one level under the install root: the app's payload
+// lives in a folder named for the build's commit — the short hash, ten
+// lowercase hex digits, 2c33b50b16 for 1.144.0 — with resources\app under
+// it and bin beside it (microsoft/vscode#343045; Tony-ooo's 1.144.0, whose
+// every product.json the six places above miss, #3269). A folder of the
+// user's beside bin is not named as a commit's short hash is, so the cap
+// keeps its meaning: nothing wider than the same three folders is read.
 func editorLauncher(bin string) bool {
 	if real, err := filepath.EvalSymlinks(bin); err == nil {
 		bin = real
@@ -1649,6 +1658,14 @@ func editorLauncher(bin string) bool {
 			isFile(filepath.Join(dir, "resources", "app", "product.json")) {
 			return true
 		}
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, e := range entries {
+				if e.IsDir() && commitHashName(e.Name()) &&
+					isFile(filepath.Join(dir, e.Name(), "resources", "app", "product.json")) {
+					return true
+				}
+			}
+		}
 		up := filepath.Dir(dir)
 		if up == dir {
 			break
@@ -1656,6 +1673,20 @@ func editorLauncher(bin string) bool {
 		dir = up
 	}
 	return false
+}
+
+// commitHashName is whether a folder is named as a build's short commit
+// hash is: ten lowercase hexadecimal digits (16507d91be, 2c33b50b16).
+func commitHashName(name string) bool {
+	if len(name) != 10 {
+		return false
+	}
+	for _, c := range []byte(name) {
+		if c < '0' || c > '9' && c < 'a' || c > 'f' {
+			return false
+		}
+	}
+	return true
 }
 
 func crush(home, cfg string) *Agent {

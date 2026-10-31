@@ -1057,6 +1057,43 @@ type round func(ctx context.Context, req *Request) (<-chan Event, int, string)
 // asks for and asking it again with what they found; the client sees one
 // reply. The first round's failure is a status, as another provider may
 // take over.
+// textCallRound is a round whose reply has the calls written into its
+// text made calls (textCallSee), as the replies of the routes without a
+// search have them (streamTranslated, forwardTranslated): every search
+// route's every round passes here, whatever protocol the client asked
+// on, and a model that writes its calls out had them reach the client
+// as the text they were (#4562).
+func textCallRound(tools []Tool, ask round) round {
+	names := textCallNames(tools)
+	if names == nil {
+		return ask
+	}
+	return func(ctx context.Context, req *Request) (<-chan Event, int, string) {
+		in, status, msg := ask(ctx, req)
+		if in == nil {
+			return in, status, msg
+		}
+		out := make(chan Event, 16)
+		t := &textCallSee{names: names, see: func(ev Event) {
+			select {
+			case out <- ev:
+			case <-ctx.Done():
+			}
+		}}
+		go func() {
+			defer close(out)
+			for ev := range in {
+				select {
+				case <-ctx.Done():
+				default:
+					t.event(ev)
+				}
+			}
+		}()
+		return out, status, msg
+	}
+}
+
 func (s *Server) searchReply(w http.ResponseWriter, r *http.Request, from provider.Protocol, name string, req *Request, usage *Usage, ask round) (int, string) {
 	ctx, cancel := context.WithCancel(context.WithValue(r.Context(), searchForKey{}, &CallFor{Agent: callerOf(r).agent, Model: unprefixed(req.Model)}))
 	defer cancel()
@@ -1065,6 +1102,7 @@ func (s *Server) searchReply(w http.ResponseWriter, r *http.Request, from provid
 	tool := searchTool(q.Tools)
 	q.Tools = append(slices.Clone(q.Tools), tool)
 	q.Messages = slices.Clone(q.Messages)
+	ask = textCallRound(q.Tools, ask)
 	first, status, msg := ask(ctx, &q)
 	if first == nil {
 		return writeError(w, from, status, msg), msg

@@ -488,3 +488,88 @@ func TestClaudeDesktopWSLContextWindow(t *testing.T) {
 		t.Fatalf("Desktop off: %s", readFile(distroSettings))
 	}
 }
+
+// TestClaudeDesktopBudgetUnmarked (#4574): the modelSettings entries
+// magpie wrote are magpie's only while the stash mark says so, and a stash
+// that lost the mark left its rows where they stood: five 272000 rows
+// held a 1M model Desktop lists by its "[1m]" id at 272K, and nothing
+// rewrote or took them. The ids magpie mints for Desktop
+// (mythos-magpie-<n>, anthropic/magpie-<n>) are nobody else's, so an
+// entry under one is magpie's with its mark gone, as a model row that
+// says "via magpie" is magpie's without its mark (#2046): the plan
+// rewrites it, and one no model claims goes. A row the mark disagrees
+// with is still the user's, and the mark is carried while it stands.
+func TestClaudeDesktopBudgetUnmarked(t *testing.T) {
+	home, path := desktopWindowSandbox(t)
+	a := claude(home)
+	window := func() string { v, _ := edit.GetJSON(path, "env."+claudeContextEnv); return v }
+	if err := provider.SetHiddenModels("claude-desktop", []string{"v/grok", "v/plain", "v/claude-opus-4-6"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Field("model").Set("v/plain"); err != nil {
+		t.Fatal(err)
+	}
+	if err := claudeDesktop(home).Field("provider").Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	s := settings.Load()
+	s.DesktopLongest, s.FullContext = true, true
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]string{}
+	for _, e := range provider.Catalog() {
+		ids[e.ID] = gateway.DesktopID(e)
+	}
+	budget := func(id string) string {
+		v, _ := edit.GetJSON(path, budgetPath(id))
+		return v
+	}
+	if err := a.Sync(); err != nil || window() != "1000000" {
+		t.Fatalf("Desktop on magpie: window %q %v", window(), err)
+	}
+	// gpt 272K held to its own, glm's 1M told with no entry of its own
+	if budget(ids["v/gpt"]) != "272000" || budget(ids["v/glm"]) != "" {
+		t.Fatalf("gpt %q glm %q: %s", budget(ids["v/gpt"]), budget(ids["v/glm"]), readFile(path))
+	}
+	// the stash loses magpie's mark (a whole-file rewrite by an older
+	// magpie, a lost file, a write that never landed), and rows of
+	// magpie's own shape stand where an earlier plan left them
+	forget("claude.model_budgets")
+	if err := edit.SetJSON(path, edit.KV{Path: budgetPath(ids["v/glm"]), Value: 272000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := edit.SetJSON(path, edit.KV{Path: budgetPath("mythos-magpie-0000000001"), Value: 272000}); err != nil {
+		t.Fatal(err)
+	}
+	// a row the user wrote under an id of magpie's has a mark that
+	// disagrees with the file: theirs, and the mark is carried
+	stash(map[string]string{"claude.model_budgets": `{"` + ids["v/grok"] + `":256000}`})
+	if err := edit.SetJSON(path, edit.KV{Path: budgetPath(ids["v/grok"]), Value: 100000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := edit.SetJSON(path, edit.KV{Path: "modelSettings.mine.autoCompactWindow", Value: 90000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	// glm's 272000 row goes: its 1M holds without one, and a 1M id held
+	// to 272000 is what the user saw (#4574); so does the row of a model
+	// no plan claims any more
+	if budget(ids["v/glm"]) != "" || budget("mythos-magpie-0000000001") != "" {
+		t.Fatalf("unmarked rows of magpie's own kept: glm %q stale %q", budget(ids["v/glm"]), budget("mythos-magpie-0000000001"))
+	}
+	// gpt's own is rewritten where it stands
+	if budget(ids["v/gpt"]) != "272000" || window() != "1000000" {
+		t.Fatalf("gpt %q window %q", budget(ids["v/gpt"]), window())
+	}
+	// the user's rows stand, magpie-shaped or not
+	if budget(ids["v/grok"]) != "100000" || budget("mine") != "90000" {
+		t.Fatalf("the user's rows went: grok %q mine %q", budget(ids["v/grok"]), budget("mine"))
+	}
+	// a second Sync, with the carried mark: still theirs
+	if err := a.Sync(); err != nil || budget(ids["v/grok"]) != "100000" || budget("mine") != "90000" {
+		t.Fatalf("the user's rows went on the second Sync: grok %q mine %q %v", budget(ids["v/grok"]), budget("mine"), err)
+	}
+}

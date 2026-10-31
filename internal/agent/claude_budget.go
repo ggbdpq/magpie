@@ -49,14 +49,54 @@ func budgetPath(id string) string {
 	return "modelSettings." + strings.ReplaceAll(strings.TrimSuffix(id, "[1m]"), ".", `\.`) + ".autoCompactWindow"
 }
 
+// budgetShaped says a modelSettings key is one of the ids magpie itself
+// mints for Claude Desktop (gateway.DesktopID): mythos-magpie-<n>,
+// magpie-<n>.anthropic.<model>, anthropic/magpie-<n>, the <n> ten digits
+// (aliasFor). No model of anyone else's is named one, so an entry under
+// such a key is magpie's even when the stash mark that said so is gone
+// (#4574), as a model row that says "via magpie" is magpie's without its
+// mark (#2046).
+func budgetShaped(k string) bool {
+	l := strings.ToLower(k)
+	rest, ok := strings.CutPrefix(l, "mythos-magpie-")
+	if ok {
+		return aliasDigits(rest)
+	}
+	rest, ok = strings.CutPrefix(l, "anthropic/magpie-")
+	if ok {
+		return aliasDigits(rest)
+	}
+	rest, ok = strings.CutPrefix(l, "magpie-")
+	if !ok {
+		return false
+	}
+	digits, model, dotted := strings.Cut(rest, ".anthropic.")
+	return dotted && aliasDigits(digits) && model != ""
+}
+
+// aliasDigits says s is the ten digits an alias number is.
+func aliasDigits(s string) bool {
+	if len(s) != 10 {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // claudePlan is the window to tell Claude Code (top) and the
 // auto-compact window to give each model whose own differs from what it
 // would run at without one (entries, by id without "[1m]"). base is the
 // top-level autoCompactWindow in the file, magpie's or the user's, 0 for
 // none; theirs are the user's own modelSettings windows by budgetKey,
-// which magpie never writes over. A model the user gave a window past its
-// own ("auto" too, which runs it to the one Claude Code is told) holds
-// top to its own window, as magpie can't put theirs right.
+// which magpie never writes over — an entry under an id magpie mints
+// (budgetShaped) whose mark is gone is not one of them (#4574). A model
+// the user gave a window past its own ("auto" too, which runs it to the
+// one Claude Code is told) holds top to its own window, as magpie can't
+// put theirs right.
 func claudePlan(models []claudeBudget, base int, theirs map[string]string) (top int, entries map[string]int) {
 	for _, m := range models {
 		switch {

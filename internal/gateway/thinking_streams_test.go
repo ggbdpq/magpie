@@ -32,7 +32,15 @@ func (s *slowThinker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.sent = append(s.sent, time.Now())
 		time.Sleep(s.gap)
 	}
-	s.done <- time.Now()
+	// a try that is asked again serves the same fake vendor a second
+	// time; the channel holds one send, so a second handler would block
+	// here forever and hold the reply it serves open, the package hung
+	// on the server's Close with it until go test's own timeout (#4530,
+	// Jackzigen). The tests read the time once; later sends can drop.
+	select {
+	case s.done <- time.Now():
+	default:
+	}
 }
 
 var glmThinksSlowly = []string{
@@ -177,9 +185,7 @@ func TestThinkingVendorAskedAgainStillEnds(t *testing.T) {
 	// end, whichever try ends it — a handler stuck on done never ends it
 	rd := bufio.NewReader(res.Body)
 	for {
-		ln, err := rd.ReadString('\n')
-		t.Log("LINE:", strings.TrimRight(ln, "\n"))
-		if err != nil {
+		if _, err := rd.ReadString('\n'); err != nil {
 			break
 		}
 	}

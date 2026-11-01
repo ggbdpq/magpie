@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/access"
@@ -191,7 +192,45 @@ func hubTools(ctx context.Context, agent string) []hubTool {
 	}
 	ctx, cancel := context.WithTimeout(ctx, hubListWait)
 	defer cancel()
-	return hubNamed(MCPHub.Tools(ctx, agent))
+	ts := hubNamed(MCPHub.Tools(ctx, agent))
+	hubKeepTools(agent, ts)
+	return ts
+}
+
+// hubTables is the tools the last listing gave each agent: a call of a
+// tool that listing told the agent of resolves against it, so a call
+// never waits out a listing again — one server that wedges (its
+// initialize never answers) holds the listing it is in, and that must
+// not hold every call of every healthy server's tool with it (#4606).
+// A name the table doesn't know asks the servers again, and what they
+// say is kept.
+var hubTables = struct {
+	sync.Mutex
+	m map[string][]hubTool
+}{m: map[string][]hubTool{}}
+
+// hubKeepTools keeps ts as the tools agent was last listed.
+func hubKeepTools(agent string, ts []hubTool) {
+	hubTables.Lock()
+	hubTables.m[agent] = ts
+	hubTables.Unlock()
+}
+
+// hubKeptTools is the tools agent was last listed, nil before any.
+func hubKeptTools(agent string) []hubTool {
+	hubTables.Lock()
+	defer hubTables.Unlock()
+	return hubTables.m[agent]
+}
+
+// hubNamedTool is the tool of ts a call names.
+func hubNamedTool(ts []hubTool, name string) (hubTool, bool) {
+	for _, t := range ts {
+		if t.name == name {
+			return t, true
+		}
+	}
+	return hubTool{}, false
 }
 
 // hubLineMax is how much of the instructions' first line an agent is sure
@@ -502,6 +541,19 @@ func (s *Server) hubMCPCall(r *http.Request, agent string, m mcpMessage) (any, m
 		}
 		if MCPHub == nil || !MCPHub.On() {
 			return toolResult(errHubOff, true), nil
+		}
+		// a call of a tool the last listing named runs at once, against
+		// what that listing said: one upstream wedged on initialize holds
+		// the listing it is in, and that must not hold every call of every
+		// healthy server's tool with it (#4606). The servers are asked
+		// again only for a name the last listing doesn't know, and what
+		// they say is kept (hubKeepTools). The two tools of an agent given
+		// its tools on demand are not kept: what they list can change
+		// between its list and its call (hub_ondemand.go).
+		if p.Name != hubFindTool && p.Name != hubCallTool {
+			if t, ok := hubNamedTool(hubKeptTools(agent), p.Name); ok {
+				return s.hubCall(r, agent, t, p.Arguments, p.Meta), nil
+			}
 		}
 		ts := hubTools(r.Context(), agent)
 		// the two tools an agent given its tools on demand calls them by

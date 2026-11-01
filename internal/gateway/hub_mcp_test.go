@@ -22,6 +22,8 @@ type fakeHub struct {
 	mu    sync.Mutex
 	on    bool
 	tools map[string][]HubTool // by agent
+	// toolsFunc, when set, is what Tools is: a listing the hub waits on
+	toolsFunc func(ctx context.Context, agent string) []HubTool
 	// servers are what Servers says, by agent
 	servers map[string][]HubServer
 	calls   []string
@@ -30,7 +32,13 @@ type fakeHub struct {
 
 func (f *fakeHub) On() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.on }
 
-func (f *fakeHub) Tools(_ context.Context, agent string) []HubTool {
+func (f *fakeHub) Tools(ctx context.Context, agent string) []HubTool {
+	f.mu.Lock()
+	tf := f.toolsFunc
+	f.mu.Unlock()
+	if tf != nil {
+		return tf(ctx, agent)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.tools[agent]
@@ -291,6 +299,42 @@ func TestHubMCPServerDown(t *testing.T) {
 	}
 	if d := time.Since(start); d > 30*time.Second {
 		t.Errorf("waited %v", d)
+	}
+}
+
+// One wedged upstream holds the listing it is in (its initialize never
+// answers, and the budget runs out), so a call of a tool the agent was
+// already listed runs on the tools of that listing and doesn't wait out
+// the listing again; the servers are asked only for a name they don't
+// know (#4606).
+func TestHubMCPCallNotWedgedByListing(t *testing.T) {
+	fresh(t)
+	f := &fakeHub{on: true, tools: map[string][]HubTool{"claude": {{Server: "fs", Tool: "read", Spec: hubSpec("read")}}}}
+	withHub(t, f)
+	h := lanGuard(New().Handler())
+
+	// the fleet listed, then one of its servers wedged: no listing comes
+	// back inside the budget any more
+	if m := readMCP(t, hubPost(h, "claude", here, toolsList)); m.Error != nil || len(m.Result.Tools) != 1 {
+		t.Fatalf("the first listing: %+v", m)
+	}
+	wait := hubListWait
+	hubListWait = 5 * time.Second
+	t.Cleanup(func() { hubListWait = wait })
+	f.mu.Lock()
+	f.toolsFunc = func(ctx context.Context, agent string) []HubTool {
+		<-ctx.Done() // the wedged server's initialize never answers
+		return nil
+	}
+	f.mu.Unlock()
+
+	start := time.Now()
+	m := readMCP(t, hubPost(h, "claude", here, toolsCall("fs__read", `{"q":"x"}`)))
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("a call of a listed tool waited out the wedged listing: %v", d)
+	}
+	if m.Error != nil || m.Result.IsError || m.Result.Content[0].Text != "ran fs read" {
+		t.Fatalf("the call: %+v", m)
 	}
 }
 

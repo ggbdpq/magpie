@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -773,6 +774,68 @@ func TestKeepsSession(t *testing.T) {
 	} {
 		if got := keepsSession(&c.s); got != c.want {
 			t.Errorf("%+v: %v, want %v", c.s, got, c.want)
+		}
+	}
+}
+
+// A server the hub couldn't reach stays where it fell a while: the asks
+// that come while it is parked are told why at once, and it is started
+// again only once its wait is over, so one wedged server's dial isn't
+// waited out again by every listing and call that comes (#4606).
+func TestHubParksAFailedServer(t *testing.T) {
+	hubSandbox(t)
+	pids := filepath.Join(t.TempDir(), "pids")
+	wait := hubRetryWait
+	// 3s: the parked probe below runs right after the failed dial, and a
+	// loaded machine must not outwait the park before it does
+	hubRetryWait = func(int) time.Duration { return 3 * time.Second }
+	t.Cleanup(func() { hubRetryWait = wait })
+	b := &backend{s: fakeStdio(t, "exit", map[string]string{"MAGPIE_FAKE_MCP_LOG": pids})}
+	ctx := context.Background()
+	starts := func() int {
+		p, err := os.ReadFile(pids)
+		if err != nil {
+			return 0
+		}
+		return len(strings.Fields(string(p)))
+	}
+	if _, err := b.connect(ctx); err == nil {
+		t.Fatal("a server that exits as it starts connected")
+	}
+	if n := starts(); n != 1 {
+		t.Fatalf("%d starts, want 1", n)
+	}
+	if _, err := b.connect(ctx); err == nil {
+		t.Fatal("a parked server connected")
+	}
+	if n := starts(); n != 1 {
+		t.Errorf("a parked server was started again: %d starts", n)
+	}
+	// the park is a wait, not a verdict: once it is over the hub dials again
+	time.Sleep(3500 * time.Millisecond)
+	if _, err := b.connect(ctx); err == nil {
+		t.Fatal("a server that exits as it starts connected")
+	}
+	if n := starts(); n != 2 {
+		t.Errorf("past the park, %d starts, want 2", n)
+	}
+}
+
+// Each failure parks a server a little longer than the one before it, a
+// minute at most.
+func TestHubRetryWait(t *testing.T) {
+	for _, c := range []struct {
+		fails int
+		want  time.Duration
+	}{
+		{1, time.Second},
+		{2, 2 * time.Second},
+		{3, 4 * time.Second},
+		{7, time.Minute},
+		{100, time.Minute},
+	} {
+		if got := hubRetryWait(c.fails); got != c.want {
+			t.Errorf("%d failures: %v, want %v", c.fails, got, c.want)
 		}
 	}
 }

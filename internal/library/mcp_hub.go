@@ -58,6 +58,22 @@ const HubEntry = "magpie"
 // hubIdle is how long a server the hub started is kept with no call.
 var hubIdle = 10 * time.Minute
 
+// hubRetryWait is how long the hub leaves a server it couldn't reach
+// before starting it again: each failure in a row waits a little longer
+// than the one before, a minute at most, so a server that wedges (its
+// initialize never answers) doesn't have every ask that comes wait out
+// its dial (#4606). A server that answers is back at once.
+var hubRetryWait = func(fails int) time.Duration {
+	w := time.Second
+	for i := 1; i < fails && w < time.Minute; i++ {
+		w *= 2
+	}
+	if w > time.Minute {
+		w = time.Minute
+	}
+	return w
+}
+
 // SetMCPHub turns the hub on or off: on, each agent that can reach it is
 // given magpie's one entry in place of its servers; off, their own entries
 // again, and the servers the hub started are ended.
@@ -423,6 +439,8 @@ type backend struct {
 	conn    hubConn
 	ready   chan struct{} // while it is being connected to
 	err     error         // why the last connection failed
+	fails   int           // connections failed in a row
+	retryAt time.Time     // when the next one may be tried
 	list    []map[string]json.RawMessage
 	listed  bool
 	says    serverSays // what the server said of itself when it was connected to
@@ -452,6 +470,15 @@ func (b *backend) connect(ctx context.Context) (hubConn, error) {
 		return c, nil
 	}
 	if b.ready == nil {
+		if time.Now().Before(b.retryAt) {
+			// a dial that failed is left where it fell a while: the ask
+			// that comes while it waits is told why at once, and the
+			// server is started again when its wait is over, not at every
+			// ask, each of which paid its dial (#4606)
+			err := b.err
+			b.mu.Unlock()
+			return nil, err
+		}
 		b.ready = make(chan struct{})
 		go b.start(b.ready)
 	}
@@ -490,6 +517,12 @@ func (b *backend) start(ready chan struct{}) {
 	b.conn, b.err, b.ready = c, err, nil
 	if c != nil {
 		b.says = c.said()
+	}
+	if err != nil {
+		b.fails++
+		b.retryAt = time.Now().Add(hubRetryWait(b.fails))
+	} else {
+		b.fails, b.retryAt = 0, time.Time{}
 	}
 	close(ready)
 }

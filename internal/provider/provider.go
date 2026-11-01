@@ -863,6 +863,11 @@ func accountSettings(a, pk Provider) Provider {
 	a.SwitchOnly = pk.SwitchOnly
 	a.Sink, a.NoModels, a.BestInFamily = pk.Sink, pk.NoModels, pk.BestInFamily
 	a.NativeCompaction = pk.NativeCompaction
+	// a search=yes the user said of a subscription's or a plugin's provider
+	// (`magpie provider set zcode search=yes`): kept, and a no takes back
+	// only the user's yes — a plugin's own word for its upstream (#2027) is
+	// never read as false for one saying nothing (#4402, ZCode's WebSearch)
+	a.Searches = a.Searches || pk.Searches
 	a.PromptAsWritten = pk.PromptAsWritten
 	// a deferred tool a tool search loaded goes where it was loaded, set
 	// with `magpie provider set <id> additional-tools=on` (#2660, #4738)

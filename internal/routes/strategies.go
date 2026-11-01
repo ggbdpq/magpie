@@ -261,12 +261,54 @@ var Rotate = Strategy{Order: func(pool string, seats []Seat) []int {
 // share of its allowance used, as the vendor says; then, and for other
 // keys, by what magpie sent it lately; prepaid wallets, which have no
 // share, by what they have left first (Seat.Left). Of those all but used up, one that
-// goes on on its credits goes first (spentBefore).
+// goes on on its credits goes first (spentBefore). A seat that tells no
+// share — a pay-as-you-go key, a wallet, an account whose use wasn't read
+// — has Used read 0, and by that 0 alone it went first, burning paid
+// balance while subscription quota sat idle (#4535): it goes after those
+// whose share was told and has room, and before those running low or
+// spent, as Smart and Pace keep the unknown. One not known that tells
+// what it has left as it answers goes first, once, as in Smart and Pace.
 var LeastUsed = Strategy{ByUse: true, Order: func(_ string, seats []Seat) []int {
 	left := byLeft(seats, fewerTokens)
+	// shared: the seat's share of its allowance was told — a use past 0
+	// read from it, or a window it renews by. Without one, Used reads 0
+	// because it isn't known, not because there is room.
+	shared := func(s Seat) bool {
+		if !s.Known {
+			return false
+		}
+		if s.Used > 0 {
+			return true
+		}
+		for _, at := range s.Soon {
+			if !at.IsZero() {
+				return true
+			}
+		}
+		return false
+	}
+	// where the seat lands: a learning account first, once, as in Smart
+	// and Pace; then those with room whose share was told; then the
+	// shareless, kept for their cost before a share nearly gone; then
+	// those running low, then spent
+	place := func(s Seat) int {
+		switch t := tier(s.Used); {
+		case s.Learns:
+			return 0
+		case t == 0 && shared(s):
+			return 1
+		case t == 0:
+			return 2
+		default:
+			return t + 2
+		}
+	}
 	idx := identity(len(seats))
 	sort.SliceStable(idx, func(a, b int) bool {
 		sa, sb := seats[idx[a]], seats[idx[b]]
+		if pa, pb := place(sa), place(sb); pa != pb {
+			return pa < pb
+		}
 		if ta, tb := tier(sa.Used), tier(sb.Used); ta == 2 && tb == 2 && sa.Credits != sb.Credits {
 			return sa.Credits
 		}

@@ -36,6 +36,16 @@ func codexOwnOffMagpie(r *http.Request, body []byte, model string) (to *http.Req
 	if model == "" || strings.Contains(model, "/") || !local(r) {
 		return nil, ""
 	}
+	// one of Codex's hidden side calls on its own model — a thread's title
+	// or description, a summary, a composer prediction — is magpie's to
+	// answer where it stands (codexTitlesTo and its siblings, further down
+	// handle), never to put on Codex's ChatGPT sign-in: with no sign-in to
+	// be had (no ChatGPT account in magpie, Codex itself never signed in)
+	// the request was answered 404 and Codex named the thread after its
+	// first message, whatever the settings said (#4590)
+	if k := requestCallKind(r.Header, requestSessionMetadata(r.Header, body)); isTitleKind(k) || isDescriptionKind(k) || isSummaryKind(k) || isPredictionKind(k) {
+		return nil, ""
+	}
 	if !fromCodex(r.Header) && agentOf(r) != "codex" {
 		return nil, ""
 	}

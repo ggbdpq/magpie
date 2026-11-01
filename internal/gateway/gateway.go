@@ -4561,7 +4561,19 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 	// (custom_tool.go, #2656): translated on the client's own API, which
 	// offers them as functions
 	customOff := func() bool {
-		return from == provider.Responses && !s.fits(p.ID, customToolRefused(model), from) && hasCustomTool(body)
+		if from != provider.Responses || !hasCustomTool(body) {
+			return false
+		}
+		// Grok's, on Copilot's /responses in front of it: xAI takes no
+		// custom tool (#3392), and Copilot's answer says no more than the
+		// status — "422 Unprocessable Entity: Unprocessable Entity"
+		// (#2951, #4374: six requests of one turn, all refused) — so
+		// nothing tells magpie what to learn from. They go as functions
+		// from the first ask.
+		if p.Account != nil && p.Account.Agent == "copilot" && grokModel(model) {
+			return true
+		}
+		return !s.fits(p.ID, customToolRefused(model), from)
 	}
 	if relay && !keep && customOff() {
 		relay, ownAPI = false, true
@@ -4760,6 +4772,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 	body = deepseekTokenField(p, to, body)
 	body = s.chatTokenField(p, to, body)
 	body = toolOneOfAsAnyOf(p, to, body)
+	body = copilotGeminiToolUnions(p, to, body)
 	body = kimiToolEnumTypes(p, to, body)
 	body = kimiToolRefTypes(p, to, body)
 	body = geminiToolTypes(body)

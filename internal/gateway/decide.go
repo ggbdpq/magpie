@@ -255,6 +255,7 @@ func readJev(b []byte, intents []string, levels bool, prev before) (verdict, err
 	var v verdict
 	if a, ok := out.Answers["intent"]; ok && len(intents) > 0 && !levels {
 		v.Sure = sureOf(a.Confidence, a.Probabilities)
+		v.Said = a.Choice // as it said it, no intent come of it or not (#4598)
 		if a.Choice != noIntent && v.Sure >= jevSure {
 			v.Intent = intentNamed(intents, a.Choice)
 		}
@@ -265,6 +266,7 @@ func readJev(b []byte, intents []string, levels bool, prev before) (verdict, err
 		// (继续，再加一个基准测试 after a 复杂任务 came out 0.54 to 0.46),
 		// and a turn with none before takes the likelier
 		v.Sure = sureOf(a.Confidence, a.Probabilities)
+		v.Said = a.Choice
 		v.Intent = intentNamed(intents, a.Choice)
 		if was := intentNamed(intents, prev.Intent); v.Sure < jevSure && was != "" {
 			v.Intent = was

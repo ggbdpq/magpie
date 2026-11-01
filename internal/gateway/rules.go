@@ -85,13 +85,18 @@ type Classified struct {
 	By      string   `json:"by"`               // the classifier model
 	Intents []string `json:"intents"`          // what it chose among
 	Intent  string   `json:"intent,omitempty"` // what it said the message is; "" for none
-	After   string   `json:"after,omitempty"`  // what it said the turn before was, which it was told
-	Effort  string   `json:"effort,omitempty"` // the reasoning it said the turn wants
-	Score   float64  `json:"score,omitempty"`  // how hard it took the turn to be, 0 (low) to 3 (xhigh)
-	Sure    float64  `json:"sure,omitempty"`   // how confident it was of the intent, 0 to 1
-	Cached  bool     `json:"cached,omitempty"` // said before, for the same message
-	Ms      int      `json:"ms,omitempty"`     // how long asking it took
-	Error   string   `json:"error,omitempty"`  // why it couldn't say: no intent matches then, unless Fallback
+	// Said: the answer as it said it — the number a chat model answered
+	// with (0 for none), or the choice a decision model named, its own
+	// "none of these" included — kept when no intent came of it, so
+	// "none" is told from an answer no rule could take (#4598)
+	Said   string  `json:"said,omitempty"`
+	After  string  `json:"after,omitempty"`  // what it said the turn before was, which it was told
+	Effort string  `json:"effort,omitempty"` // the reasoning it said the turn wants
+	Score  float64 `json:"score,omitempty"`  // how hard it took the turn to be, 0 (low) to 3 (xhigh)
+	Sure   float64 `json:"sure,omitempty"`   // how confident it was of the intent, 0 to 1
+	Cached bool    `json:"cached,omitempty"` // said before, for the same message
+	Ms     int     `json:"ms,omitempty"`     // how long asking it took
+	Error  string  `json:"error,omitempty"`  // why it couldn't say: no intent matches then, unless Fallback
 	// Fallback: "previous" when it couldn't say and the turn keeps the
 	// intent the turn before had (After), rather than none
 	Fallback string `json:"fallback,omitempty"`
@@ -313,7 +318,7 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 			t0 := time.Now()
 			v, cached, err := classify(ask, g.Classifier, intents, prev, effort, text)
 			classifiedFor(g.ID, g.Classifier, err)
-			c.Intent, c.Cached, c.Ms = v.Intent, cached, int(time.Since(t0).Milliseconds())
+			c.Intent, c.Said, c.Cached, c.Ms = v.Intent, v.Said, cached, int(time.Since(t0).Milliseconds())
 			if effort {
 				c.Effort, c.Score = v.Effort, v.Score
 			}

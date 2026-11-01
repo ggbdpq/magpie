@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2805,24 +2807,51 @@ func validatesItemIDs(p provider.Provider) bool {
 		p.Account != nil && (p.Account.Agent == "codex" || p.Account.Agent == "copilot")
 }
 
+// itemIDCap is the most characters an input item's id may have: OpenAI's
+// API, the ChatGPT backend, and Copilot's /responses in front of them turn
+// a longer one away — "Invalid 'input[1].id': string too long. Expected a
+// string with maximum length 64, but got a string with length 420
+// instead" (isnine, #4525; ghjkllasdf-fake's 444 alike, #4527: Copilot
+// gives its items ids hundreds of characters long, and Codex carries each
+// one back on every later turn). A call's call_id is another field's to
+// bound, as BoundCallID does.
+const itemIDCap = 64
+
+// boundItemID is id, of at most itemIDCap characters, as an upstream that
+// checks item ids takes it: one longer goes as its kind's prefix ("msg_",
+// "rs_") and the sha256 of the whole of it, cut to fit. The same id goes
+// to the same shorter one every turn, and no two ids land on one (a plain
+// cut could: ids of a vendor can begin alike).
+func boundItemID(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	digest := hex.EncodeToString(sum[:])
+	if i := strings.IndexByte(id, '_'); i > 0 && i <= 4 && safeID([]byte(id[:i])) {
+		return id[:i+1] + digest[:itemIDCap-i-1]
+	}
+	return digest
+}
+
 // plainItemIDs is a Responses request whose input items' ids are of
-// [A-Za-z0-9_-] only, as OpenAI takes them, and the rest of the request
-// byte for byte. Another vendor's reply can hand the agent an item whose
-// id has more in it — Muse Spark on OpenCode's reasoning id is two joined
-// with a colon ("rs_6aca…:rs_01a1…") — and the agent sends it back on
-// every later turn, after a switch too, where OpenAI and Copilot turn the
-// whole request away over it (echo_ts). Such reasoning goes: an upstream
-// that checks ids never made it, so its encrypted_content is another
-// vendor's, which it couldn't read either. Any other item (a message, a
-// call) keeps what it says, its id with each other character as "_"; a
-// call's call_id, which its output names it by, stays as it was.
+// [A-Za-z0-9_-] only and of itemIDCap characters at most, as OpenAI takes
+// them, and the rest of the request byte for byte. Another vendor's reply
+// can hand the agent an item whose id has more in it — Muse Spark on
+// OpenCode's reasoning id is two joined with a colon ("rs_6aca…:rs_01a1…")
+// — and the agent sends it back on every later turn, after a switch too,
+// where OpenAI and Copilot turn the whole request away over it (echo_ts).
+// Such reasoning goes: an upstream that checks ids never made it, so its
+// encrypted_content is another vendor's, which it couldn't read either.
+// Reasoning of the characters they take, but longer than they take
+// (Copilot's own, #4525), keeps its place, its id bound; any other item (a
+// message, a call) keeps what it says, its id bound when it was long
+// (boundItemID) or with each other character as "_"; a call's call_id,
+// which its output names it by, stays as it was.
 func plainItemIDs(body []byte) []byte {
 	if !bytes.Contains(body, []byte(`"id"`)) {
 		return body
 	}
 	if !anyInputItem(body, func(it []byte) bool {
 		id, _ := stringBytes(memberOrNil(it, "id"))
-		return len(id) > 0 && !safeID(id)
+		return len(id) > itemIDCap || len(id) > 0 && !safeID(id)
 	}) {
 		return body
 	}
@@ -2839,15 +2868,23 @@ func plainItemIDs(body []byte) []byte {
 	for _, raw := range items {
 		var it map[string]json.RawMessage
 		var typ, id string
-		if json.Unmarshal(raw, &it) != nil || json.Unmarshal(it["id"], &id) != nil || id == "" || safeIDChars.MatchString(id) {
+		if json.Unmarshal(raw, &it) != nil || json.Unmarshal(it["id"], &id) != nil || id == "" ||
+			len(id) <= itemIDCap && safeIDChars.MatchString(id) {
 			kept = append(kept, raw)
 			continue
 		}
 		changed = true
-		if json.Unmarshal(it["type"], &typ) == nil && typ == "reasoning" {
+		// another vendor's reasoning goes; the vendor's own, only too
+		// long, stays with its seal
+		if json.Unmarshal(it["type"], &typ) == nil && typ == "reasoning" && !safeIDChars.MatchString(id) {
 			continue
 		}
-		it["id"], _ = json.Marshal(unsafeToolID.ReplaceAllString(id, "_"))
+		if len(id) > itemIDCap {
+			id = boundItemID(id)
+		} else {
+			id = unsafeToolID.ReplaceAllString(id, "_")
+		}
+		it["id"], _ = json.Marshal(id)
 		b, err := marshalPlain(it)
 		if err != nil {
 			return body

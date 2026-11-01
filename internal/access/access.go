@@ -584,6 +584,42 @@ func On(id string) bool {
 	return false
 }
 
+// IdentityByID is who the key with this id is now, judged as Check judges
+// it: false when no such key is in the store, or it is turned off,
+// expired, or issued under one that no longer lets it in. A request's
+// caller rides its context, but a run's helper callback comes with none
+// (#4654) — the run keeps the key's id, and the caller is read again here
+// as the search is made, so a key narrowed or stopped since the run
+// started holds what it holds now, and one that no longer works is failed
+// closed rather than sent as an unrestricted caller.
+func IdentityByID(id string) (Identity, bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	keys, err := load()
+	if err != nil || id == "" {
+		return Identity{}, false
+	}
+	i := slices.IndexFunc(keys, func(k Key) bool { return k.ID == id })
+	if i < 0 {
+		s := settings.Load()
+		if s.LAN && s.LANKeyID == "" && s.LANKey != "" && !strings.HasPrefix(s.LANKey, revokedLANPrefix) && !slices.ContainsFunc(keys, func(k Key) bool { return k.LAN }) {
+			if k := legacyLANKey(s.LANKey); k.ID == id {
+				return Identity{KeyID: k.ID, KeyName: k.Name, Default: true}, true
+			}
+		}
+		return Identity{}, false
+	}
+	k := keys[i]
+	if k.Off {
+		return Identity{}, false
+	}
+	who, err := identityOf(k, keys, Now())
+	if err != nil {
+		return Identity{}, false
+	}
+	return who, true
+}
+
 func legacyLANKey(secret string) Key {
 	// The fallback and eventual persisted key must share their usage identity.
 	sum := sha256.Sum256([]byte(secret))

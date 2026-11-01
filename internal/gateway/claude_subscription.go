@@ -58,6 +58,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/yetone/magpie/internal/access"
 	"unicode/utf8"
 
 	"github.com/yetone/magpie/internal/appdir"
@@ -267,8 +269,16 @@ type subscriptionRun struct {
 	// client never sees
 	search     func(ctx context.Context, query string) (string, []Hit, error)
 	searchName string
-	begin      func() Event
-	resume     func() // after a resumed turn has its segment
+	// callerKeyID is the gateway key the run's first turn came with
+	// (access.Caller's KeyID, "" for a caller that came with none), read
+	// again as its searches are made: the helper's callback carries no
+	// caller of its own, and the key's accounts hold the searches the run
+	// makes as they hold its turns (#4654). A run is never resumed for a
+	// turn that came with another key. Set as the run starts; read under
+	// mu.
+	callerKeyID string
+	begin       func() Event
+	resume      func() // after a resumed turn has its segment
 
 	// patience, when set, is how long a tool call may park before the agent
 	// is told it is still running (its MCP client gives up on a call at a
@@ -329,6 +339,14 @@ type callLine struct {
 	uuid string
 	seq  int
 	told string
+}
+
+// startedFor is the gateway key the run's first turn came with, "" for a
+// caller that came with none (#4654).
+func (r *subscriptionRun) startedFor() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.callerKeyID
 }
 
 // linesMost is how many call lines a run keeps (lines).
@@ -4093,6 +4111,7 @@ const (
 	runExpired     = "process expired"
 	noRunWaiting   = "no run waiting"
 	accountChanged = "account changed"
+	anotherKey     = "another gateway key"
 	// another request has the run's calls answered, or is answering them
 	answeredElsewhere = "answered by another request"
 )
@@ -4663,6 +4682,7 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 	run.mu.Lock()
 	call.Name = declaredName(run.names, call.Name)
 	search, searchName := run.search, run.searchName
+	callerKeyID := run.callerKeyID
 	run.mu.Unlock()
 	if search != nil && call.Name == searchName {
 		var a struct {
@@ -4672,6 +4692,19 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 		// within the minute its MCP client waits for a call
 		ctx, cancel := context.WithTimeout(r.Context(), 55*time.Second)
 		defer cancel()
+		// the helper's callback comes with no caller of its own; the run
+		// keeps it (#4654). The key's accounts hold the search as they
+		// hold the run's turns, and one disabled or removed since the run
+		// started holds the search out: failed closed, never sent as an
+		// unrestricted caller.
+		if callerKeyID != "" {
+			who, ok := access.IdentityByID(callerKeyID)
+			if !ok {
+				writeJSON(w, 200, mcpToolResult{Content: []map[string]any{{"type": "text", "text": "search failed: the gateway key this run started under no longer works (it was removed or disabled), so magpie declined the web search"}}, IsError: true})
+				return
+			}
+			ctx = access.WithIdentity(ctx, who)
+		}
 		found, hits, err := search(ctx, a.Query)
 		if err != nil {
 			writeJSON(w, 200, mcpToolResult{Content: []map[string]any{{"type": "text", "text": "search failed: " + err.Error()}}, IsError: true})
@@ -5290,7 +5323,13 @@ func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request,
 	start := func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error) {
 		ctx = p.Via(ctx) // the account's own proxy, its CLI run's too
 		if run, events := s.subscription.resume(req, owner); run != nil {
-			return run, events, nil
+			// a run kept for the next turn goes on for its own key's turn,
+			// never for another key's (#4654): the searches it makes on the
+			// helper's callback go on the key it was started for
+			if run.startedFor() == access.Caller(ctx).KeyID {
+				return run, events, nil
+			}
+			run.abortFor("it was started for another gateway key")
 		}
 		// a run let go past idleMost left its session for this turn, or
 		// the run whose calls another request answered first has it
@@ -5448,6 +5487,13 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from 
 		run.abort()
 		run, how = nil, accountChanged
 	}
+	// a run started for one gateway key is never resumed for another
+	// (#4654): the searches its agent makes on the helper's callback go on
+	// the key the run is for, not the one this turn came with
+	if run != nil && run.startedFor() != access.Caller(r.Context()).KeyID {
+		run.abort()
+		run, how = nil, anotherKey
+	}
 	// the client rewrote the conversation since the run's last reply, as Pi
 	// does compacting it mid-turn: the run's agent holds the one from before,
 	// would answer from it, and tell the client a context as large as ever,
@@ -5527,6 +5573,7 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from 
 			if search.Name != "" {
 				run.search, run.searchName = s.webSearch, search.Name
 			}
+			run.callerKeyID = access.Caller(r.Context()).KeyID
 			run.mu.Unlock()
 		}
 	}

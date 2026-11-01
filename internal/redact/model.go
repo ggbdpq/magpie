@@ -638,11 +638,27 @@ func underPackages(s string, a int) bool {
 // missingModuleAt says s[a:b] is quoted after the words an error names a
 // module it could not load with: tsc's and Node's Cannot find module
 // 'x', Python's No module named 'x', a bundler's Can't resolve 'x'.
+//
+// The words stand right before the quote, and what is read of what is
+// before them is the last 64 bytes of it, as assignedSecret reads the 64
+// before the value it judges (above). The whole text before the quote was
+// read and lowered here, once for each place a known value turns up at in
+// a session's body (knownSpans asks packageAt), so a long session paid its
+// whole length again for every value already masked in it — a 555 KB turn
+// held minutes in the masking and was answered 504 (#4766). A letter a
+// lower case folds wider than stands in those bytes only where the text is
+// really written in one, and there the whole text before the quote is
+// read, as before.
 func missingModuleAt(s string, a, b int) bool {
 	if a == 0 || b >= len(s) || !strings.ContainsRune("'\"`", rune(s[a-1])) || s[b] != s[a-1] {
 		return false
 	}
-	q := strings.ToLower(strings.TrimRight(s[:a-1], " \t"))
+	e := a - 1
+	before := s[max(0, e-64):e]
+	if !isASCII(before) {
+		before = s[:e]
+	}
+	q := strings.ToLower(strings.TrimRight(before, " \t"))
 	for _, w := range []string{"find module", "find package", "module named", "resolve", "resolve import", "resolve module"} {
 		if wordEnd(q, w) {
 			return true

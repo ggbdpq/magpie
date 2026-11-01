@@ -154,11 +154,14 @@ var HTTP1 func(u *url.URL) bool
 // base kept for that proxy alone. Connections are so reused among the
 // requests going through one proxy and never carried to another — HTTP/2
 // ones, which a transport shares by host whatever proxy they were dialled
-// through, among them. A request HTTP1 names goes through a clone kept
-// for HTTP/1.1 (http1Only), and one to a host whose certificate the
-// provider's user said not to check (WithUncheckedTLS) through a clone
-// kept for that host alone (uncheckTLS). A host whose IPv6 is taken but
-// goes nowhere is dialed over IPv4 (v4Fallback).
+// through, among them. A move of the global proxy (the settings) drops
+// the idle connections the old one dialled, which a transport, pooling
+// by target host alone, would have carried over the switch (#4523). A
+// request HTTP1 names goes through a clone kept for HTTP/1.1
+// (http1Only), and one to a host whose certificate the provider's user
+// said not to check (WithUncheckedTLS) through a clone kept for that
+// host alone (uncheckTLS). A host whose IPv6 is taken but goes nowhere
+// is dialed over IPv4 (v4Fallback).
 func Dispatch(base *http.Transport) http.RoundTripper {
 	v4Fallback(base)
 	return &dispatch{base: base, own: map[route]*http.Transport{}}
@@ -168,6 +171,12 @@ type dispatch struct {
 	base *http.Transport
 	mu   sync.Mutex
 	own  map[route]*http.Transport
+	// global is the proxy setting the last request to leave saw, and
+	// seenGlobal whether any has: a move closes the idle connections,
+	// which would carry the requests after a switch through the old
+	// proxy (#4523).
+	global     string
+	seenGlobal bool
 }
 
 // route is what a request needs of its transport other than base: a
@@ -180,11 +189,31 @@ type route struct {
 }
 
 func (d *dispatch) RoundTrip(req *http.Request) (*http.Response, error) {
+	if d.globalMoved() {
+		d.CloseIdleConnections()
+	}
 	r := route{choice: choiceOf(req.Context()), h1: HTTP1 != nil && HTTP1(req.URL), unchecked: uncheckedHost(req)}
 	if r == (route{}) {
 		return v4Retry(d.base, req)
 	}
 	return v4Retry(d.transport(r), req)
+}
+
+// globalMoved says the proxy in magpie's settings changed since the last
+// request to leave: base follows the setting at dial time (Func), but a
+// transport pools by target host, and its HTTP/2 connections by the
+// authority alone, so a connection dialled through the old proxy carried
+// the requests after a switch too, and the Test left by the old exit
+// while the new one was shown (#4523). Dropping the idle connections
+// sends the request after it through the proxy in force; one a request
+// is still reading is left to finish. The first request sees no move.
+func (d *dispatch) globalMoved() bool {
+	now := strings.TrimSpace(settings.Load().Proxy)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	moved := d.seenGlobal && d.global != now
+	d.global, d.seenGlobal = now, true
+	return moved
 }
 
 func (d *dispatch) transport(r route) *http.Transport {

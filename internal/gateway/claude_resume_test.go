@@ -415,3 +415,53 @@ func TestClaudeRunKeysLeaveOutTheBillingLine(t *testing.T) {
 		t.Fatal("a key leaves out the system prompt itself")
 	}
 }
+
+// A saved session whose file lost its last lines — Claude Code writes a
+// session as it goes, and a run stopped as it was shelved may leave a file
+// cut short of what its agent held — is not resumed: a run resumed on it is
+// told the messages since alone, and answers from a history that is no
+// longer there (yetone/magpie#4407, a 468k-token turn answered from a
+// 2,171-token one). A file that has the line the run last heard, and one
+// whose run named no line, go on as before.
+func TestClaudeAShelvedSessionMissingItsLastLineIsNotResumed(t *testing.T) {
+	write := func(dir, sid, body string) {
+		if err := os.WriteFile(filepath.Join(dir, sid+".jsonl"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	at := time.Now()
+	req := func(last string) *Request {
+		return &Request{Model: "claude-sonnet-5", System: "rules", Messages: []Message{
+			{Role: "user", Parts: []Part{{Kind: Text, Text: "a1"}}},
+			{Role: "assistant", Parts: []Part{{Kind: Text, Text: "ok"}}},
+			{Role: "user", Parts: []Part{{Kind: Text, Text: last}}},
+		}}
+	}
+	ask := func(t *testing.T, dir, sid, line, body string) bool {
+		t.Helper()
+		b := newSubscriptionBridge()
+		key, _ := nextTurn(req("a2"), "")
+		s := &savedSession{session: sid, sessions: []string{dir}, key: key, line: line, at: at,
+			timer: time.AfterFunc(time.Minute, func() {})}
+		write(dir, sid, body)
+		b.shelf[key] = s
+		return b.unshelve(req("a2"), "") != nil
+	}
+	if !ask(t, t.TempDir(), "whole", "uuid-last",
+		"{\"type\":\"user\",\"uuid\":\"uuid-early\"}\n{\"type\":\"assistant\",\"uuid\":\"uuid-last\"}\n") {
+		t.Fatal("a session whose file has its last line was not resumed")
+	}
+	if ask(t, t.TempDir(), "short", "uuid-last",
+		"{\"type\":\"user\",\"uuid\":\"uuid-early\"}\n") {
+		t.Fatal("a session whose file was cut short of its last line was resumed")
+	}
+	if !ask(t, t.TempDir(), "blind", "",
+		"{\"type\":\"user\",\"uuid\":\"uuid-early\"}\n") {
+		t.Fatal("a session whose run named no line was not resumed")
+	}
+	// a file gone since it was shelved is the saved() check's case; the line
+	// check reads only what is there and says so either way
+	if ask(t, t.TempDir(), "gone", "uuid-last", "") {
+		t.Fatal("a session with no file at all was resumed")
+	}
+}

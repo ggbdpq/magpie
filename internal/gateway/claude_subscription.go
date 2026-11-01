@@ -2410,6 +2410,14 @@ type savedSession struct {
 	// system prompt (appendsPrompt), which the session doesn't keep: the
 	// run that resumes it is given them so again
 	appended bool
+	// line is the uuid of the last line of the session its run's Claude
+	// Code said it wrote (noteLines). Claude Code writes a session as it
+	// goes, and a run stopped as it was shelved may leave a file cut short
+	// of what its agent held; a run resumed on it is told the messages
+	// since alone, and answers from a history that is no longer there
+	// (yetone/magpie#4407: a 468k-token turn answered from a 2,171-token
+	// one). unshelve checks the file has the line.
+	line string
 
 	cachePrefix cachePrefix
 
@@ -2423,12 +2431,20 @@ type savedSession struct {
 func (b *subscriptionBridge) shelve(run *subscriptionRun) {
 	run.mu.Lock()
 	sid, sessions, rewound, replied, tools := run.sessionID, run.sessions, run.rewound, run.replied, maps.Clone(run.tools)
+	// the last line of the session the run's Claude Code said it wrote,
+	// which its file must have when the session goes on from it (unshelve)
+	line, top := "", 0
+	for _, l := range run.lines {
+		if l.uuid != "" && l.seq > top {
+			line, top = l.uuid, l.seq
+		}
+	}
 	run.mu.Unlock()
 	if sid == "" || len(sessions) == 0 || rewound && !replied || run.idleKey == "" {
 		return
 	}
 	key := run.idleKey
-	s := &savedSession{session: sid, sessions: sessions, owner: run.owned(), conv: run.convKey, key: key, behind: run.behindKey, loose: run.loose, tools: tools, at: run.idleAt, cachePrefix: run.cachePrefix, appended: run.appended}
+	s := &savedSession{session: sid, sessions: sessions, owner: run.owned(), conv: run.convKey, key: key, behind: run.behindKey, loose: run.loose, tools: tools, at: run.idleAt, cachePrefix: run.cachePrefix, appended: run.appended, line: line}
 	if run.tui {
 		s.behindLine, s.behindMsg = run.behindLine, run.behindMsg
 	} else {
@@ -2507,6 +2523,11 @@ func (b *subscriptionBridge) unshelve(req *Request, owner string) *savedSession 
 		return nil
 	}
 	if behind && !s.cutBehind() {
+		s.discard()
+		return nil
+	}
+	if s.line != "" && !sessionHasLine(s.sessions, s.session, s.line) {
+		log.Printf("claude: the saved session of a conversation was cut short; a new Claude Code is told the whole conversation")
 		s.discard()
 		return nil
 	}
@@ -2912,6 +2933,31 @@ func cutBefore(b, mark []byte, uuid string) int {
 		return -1
 	}
 	return bytes.LastIndexByte(b[:end-1], '\n') + 1
+}
+
+// sessionHasLine says the session's file has its line uuid, reading the
+// file whole as cutSession does. false when none of the folders has it: a
+// file cut short of the line — Claude Code writes a session as it goes,
+// and a run stopped as it was shelved may leave one — cannot go on from
+// where the run left it, and the conversation is told whole instead.
+// true for a session the check cannot read, whose run guards itself: the
+// file a --resume names is Claude Code's to refuse ("No conversation
+// found with session ID", which start answers with a run told whole).
+func sessionHasLine(dirs []string, sid, uuid string) bool {
+	if sid == "" || uuid == "" || strings.ContainsAny(sid, `/\`) || strings.Contains(sid, "..") {
+		return true
+	}
+	mark := []byte(`"uuid":"` + uuid + `"`)
+	for _, dir := range dirs {
+		b, err := os.ReadFile(filepath.Join(dir, sid+".jsonl"))
+		if err != nil {
+			continue
+		}
+		if cutAfter(b, mark, uuid) >= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // saved says its session's file is still there.

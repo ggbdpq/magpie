@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"compress/gzip"
 	"errors"
 	"fmt"
@@ -90,6 +91,21 @@ type requestLimits struct {
 	body        int64
 	readTimeout time.Duration
 }
+
+// wholeBody is a request body already whole in memory: a socket turn's
+// (request, responses_ws.go). readRequestBody hands its bytes on as they
+// are: reading them out again was a second copy of a turn's body — the
+// conversation whole, tens of MB for a long session — on every turn
+// (#4668).
+type wholeBody struct {
+	*bytes.Reader
+	b []byte
+}
+
+func newWholeBody(b []byte) *wholeBody { return &wholeBody{bytes.NewReader(b), b} }
+
+// Close does nothing: the bytes are the turn's, not a connection's.
+func (*wholeBody) Close() error { return nil }
 
 func (s *Server) requestBody(w http.ResponseWriter, r *http.Request, from provider.Protocol) ([]byte, bool) {
 	return s.readRequestBody(w, r, from, 0)
@@ -251,6 +267,12 @@ func readBoundedRequestBody(w http.ResponseWriter, r *http.Request, limits reque
 	original := r.Body
 	r.Body = &idleBody{original, controller, limits.readTimeout}
 	defer func() { r.Body = original }()
+	// a body whole in memory already, sent as it is (declared is its
+	// length: no Content-Encoding), is not read out again — a socket
+	// turn's, the conversation whole, tens of MB (#4668)
+	if wb, ok := original.(*wholeBody); ok && declared == int64(wb.Len()) {
+		return wb.b, 0, nil
+	}
 	rd, err := decodedBody(r)
 	if errors.Is(err, errBodyEncoding) {
 		return reject(http.StatusUnsupportedMediaType, err)

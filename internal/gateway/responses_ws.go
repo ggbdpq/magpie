@@ -178,6 +178,7 @@ type responsesSocket struct {
 	// for the log
 	frames, continued int
 	got, sent         int64
+	peak              int64 // the longest turn's body
 }
 
 // serveResponsesSocket serves a WebSocket upgrade on a Responses route,
@@ -213,8 +214,8 @@ func (s *Server) serveResponsesSocket(w http.ResponseWriter, r *http.Request) bo
 	defer s.sockets.remove(sock)
 	sock.serve()
 	if sock.frames > 0 {
-		log.Printf("responses socket from %s ended: %d turns, %d continued, %d bytes received, %d sent on as whole requests",
-			r.RemoteAddr, sock.frames, sock.continued, sock.got, sock.sent)
+		log.Printf("responses socket from %s ended: %d turns, %d continued, %d bytes received, %d sent on as whole requests, the longest turn %d",
+			r.RemoteAddr, sock.frames, sock.continued, sock.got, sock.sent, sock.peak)
 	}
 	return true
 }
@@ -501,6 +502,9 @@ func (rs *responsesSocket) turn(ctx context.Context, t *socketTurnRun, frame []b
 	if socketTurnBody != nil {
 		socketTurnBody(body)
 	}
+	if n := int64(len(body)); n > rs.peak {
+		rs.peak = n
+	}
 	req := rs.request(ctx, body)
 	out := &socketTurnWriter{rs: rs, ctx: ctx, run: t, h: http.Header{}}
 	rs.o.via.ServeHTTP(out, req)
@@ -633,8 +637,8 @@ func (rs *responsesSocket) request(ctx context.Context, body []byte) *http.Reque
 	if strings.EqualFold(gjson.GetBytes(body, `client_metadata.ws_request_header_x_openai_internal_codex_responses_lite`).String(), "true") {
 		req.Header.Set("X-OpenAI-Internal-Codex-Responses-Lite", "true")
 	}
-	req.Body = io.NopCloser(bytes.NewReader(body))
-	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	req.Body = newWholeBody(body)
+	req.GetBody = func() (io.ReadCloser, error) { return newWholeBody(body), nil }
 	req.ContentLength = int64(len(body))
 	req.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	req.RequestURI = ""

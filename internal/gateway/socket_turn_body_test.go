@@ -3,9 +3,12 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // oldTurnBody is what a socket's turn wrote before turnBody.
@@ -78,4 +81,31 @@ func TestTurnBodyWrittenOnce(t *testing.T) {
 		t.Errorf("a %d-byte turn allocated %d bytes (%.1f×)", size, got, float64(got)/float64(size))
 	}
 	t.Logf("body %d: turnBody %d, json.Marshal %d", size, got, allocatedEach(func() { oldTurnBody(q, input) }))
+}
+
+// A socket turn's body is whole in memory already (turnBody's, in the
+// request request built): readRequestBody handed it on as it is, rather
+// than reading it out again — a second copy of the conversation whole,
+// tens of MB for a long session, on every turn (#4668).
+func TestSocketTurnBodyReadOnce(t *testing.T) {
+	text := strings.Repeat("读这个文件 if a < b && c > d { return }\n", 40)
+	var items []string
+	for i := range 600 {
+		items = append(items, `{"type":"message","role":"user","content":[{"type":"input_text","text":`+strconv.Quote(text+strconv.Itoa(i))+`}]}`)
+	}
+	body := []byte(`{"model":"fake/m1","stream":true,"instructions":"be brief","input":[` + strings.Join(items, ",") + `]}`)
+	s := New()
+	read := func() {
+		req := httptest.NewRequest("POST", CodexPath+"/responses", nil)
+		req.Body = newWholeBody(body)
+		req.ContentLength = int64(len(body))
+		got, ok := s.readRequestBody(httptest.NewRecorder(), req, provider.Responses, 0)
+		if !ok || !bytes.Equal(got, body) {
+			t.Fatalf("read %d bytes, ok %v; want the body as it is (%d bytes)", len(got), ok, len(body))
+		}
+	}
+	read()
+	if spent := allocatedEach(read); spent > uint64(len(body))/4 {
+		t.Errorf("handing a %d-byte turn's body on allocated %d bytes", len(body), spent)
+	}
 }

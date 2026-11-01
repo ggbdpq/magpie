@@ -1,12 +1,16 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -697,4 +701,59 @@ func TestHeldTurnOwnsItsInput(t *testing.T) {
 	if got, _ := json.Marshal(items); !ok || string(got) != want {
 		t.Fatalf("held after the frame was written over: %s", got)
 	}
+}
+
+// The socket's ended line says the longest turn's body (#4668): a
+// session's turns differ by tens of MB, and the average the sent count
+// gives hid which of its sockets had the body that set the app's peak.
+func TestResponsesSocketLogsLongestTurn(t *testing.T) {
+	fresh(t)
+	sockUp(t, &respUp{})
+	_, ts := sockServer(t)
+	var logs lockedLogs
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+	c, _, err := dialSock(t, ts, "/v1/responses", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := c.turn(create("", userHi))
+	id := last(first).Get("response.id").String()
+	if id == "" {
+		t.Fatalf("no reply: %v", first)
+	}
+	// the second turn's instructions put its body far past the first's
+	c.turn(create(id, userMore, `"instructions":"`+strings.Repeat("x", 6000)+`"`))
+	c.c.CloseNow()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(logs.String(), "the longest turn") {
+		time.Sleep(20 * time.Millisecond)
+	}
+	m := regexp.MustCompile(`(\d+) sent on as whole requests, the longest turn (\d+)`).FindStringSubmatch(logs.String())
+	if m == nil {
+		t.Fatalf("no ended line with the longest turn: %s", logs.String())
+	}
+	var sent, peak int64
+	fmt.Sscan(m[1], &sent)
+	fmt.Sscan(m[2], &peak)
+	if peak < 6000 || peak >= sent {
+		t.Errorf("the longest turn %d, sent %d; the peak is the second turn's body, the first's and second's sum sent", peak, sent)
+	}
+}
+
+type lockedLogs struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *lockedLogs) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *lockedLogs) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
 }

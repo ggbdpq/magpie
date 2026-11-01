@@ -1,10 +1,8 @@
 package gateway
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -91,7 +89,7 @@ func codexOwnOffMagpie(r *http.Request, body []byte, model string) (to *http.Req
 	r2.URL.Path = CodexPath + "/responses"
 	r2.URL.RawPath = ""
 	r2.RequestURI = ""
-	r2.Body = io.NopCloser(bytes.NewReader(body))
+	r2.Body = newWholeBody(body)
 	r2.ContentLength = int64(len(body))
 	r2.Header.Del("Content-Encoding")
 	r2.Header.Del("Content-Length")

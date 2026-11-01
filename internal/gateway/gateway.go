@@ -8741,6 +8741,24 @@ func streamError(w http.ResponseWriter, proto provider.Protocol, model string, s
 // unreachable server.
 var passingSaid = regexp.MustCompile(`(?i)\b(429|500|502|503|504)\b|timed? ?out|rate.?limit|too many requests|overloaded|service.?unavailable|server.?error|internal.?error|connection.?(error|refused|reset)|retry your request|try your request again`)
 
+// deadRunSaid is how the cursor plugin says it failed a native Run that
+// outlived its absolute 15-minute lifetime mid-reply (#4419). The Run is
+// gone and the conversation is not — asked again, the history is rebuilt
+// on a fresh Run — but the error rides a 200 stream, so the agent reads
+// the text alone (#2372), and no word of it is one Pi retries on: the
+// turn ended where asking again goes on.
+const deadRunSaid = "native Run lifetime expired"
+
+// withRunRetryHint is msg with a word to ask again on, when it is the
+// dead Run's: the words saysPassing gives magpie's own stream errors,
+// which passingSaid takes for said already.
+func withRunRetryHint(msg string) string {
+	if msg == "" || !strings.Contains(msg, deadRunSaid) || passingSaid.MatchString(msg) {
+		return msg
+	}
+	return msg + " (you can retry your request)"
+}
+
 // saysPassing is msg, an error sent in a stream whose status the agent
 // can no longer be told, with the status said in it when it is one a
 // moment may clear (408, 429, 5xx) and msg says so in no words an agent

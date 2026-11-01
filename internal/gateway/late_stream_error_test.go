@@ -85,6 +85,60 @@ func TestLateStreamErrorNotKept(t *testing.T) {
 	}
 }
 
+// The cursor plugin fails a native Run that outlived its 15-minute
+// lifetime mid-reply with "native Run lifetime expired" in the stream, its
+// 200 long since sent (#4419). The Run is gone and the conversation is
+// not — asked again, the history is rebuilt on a fresh Run — but an agent
+// that reads only the error's text (Pi, #2372) has no word in it it
+// retries on, so the turn ended where asking again goes on. The relay
+// says it in the words Pi knows; an error of any other wording goes as it
+// came.
+func TestRunExpiredSaysAskAgain(t *testing.T) {
+	fresh(t)
+	f := &fake{reply: sse(`data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":"half said"}}]}`,
+		`data: {"error":{"message":"native Run lifetime expired","code":410}}`,
+		`data: {"error":{"message":"native outbound messages limit reached","code":429}}`)}
+	setup(t, provider.Chat, f)
+	code, body := post(t, "/v1/chat/completions", `{"model":"fake/m1","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", code, body)
+	}
+	if !strings.Contains(body, "half said") {
+		t.Fatalf("the reply so far didn't reach the client: %s", body)
+	}
+	var said []string
+	for _, ev := range events(body) {
+		if e, ok := ev["error"].(map[string]any); ok {
+			said = append(said, e["message"].(string))
+		}
+	}
+	if len(said) != 2 {
+		t.Fatalf("the client was told %d errors, want 2: %s", len(said), body)
+	}
+	if said[0] != "native Run lifetime expired (you can retry your request)" {
+		t.Fatalf("the dead Run's error reached the client with no word to retry on: %q", said[0])
+	}
+	if said[1] != "native outbound messages limit reached" {
+		t.Fatalf("an error of another wording was rewritten: %q", said[1])
+	}
+}
+
+// The same dead-Run error reaches a client magpie translates for, its
+// words again the only thing the agent reads (#4419 on a Messages client).
+func TestRunExpiredTranslatedSaysAskAgain(t *testing.T) {
+	fresh(t)
+	f := &fake{reply: sse(`data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":"half said"}}]}`,
+		`data: {"error":{"message":"native Run lifetime expired","code":410}}`)}
+	setup(t, provider.Chat, f)
+	code, body := postMessages(t, `{"model":"fake/m1","stream":true,"max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", code, body)
+	}
+	if !strings.Contains(body, "native Run lifetime expired (you can retry your request)") {
+		t.Fatalf("the dead Run's error reached the client with no word to retry on: %s", body)
+	}
+}
+
 // A conversation affine keeps on an account by the account alone — the
 // model that answered it has left the group, and the widest of affine's
 // matches still holds it there — loses its stick when that reply breaks

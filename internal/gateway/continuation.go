@@ -450,6 +450,9 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				h.mu.Unlock()
 			}
 		case KError:
+			// the dead Run's wording tells the agent it may ask again
+			// (#4419), as a failure of magpie's own does (saysPassing)
+			ev.Text = withRunRetryHint(ev.Text)
 			if ev.Code == "" && cont.possible() && !inGroupTry(r.Context()) {
 				// held while the reply may yet go on; sent when it can't
 				failed, failedCode, failedStatus, cut = ev.Text, ev.Code, ev.Status, true

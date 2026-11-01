@@ -109,6 +109,7 @@ var (
 	contentPartsSpace = []byte(`"content": [`)
 	toolCallsField    = []byte(`"tool_calls"`)
 	functionCallField = []byte(`"function_call":{`)
+	runExpiredText    = []byte(deadRunSaid)
 )
 
 // write takes what was read and gives back what to send on: every line
@@ -158,7 +159,8 @@ func needsTidy(line []byte) bool {
 		bytes.Contains(line, contentParts) ||
 		bytes.Contains(line, contentPartsSpace) ||
 		bytes.Contains(line, toolCallsField) ||
-		bytes.Contains(line, functionCallField)
+		bytes.Contains(line, functionCallField) ||
+		bytes.Contains(line, runExpiredText)
 }
 
 // needs is needsTidy, a finish_reason once a choice made a call, and a
@@ -264,10 +266,16 @@ func (t *chatTidy) line(line []byte) []byte {
 	if raw, ok := chunk["usage"]; ok {
 		chunk["usage"], usageMended = openAIUsage(raw)
 	}
+	errorMended := false
+	if raw, ok := chunk["error"]; ok {
+		if nb, chg := errorSaidAgain(raw); chg {
+			chunk["error"], errorMended = nb, true
+		}
+	}
 	var choices []map[string]json.RawMessage
 	if decodeJSON(chunk["choices"], &choices) != nil {
 		choices = nil
-		if !usageMended {
+		if !usageMended && !errorMended {
 			return line
 		}
 	}
@@ -355,7 +363,7 @@ func (t *chatTidy) line(line []byte) []byte {
 			}
 		}
 	}
-	if !changed && !usageMended {
+	if !changed && !usageMended && !errorMended {
 		return line
 	}
 	if changed {
@@ -366,6 +374,31 @@ func (t *chatTidy) line(line []byte) []byte {
 		return line
 	}
 	return append(append([]byte("data: "), nb...), end...)
+}
+
+// errorSaidAgain is a relayed error event with the dead Run's wording
+// told the agent it may ask again (withRunRetryHint, #4419); ok is false
+// for an error of any other wording, or one with no message, which go as
+// they came, their other fields kept.
+func errorSaidAgain(raw json.RawMessage) (json.RawMessage, bool) {
+	var m map[string]json.RawMessage
+	if decodeJSON(raw, &m) != nil || m == nil {
+		return raw, false
+	}
+	var msg string
+	if decodeJSON(m["message"], &msg) != nil || msg == "" {
+		return raw, false
+	}
+	said := withRunRetryHint(msg)
+	if said == msg {
+		return raw, false
+	}
+	m["message"], _ = json.Marshal(said)
+	nb, err := json.Marshal(m)
+	if err != nil {
+		return raw, false
+	}
+	return nb, true
 }
 
 // emptyFunctionCall reports whether raw is a legacy function_call

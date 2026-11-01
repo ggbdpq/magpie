@@ -90,28 +90,33 @@ func CodexCreditsMode(user string) string {
 }
 
 // SetCodexCreditsMode sets how user spends its credits: CreditsOn,
-// CreditsFirst, CreditsLast or CreditsOff. One account has one of them.
+// CreditsFirst, CreditsLast or CreditsOff. One account has one of them,
+// and the lists they live in change under the file's lock: a save built
+// from a snapshot read before the other mode's write dropped what it
+// wrote (#2813), and a mode's answer read outside the lock could be
+// stale in the same way.
 func SetCodexCreditsMode(user, mode string) error {
 	if mode != CreditsOn && mode != CreditsFirst && mode != CreditsLast && mode != CreditsOff {
 		return fmt.Errorf("credits: %q is not on, first, last or off", mode)
 	}
 	user = accountKey(user)
-	s := settings.Load()
-	not := func(u string) bool { return u == user }
-	s.CodexNoCredits = slices.DeleteFunc(s.CodexNoCredits, not)
-	s.CodexCreditsLast = slices.DeleteFunc(s.CodexCreditsLast, not)
-	s.CodexCreditsFirst = slices.DeleteFunc(s.CodexCreditsFirst, not)
-	if user != "" {
-		switch mode {
-		case CreditsOff:
-			s.CodexNoCredits = append(s.CodexNoCredits, user)
-		case CreditsFirst:
-			s.CodexCreditsFirst = append(s.CodexCreditsFirst, user)
-		case CreditsLast:
-			s.CodexCreditsLast = append(s.CodexCreditsLast, user)
+	return settings.Update(func(s *settings.Settings) error {
+		not := func(u string) bool { return u == user }
+		s.CodexNoCredits = slices.DeleteFunc(s.CodexNoCredits, not)
+		s.CodexCreditsLast = slices.DeleteFunc(s.CodexCreditsLast, not)
+		s.CodexCreditsFirst = slices.DeleteFunc(s.CodexCreditsFirst, not)
+		if user != "" {
+			switch mode {
+			case CreditsOff:
+				s.CodexNoCredits = append(s.CodexNoCredits, user)
+			case CreditsFirst:
+				s.CodexCreditsFirst = append(s.CodexCreditsFirst, user)
+			case CreditsLast:
+				s.CodexCreditsLast = append(s.CodexCreditsLast, user)
+			}
 		}
-	}
-	return settings.Save(s)
+		return nil
+	})
 }
 
 // HoldCaps is the shares of its windows at which routing holds the

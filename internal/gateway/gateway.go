@@ -4887,7 +4887,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 		// magpie never does. A test asked as Codex asks with them
 		// (provider.TestAs)
 		seen := http.Header{}
-		lite := liteKept(p, to, true)
+		lite := liteKept(p, to, true, modelOf(body))
 		for k, vs := range in {
 			if !lite && strings.EqualFold(k, liteHeader) {
 				// the body left Lite (fromLite), so does its header
@@ -5140,7 +5140,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		// Responses Lite's shape, its tools as an input item (#350) and its
 		// reasoning context, goes only to OpenAI; anyone else is sent what
 		// Codex sends a model that isn't Lite
-		if !liteKept(p, proto, fromCodex(r.Header)) {
+		if !liteKept(p, proto, fromCodex(r.Header), modelOf(body)) {
 			body = fromLite(body)
 		}
 		// only the ChatGPT backend runs Codex's tool search as Codex sends it

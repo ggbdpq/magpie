@@ -5769,6 +5769,12 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	} else if proto == provider.Anthropic && names != nil {
 		// a Messages reply, streamed or whole (textcalls_anthropic.go)
 		written = &anthropicTextCalls{names: names, sse: sse}
+	} else if proto == provider.Responses && names != nil {
+		// a Responses reply, streamed or whole (textcalls_relay.go)
+		written = &responsesTextCalls{names: names, sse: sse, seq: -1}
+	} else if names := geminiToolNames(body); proto == provider.Gemini && names != nil {
+		// a Gemini reply, streamed or whole (textcalls_relay.go)
+		written = &geminiTextCalls{names: names, sse: sse}
 	}
 	// a reply that came whole: JSON, or one under text/plain or no type
 	// that eventStream found isn't a stream

@@ -489,8 +489,10 @@ func pluginProviderServing(pp plugin.Provider, l pluginLogin, keys []string) Pro
 	}
 	if pp.ID == "zed" {
 		// an OpenAI model's request as Zed's cloud reads it: Codex's
-		// developer messages as system ones, its namespaced tools flat
-		a.body = ZedBody
+		// developer messages as system ones, its namespaced tools flat;
+		// a Code Assist envelope's tool-calling mode in the case its
+		// Google-AI request type reads (ZedCodeAssist, #4657)
+		a.body = func(b []byte) []byte { return ZedBody(ZedCodeAssist(b)) }
 	}
 	a.models = func() []catalog.Model {
 		if cur, ok := PluginOf(id); ok {

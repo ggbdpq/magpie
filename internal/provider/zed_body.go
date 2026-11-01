@@ -12,6 +12,9 @@ package provider
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
+
+	"github.com/tidwall/gjson"
 )
 
 // Zed's cloud reads an OpenAI model's request into its own Responses types
@@ -167,4 +170,30 @@ func ZedBody(body []byte) []byte {
 		return body
 	}
 	return bytes.TrimRight(b.Bytes(), "\n")
+}
+
+// ZedCodeAssist is a Code Assist envelope fitted to Zed's cloud: its
+// Google-AI request type reads the tool-calling mode in lowercase (auto,
+// any, none), where Google's own APIs take the proto enums AUTO, ANY —
+// every tool-bearing request to a Zed Gemini model came back 400 "failed
+// to parse Google AI request: unknown variant `AUTO`" (#4657). VALIDATED
+// is Antigravity's alone and never goes to a plugin; a request with no
+// toolConfig, or a lowercase mode already, goes as it came.
+func ZedCodeAssist(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"toolConfig"`)) {
+		return body
+	}
+	v := gjson.GetBytes(body, "request.toolConfig.functionCallingConfig.mode")
+	if v.Type != gjson.String || v.Index <= 0 || !gjson.ValidBytes(body) {
+		return body
+	}
+	lower := strings.ToLower(v.Str)
+	if lower == v.Str {
+		return body
+	}
+	mode, _ := json.Marshal(lower)
+	out := make([]byte, 0, len(body)+len(mode))
+	out = append(out, body[:v.Index]...)
+	out = append(out, mode...)
+	return append(out, body[v.Index+len(v.Raw):]...)
 }

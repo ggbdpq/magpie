@@ -137,3 +137,65 @@ func TestZedPluginGetsNoDeveloperRole(t *testing.T) {
 		t.Fatalf("Zed was offered %s", got)
 	}
 }
+
+// zedParsesGoogleAI is what Zed's cloud asks of a Google AI request, the
+// one its Gemini models are asked on: the tool-calling mode in lowercase
+// (auto, any, none), "" when it would take it.
+func zedParsesGoogleAI(q map[string]any) string {
+	tc, _ := q["toolConfig"].(map[string]any)
+	fc, _ := tc["functionCallingConfig"].(map[string]any)
+	mode, _ := fc["mode"].(string)
+	switch mode {
+	case "", "auto", "any", "none":
+		return ""
+	}
+	return "unknown variant `" + mode + "`, expected one of `auto`, `any`, `none`"
+}
+
+// A tool-bearing request to a Gemini model of Zed's plugin goes out on
+// Code Assist's wire with the tool-calling mode in the case Zed's cloud
+// reads: lowercase (auto, any, none), where Google's own APIs take the
+// proto enums AUTO, ANY — every such turn came back "failed to parse
+// Google AI request: unknown variant `AUTO`" while tool-less ones went
+// through (atticuskk, #4657).
+func TestZedPluginGoogleAIToolModeLowercase(t *testing.T) {
+	var mu sync.Mutex
+	var sent []map[string]any
+	pid := besideFake(t, "zed", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var q map[string]any
+		json.Unmarshal(b, &q)
+		mu.Lock()
+		sent = append(sent, q)
+		mu.Unlock()
+		if why := zedParsesGoogleAI(q); why != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(400)
+			io.WriteString(w, `{"error":{"message":"Zed: failed to parse Google AI request: `+why+`"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse(
+			`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]}}],"modelVersion":"gm"}`,
+			`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"done"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":2,"totalTokenCount":9}}`,
+		))
+	}))
+	body := `{"model":"` + pid + `/fake-gemini","max_tokens":40,"messages":[
+		{"role":"user","content":"Weather in Paris? Use the tool."}],
+		"tools":[{"type":"function","function":{"name":"get_weather","description":"Get weather",
+		"parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]}`
+	rec := httptest.NewRecorder()
+	New().Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body)))
+	if rec.Code != 200 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sent) != 1 {
+		t.Fatalf("asked %d times", len(sent))
+	}
+	fc := sent[0]["toolConfig"].(map[string]any)["functionCallingConfig"].(map[string]any)
+	if mode := fc["mode"].(string); mode != "auto" {
+		t.Fatalf("Zed's cloud was handed toolConfig mode %q; it reads lowercase (auto, any, none)", mode)
+	}
+}

@@ -147,6 +147,12 @@ func RunMCP(args []string) error {
 					listed = nil
 				}
 				toolsMu.Unlock()
+				// Claude Code has the tools only once this answer is in,
+				// so magpie hears of the listing first: its first turn of
+				// the interactive mode waits for that word, that its first
+				// request never goes upstream with no tools (#4762). Best
+				// effort: a run magpie has let go is told nothing.
+				tellReady(client, callbackURL)
 			case "tools/call":
 				var p struct {
 					Name      string          `json:"name"`
@@ -207,4 +213,21 @@ func newCallID() string {
 	var b [12]byte
 	_, _ = rand.Read(b[:])
 	return "call_" + hex.EncodeToString(b[:])
+}
+
+// tellReady tells magpie, at the call back, that Claude Code has listed
+// its tools. Whatever the answer, the listing goes on: the word is a
+// courtesy, not a hand magpie holds up.
+func tellReady(client *http.Client, callbackURL string) {
+	req, err := http.NewRequest(http.MethodPost, callbackURL, strings.NewReader(`{"ready":true}`))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, res.Body)
+	res.Body.Close()
 }

@@ -182,9 +182,15 @@ type subscriptionRun struct {
 	clientMarks   bool
 	lean          bool // started with leanSystem as its system prompt
 	tui           bool // Claude Code's interactive mode (claudeTUI)
-	cacheTail     string
-	cachePrefix   cachePrefix
-	timer         *time.Timer
+	// mcpReady is closed once Claude Code has listed the bridge's MCP
+	// tools (the helper's ready word, mcpToolsReady): the interactive
+	// mode's first message waits for it (start), that its first request
+	// never goes upstream with no tools (#4762)
+	mcpReady    chan struct{}
+	readyOnce   sync.Once
+	cacheTail   string
+	cachePrefix cachePrefix
+	timer       *time.Timer
 
 	// Claude Code's input, kept open for the next turn; owner is the account
 	// it runs as (owned, named once in its life when it started unnamed:
@@ -1006,7 +1012,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	}
 	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
 
-	run := &subscriptionRun{bridge: b, token: token, model: model, cmd: cmd, tmp: tmp, schema: len(req.Format.schema()) > 0, pending: map[string]chan mcpToolResult{}, stdin: stdin, effort: req.Effort, sessions: sessions, started: time.Now()}
+	run := &subscriptionRun{bridge: b, token: token, model: model, cmd: cmd, tmp: tmp, schema: len(req.Format.schema()) > 0, pending: map[string]chan mcpToolResult{}, stdin: stdin, effort: req.Effort, sessions: sessions, started: time.Now(), mcpReady: make(chan struct{})}
 	run.owner.Store(&owner)
 	run.names = bridgeNames(req.Tools)
 	run.safeguardBeta = req.SafeguardBeta
@@ -1091,6 +1097,23 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		run.sessionID = from.session
 		run.mu.Unlock()
 	}
+	if tui {
+		// Claude Code connects its MCP server as it starts, and takes the
+		// first message once its prompt shows: the first request went
+		// upstream with no tools, and the model answered without them
+		// (#4762). The helper says when Claude Code has listed its tools
+		// (mcpCall's ready), and the first message waits for that word —
+		// bounded: a helper that never connects holds the turn no longer
+		// than mcpReadyWait, and the turn goes out without the tools as
+		// it did before.
+		select {
+		case <-run.mcpReady:
+		case <-time.After(mcpReadyWait):
+		case <-ctx.Done():
+			run.abort()
+			return nil, nil, ctx.Err()
+		}
+	}
 	line, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": prompt}})
 	if err := run.tell(line); err != nil {
 		run.abort()
@@ -1111,6 +1134,14 @@ var (
 	controlWait = 10 * time.Second
 	tuiInitWait = claudetui.ReadyWait + 2*controlWait
 )
+
+// mcpReadyWait is how long the interactive mode's first message waits for
+// Claude Code to have listed the bridge's MCP tools, once its prompt
+// shows. The helper answers tools/list as Claude Code connects it, so the
+// word normally arrives before the prompt does and the wait is over as
+// start gets there; the bound is for a helper that never connects, whose
+// turn goes out without the tools rather than not at all (mcpToolsReady).
+var mcpReadyWait = 5 * time.Second
 
 // controlUnanswered is a control request Claude Code took and didn't
 // answer in time.
@@ -4686,8 +4717,20 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 		ToolCallID string          `json:"tool_call_id"`
 		Name       string          `json:"name"`
 		Arguments  json.RawMessage `json:"arguments"`
+		Ready      bool            `json:"ready"`
 	}
-	if json.Unmarshal(body, &call) != nil || call.ToolCallID == "" {
+	if json.Unmarshal(body, &call) != nil {
+		http.Error(w, "invalid tool call", http.StatusBadRequest)
+		return
+	}
+	if call.Ready && call.ToolCallID == "" {
+		// the helper's word that Claude Code has listed the run's tools;
+		// the interactive mode's first message waits for it (start)
+		run.mcpToolsReady()
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if call.ToolCallID == "" {
 		http.Error(w, "invalid tool call", http.StatusBadRequest)
 		return
 	}
@@ -4875,6 +4918,14 @@ func (r *subscriptionRun) launch() error {
 		r.finish()
 	}()
 	return nil
+}
+
+// mcpToolsReady is the helper's word that Claude Code has listed the
+// run's MCP tools (mcpCall's ready). Once, however many times the helper
+// says it over the run's life: the interactive mode's first message waits
+// for the one that matters (start), and a list mid-turn says again.
+func (r *subscriptionRun) mcpToolsReady() {
+	r.readyOnce.Do(func() { close(r.mcpReady) })
 }
 
 // tell writes line to Claude Code's input. Wait closes that input as

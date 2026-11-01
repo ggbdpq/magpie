@@ -4831,11 +4831,13 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 		path, body = at, b
 	}
 	base := p.Base(to)
-	zenFree := p.IsOpenCode() && p.OpenCodeFree(gjson.GetBytes(body, "model").String())
-	if zenFree {
-		// Zen's free tier answers at OpenCode 2's paths alone (zenfree.go)
-		base = provider.OpenCodeFreeURL(base, to)
+	openCode := p.IsOpenCode()
+	if openCode {
+		// on the paths OpenCode 2 reads the model on, the v2 catalog's,
+		// paid models' among them (#4740)
+		base = provider.OpenCodeV2URL(base, to)
 	}
+	zenFree := openCode && p.OpenCodeFree(gjson.GetBytes(body, "model").String())
 	if mantleRoutes(p, to) {
 		// Bedrock Mantle serves each model under /v1 or /openai/v1
 		// (mantle.go)

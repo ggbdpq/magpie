@@ -56,9 +56,10 @@ func TestOpenCodeGoModelsGoOnTheirOwnAPI(t *testing.T) {
 	}
 	// Go's own answers: the model's API takes it (here 401, as Go answers
 	// a request with no key it knows, 2026-10-08), the other two turn it
-	// away as Go does with a key
-	own := map[string]string{"gpt-6-luna": "/zen/go/v1/responses", "grok-4.7": "/zen/go/v1/responses",
-		"muse-spark-1.3-contributor": "/zen/go/v1/responses", "minimax-m2.7": "/zen/go/v1/messages"}
+	// away as Go does with a key — at the v2 paths of the inference API's
+	// /inference/go the models are read at now (#4740)
+	own := map[string]string{"gpt-6-luna": "/inference/go/openai/v1/responses", "grok-4.7": "/inference/go/openai/v1/responses",
+		"muse-spark-1.3-contributor": "/inference/go/openai/v1/responses", "minimax-m2.7": "/inference/go/anthropic/v1/messages"}
 	var mu sync.Mutex
 	asked := map[string][]string{}
 	s := New()
@@ -102,8 +103,13 @@ func TestOpenCodeGoModelsGoOnTheirOwnAPI(t *testing.T) {
 			}
 			want := "opencode.ai" + own[model]
 			if own[model] == "" {
-				// GLM: on the API the client spoke
-				want = "opencode.ai/zen/go" + path
+				// GLM: on the API the client spoke, moved to the
+				// inference API's /inference/go (#4740)
+				if path == "/v1/messages" {
+					want = "opencode.ai/inference/go/anthropic/v1/messages"
+				} else {
+					want = "opencode.ai/inference/go/openai/v1" + strings.TrimPrefix(path, "/v1")
+				}
 			}
 			if got[0] != want {
 				t.Errorf("%s on %s: asked %v, want %s first (%d %s)", model, path, got, want, rec.Code, rec.Body)
@@ -111,6 +117,104 @@ func TestOpenCodeGoModelsGoOnTheirOwnAPI(t *testing.T) {
 			if strings.Contains(rec.Body.String(), "does not support this protocol") {
 				t.Errorf("%s on %s: %d %s", model, path, rec.Code, rec.Body)
 			}
+		}
+	}
+}
+
+// openCodePaidCatalog is models.dev's opencode and opencode-go as they
+// name the APIs paid models are served on (2026-11-01): GPT through
+// @ai-sdk/openai, Claude and MiniMax through @ai-sdk/anthropic, Gemini
+// through @ai-sdk/google, the rest on the chat completions the provider's
+// npm names.
+const openCodePaidCatalog = `{
+  "opencode": {"id":"opencode","npm":"@ai-sdk/openai-compatible","api":"https://opencode.ai/inference/v1","models": {
+    "kimi-k3": {"id":"kimi-k3","name":"Kimi K3"},
+    "gpt-5.5": {"id":"gpt-5.5","name":"GPT-5.5","provider":{"npm":"@ai-sdk/openai"}},
+    "claude-sonnet-5": {"id":"claude-sonnet-5","name":"Claude Sonnet 5","provider":{"npm":"@ai-sdk/anthropic"}},
+    "gemini-3.5-flash": {"id":"gemini-3.5-flash","name":"Gemini 3.5 Flash","provider":{"npm":"@ai-sdk/google"}}}},
+  "opencode-go": {"id":"opencode-go","npm":"@ai-sdk/openai-compatible","api":"https://opencode.ai/inference/go/openai/v1","models": {
+    "kimi-k3": {"id":"kimi-k3","name":"Kimi K3"},
+    "gpt-6-luna": {"id":"gpt-6-luna","name":"GPT-6 Luna","provider":{"npm":"@ai-sdk/openai"}},
+    "minimax-m2.7": {"id":"minimax-m2.7","name":"MiniMax M2.7","provider":{"npm":"@ai-sdk/anthropic"}}}}
+}`
+
+// #4740: a paid OpenCode model — Zen's, asked with a key, and Go's — is
+// asked where OpenCode 2 reads it, on the paths the v2 catalog gives its
+// provider, not the 1.x /zen paths the free move (#3491) left it on. A
+// Gemini model is asked on the Google route the catalog names.
+func TestOpenCodePaidOnV2Paths(t *testing.T) {
+	fresh(t)
+	writeCatalog(t, openCodePaidCatalog)
+	for _, p := range []provider.Provider{
+		{ID: "zen", Name: "Zen", Key: "sk-zen",
+			Chat: "https://opencode.ai/zen/v1", Responses: "https://opencode.ai/zen/v1", Anthropic: "https://opencode.ai/zen",
+			Models: []string{"kimi-k3", "gpt-5.5", "claude-sonnet-5", "gemini-3.5-flash"}},
+		{ID: "go", Name: "Go", Key: "sk-go",
+			Chat: "https://opencode.ai/zen/go/v1", Responses: "https://opencode.ai/zen/go/v1", Anthropic: "https://opencode.ai/zen/go",
+			Models: []string{"kimi-k3", "gpt-6-luna", "minimax-m2.7"}},
+	} {
+		if err := provider.Save(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var mu sync.Mutex
+	asked := map[string][]string{}
+	s := New()
+	s.client = &http.Client{Transport: countTransport(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		model := modelOf(b)
+		if model == "" {
+			// Gemini's generateContent names the model in its path
+			if i := strings.LastIndex(r.URL.Path, "/models/"); i >= 0 {
+				model = strings.Split(r.URL.Path[i+len("/models/"):], ":")[0]
+			}
+		}
+		mu.Lock()
+		asked[model] = append(asked[model], r.URL.Host+r.URL.Path)
+		mu.Unlock()
+		return &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"error":{"message":"Missing API key."}}`)), Request: r}, nil
+	})}
+	for _, c := range []struct{ model, path, body, want string }{ // model is the client's name; the upstream is asked the bare id
+		{"zen/kimi-k3", "/v1/chat/completions",
+			`{"model":"zen/kimi-k3","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`,
+			"opencode.ai/inference/openai/v1/chat/completions"},
+		{"zen/gpt-5.5", "/v1/responses",
+			`{"model":"zen/gpt-5.5","input":"hi","max_output_tokens":16}`,
+			"opencode.ai/inference/openai/v1/responses"},
+		{"zen/claude-sonnet-5", "/v1/messages",
+			`{"model":"zen/claude-sonnet-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`,
+			"opencode.ai/inference/anthropic/v1/messages"},
+		{"zen/gemini-3.5-flash", "/v1beta/models/zen/gemini-3.5-flash:streamGenerateContent",
+			`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`,
+			"opencode.ai/inference/google/v1beta/models/gemini-3.5-flash:streamGenerateContent"},
+		{"go/kimi-k3", "/v1/chat/completions",
+			`{"model":"go/kimi-k3","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`,
+			"opencode.ai/inference/go/openai/v1/chat/completions"},
+		{"go/gpt-6-luna", "/v1/responses",
+			`{"model":"go/gpt-6-luna","input":"hi","max_output_tokens":16}`,
+			"opencode.ai/inference/go/openai/v1/responses"},
+		{"go/minimax-m2.7", "/v1/messages",
+			`{"model":"go/minimax-m2.7","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`,
+			"opencode.ai/inference/go/anthropic/v1/messages"},
+	} {
+		mu.Lock()
+		asked = map[string][]string{}
+		mu.Unlock()
+		req := httptest.NewRequest("POST", c.path, strings.NewReader(c.body))
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		mu.Lock()
+		got := asked[strings.TrimPrefix(c.model, "zen/")]
+		got = append(got, asked[strings.TrimPrefix(c.model, "go/")]...)
+		mu.Unlock()
+		if len(got) == 0 {
+			t.Errorf("%s on %s: upstream never asked (%d %s)", c.model, c.path, rec.Code, rec.Body)
+			continue
+		}
+		if got[0] != c.want {
+			t.Errorf("%s on %s: asked %v, want %s first (%d %s)", c.model, c.path, got, c.want, rec.Code, rec.Body)
 		}
 	}
 }

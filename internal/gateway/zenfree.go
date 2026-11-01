@@ -13,7 +13,7 @@ import (
 // request must carry OpenCode's headers (provider.OpenCodeClient), be
 // streamed, and offer OpenCode's core tools, or Zen answers 403
 // "OpenCode's free tier can only be used from within OpenCode"; be asked
-// at OpenCode 2's paths (provider.OpenCodeFreeURL), with each core tool
+// at OpenCode 2's paths (provider.OpenCodeV2URL), with each core tool
 // taking OpenCode's parameters (provider.OpenCodeToolSchemas); and since
 // late October 2026 carry OpenCode 2's User-Agent and its environment
 // block in the system prompt (provider.OpenCodeEnvironment), or Zen

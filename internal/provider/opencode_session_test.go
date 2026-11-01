@@ -74,7 +74,7 @@ func TestOpenCodeSessionOnEveryCall(t *testing.T) {
 		t.Fatalf("test: %+v", rs)
 	}
 	got := asked()
-	if len(got) != 2 || got[0][0] != "/zen/go/v1/models" || got[1][0] != "/zen/go/v1/chat/completions" {
+	if len(got) != 2 || got[0][0] != "/zen/go/v1/models" || got[1][0] != "/inference/go/openai/v1/chat/completions" {
 		t.Fatalf("asked: %q", got)
 	}
 	if !strings.HasPrefix(got[0][1], "ses_") || !strings.HasPrefix(got[1][1], "ses_") || got[0][1] == got[1][1] {

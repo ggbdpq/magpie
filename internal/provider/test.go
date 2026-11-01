@@ -116,8 +116,12 @@ func tiny(q Provider, proto Protocol, model string) (url, body string) {
 	if q.Account != nil && q.Account.Stream && body != "" {
 		body = strings.TrimSuffix(body, "}") + `,"stream":true}`
 	}
+	if q.IsOpenCode() {
+		// on the paths OpenCode 2 reads the model on, paid ones' too (#4740)
+		url = OpenCodeV2URL(url, proto)
+	}
 	if q.OpenCodeFree(model) && body != "" {
-		url, body = OpenCodeFreeURL(url, proto), zenFreeProbe(proto, body)
+		body = zenFreeProbe(proto, body)
 	}
 	if q.IsCline() && body != "" {
 		body = clineProbe(body)

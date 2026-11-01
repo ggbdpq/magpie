@@ -285,7 +285,7 @@ func TestZenFreeAtInferenceURL(t *testing.T) {
 	})}
 	zenSend(t, s, "/v1/chat/completions", `{"model":"zen/mimo-v2.6-flash-free","messages":[{"role":"user","content":"hi"}]}`)
 	zenSend(t, s, "/v1/chat/completions", `{"model":"zen/kimi-k2.6","messages":[{"role":"user","content":"hi"}]}`)
-	if len(paths) != 2 || paths[0] != "opencode.ai/inference/openai/v1/chat/completions" || paths[1] != "opencode.ai/zen/v1/chat/completions" {
+	if len(paths) != 2 || paths[0] != "opencode.ai/inference/openai/v1/chat/completions" || paths[1] != "opencode.ai/inference/openai/v1/chat/completions" {
 		t.Fatalf("paths %v", paths)
 	}
 	tools, _ := sent[0]["tools"].([]any)

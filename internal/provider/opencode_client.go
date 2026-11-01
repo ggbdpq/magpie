@@ -203,7 +203,7 @@ func OpenCodeSession(h http.Header, u string) {
 // OpenCodeClient sets, a streamed request offering OpenCode's core tools
 // (OpenCodeTools, OpenCodeToolSchemas) with OpenCode's environment block
 // in its system prompt (OpenCodeEnvironment), at the paths OpenCode 2
-// asks (OpenCodeFreeURL), as checked against Zen in October 2026. The
+// asks (OpenCodeV2URL), as checked against Zen in October 2026. The
 // gateway asks them so whoever the client is (gateway/zenfree.go), and the
 // Test button's probe so (zenFreeProbe). A free model is one whose id ends
 // in -free, or one models.dev's opencode prices at nothing, as big-pickle,
@@ -239,16 +239,27 @@ var OpenCodeToolSchemas = map[string]string{
 	"shell": `{"type":"object","properties":{"command":{"type":"string","description":"Shell command string to execute"},"workdir":{"type":"string","description":"Working directory to execute the command in. Defaults to the current working directory. When possible, avoid changing directories in the command and set the working directory here instead."},"timeout":{"type":"integer","minimum":0,"description":"Timeout in milliseconds. Set to 0 to disable the timeout. Defaults to 120000 for foreground commands. Background commands have no timeout by default."},"background":{"type":"boolean","description":"Run the command in the background and return immediately (useful for dev servers and long-running builds). You do not need to use '&' at the end of the command when using this parameter. You will be notified when it completes. DO NOT poll for completion."}},"required":["command"],"additionalProperties":false}`,
 }
 
-// OpenCodeFreeURL is where a request on proto to Zen's free tier goes,
-// given the URL it would go to at Zen (https://opencode.ai/zen/v1/…, or
-// under /zen for Messages): where OpenCode 2 sends it, the base_url
-// models.dev's v2 catalog (models.opencode.ai/experimental/v2.0/api.json,
-// which 2.2.5 reads) gives every opencode model on 2026-11-01:
-// /inference/openai/v1 for Chat and Responses, /inference/anthropic/v1 for
-// Messages. 1.x's /inference/v1, which no OpenCode 2 request goes to, is
-// moved there too. Gemini, on which Zen gives nothing free, goes under
-// /inference as before. Any other URL, Go's (/zen/go) among them, is u.
-func OpenCodeFreeURL(u string, proto Protocol) string {
+// OpenCodeV2URL is where a request on proto to OpenCode's gateway goes,
+// given the URL it would go to at Zen or Go (https://opencode.ai/zen/v1/…,
+// /zen for Messages, /zen/go/… for Go, or under the inference API's
+// /inference and /inference/go): where OpenCode 2 sends it, the base_url
+// the v2 catalog (models.opencode.ai/experimental/v2.0/api.json, which
+// 2.2.5 reads) gives every model of the gateway's providers on 2026-11-01:
+// /inference/openai/v1 for Chat and Responses and /inference/anthropic/v1
+// for Messages at Zen, /inference/google/v1beta for Gemini, and Go's under
+// /inference/go (…/openai/v1, …/anthropic/v1, …/google/v1beta) (#4740).
+// 1.x's /zen paths, paid models' among them, move there, and so does 1.x's
+// /inference/v1, which no OpenCode 2 request goes to; so do the vendor
+// paths Go's docs gave in October 2026 at /zen/go (…/openai/v1 and
+// …/anthropic, which answer 404 there today). Gemini's /v1 depth is not
+// kept: the catalog's Google route is /v1beta, and the model rides after
+// it. The free move (#3491) had taken the free models alone this far.
+// Any other URL is u: one already on a v2 path, a relay of the user's own
+// at …/inference/custom (its vendor bills it), the models list — asked at
+// the gateway's root (/zen/v1/models today, /inference/v1/models and
+// /inference/go/v1/models as the docs give; no /v1/models under the
+// protocol paths) — and System One's /systemone among them.
+func OpenCodeV2URL(u string, proto Protocol) string {
 	pu, err := url.Parse(strings.TrimSpace(u))
 	if err != nil || pu.Scheme == "" || !openCodeHost(pu.Hostname()) {
 		return u
@@ -257,17 +268,43 @@ func OpenCodeFreeURL(u string, proto Protocol) string {
 	if !ok {
 		rest, ok = strings.CutPrefix(pu.Path, "/inference")
 	}
-	under := func(dir string) bool { return rest == dir || strings.HasPrefix(rest, dir+"/") }
-	if !ok || rest != "" && rest[0] != '/' || under("/go") || under("/openai") || under("/anthropic") || under("/google") || under("/systemone") {
+	if !ok || rest != "" && rest[0] != '/' {
+		return u
+	}
+	atGo := false
+	switch {
+	case rest == "", rest == "/v1", strings.HasPrefix(rest, "/v1/"):
+	case rest == "/go", rest == "/go/v1", strings.HasPrefix(rest, "/go/v1/"):
+		atGo, rest = true, strings.TrimPrefix(rest, "/go")
+	case strings.HasPrefix(rest, "/go/"):
+		// Go's at a vendor path (/zen/go/openai/v1, the URL Go's docs
+		// gave in October 2026): the same paths live under /inference/go
+		pu.Path = "/inference" + rest
+		return pu.String()
+	default:
+		// a v2 path (/openai/v1, /anthropic/v1, /google/v1beta,
+		// /systemone), a custom relay's, or anything else of the user's
 		return u
 	}
 	switch proto {
 	case Chat, Responses:
-		pu.Path = "/inference/openai" + rest
+		if atGo {
+			pu.Path = "/inference/go/openai" + rest
+		} else {
+			pu.Path = "/inference/openai" + rest
+		}
 	case Anthropic:
-		pu.Path = "/inference/anthropic" + rest
-	default:
-		pu.Path = "/inference" + rest
+		if atGo {
+			pu.Path = "/inference/go/anthropic" + rest
+		} else {
+			pu.Path = "/inference/anthropic" + rest
+		}
+	default: // Gemini
+		if atGo {
+			pu.Path = "/inference/go/google/v1beta" + strings.TrimPrefix(rest, "/v1")
+		} else {
+			pu.Path = "/inference/google/v1beta" + strings.TrimPrefix(rest, "/v1")
+		}
 	}
 	return pu.String()
 }

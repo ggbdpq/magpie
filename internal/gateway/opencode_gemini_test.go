@@ -41,10 +41,11 @@ type openCodeAsk struct {
 	body                    []byte
 }
 
-// openCodeGeminiServer answers as OpenCode does (2026-10-14): a Gemini
-// model on Gemini's generateContent at /zen/v1 or /inference/go/v1, a
-// GLM on chat, and "Model does not support this protocol." for a model
-// asked on an API it isn't served on.
+// openCodeGeminiServer answers as OpenCode does: a Gemini model on
+// Gemini's generateContent at the Google routes the v2 catalog names
+// (/inference/google/v1beta, /inference/go/google/v1beta, #4740), a GLM
+// on chat, and "Model does not support this protocol." for a model asked
+// on an API it isn't served on.
 func openCodeGeminiServer(t *testing.T, s *Server) func() []openCodeAsk {
 	t.Helper()
 	var mu sync.Mutex
@@ -63,7 +64,7 @@ func openCodeGeminiServer(t *testing.T, s *Server) func() []openCodeAsk {
 		switch {
 		case r.Method != http.MethodPost:
 			return reply(404, "application/json", `{}`)
-		case gemini && (strings.HasPrefix(path, "/zen/v1/models/") || strings.HasPrefix(path, "/inference/go/v1/models/")):
+		case gemini && (strings.HasPrefix(path, "/inference/google/v1beta/models/") || strings.HasPrefix(path, "/inference/go/google/v1beta/models/")):
 			return reply(200, "text/event-stream", openCodeGeminiSSE)
 		case strings.Contains(path, ":") || strings.Contains(path, "/models/"):
 			return reply(404, "text/html", `<html>Not Found</html>`)
@@ -99,11 +100,12 @@ func serve(s *Server, path, body string) (int, string) {
 // went to /zen/go/v1/chat/completions, the one API it isn't served on,
 // and Go answered "Model does not support this protocol". models.dev
 // lists it for Google's SDK, so it is asked on Gemini's
-// streamGenerateContent at /inference/go/v1 (Go's /zen/go/v1 has none),
-// signed as OpenCode signs one: the key in x-goog-api-key and the
-// conversation in x-opencode-session. Whatever API the client spoke, it
-// is answered in it, and a client's reasoning effort is Gemini's
-// thinkingLevel.
+// streamGenerateContent, at the Google route of the inference API's Go
+// half the v2 catalog names (/inference/go/google/v1beta; Go's /zen/go
+// had none, and since #4740 the route is the catalog's), signed as
+// OpenCode signs one: the key in x-goog-api-key and the conversation in
+// x-opencode-session. Whatever API the client spoke, it is answered in
+// it, and a client's reasoning effort is Gemini's thinkingLevel.
 func TestOpenCodeGoGeminiModelOnGeminiAPI(t *testing.T) {
 	fresh(t)
 	writeCatalog(t, openCodeGeminiCatalog)
@@ -113,7 +115,7 @@ func TestOpenCodeGoGeminiModelOnGeminiAPI(t *testing.T) {
 	}
 	s := New()
 	took := openCodeGeminiServer(t, s)
-	const want = "opencode.ai/inference/go/v1/models/gemini-4-argon-contributor:streamGenerateContent?alt=sse"
+	const want = "opencode.ai/inference/go/google/v1beta/models/gemini-4-argon-contributor:streamGenerateContent?alt=sse"
 	check := func(what string, code int, body string) openCodeAsk {
 		t.Helper()
 		asked := took()
@@ -179,7 +181,8 @@ func TestOpenCodeGoGeminiModelOnGeminiAPI(t *testing.T) {
 }
 
 // The sibling at Zen: its Gemini models (gemini-3-flash here) are asked
-// on Gemini's generateContent at /zen/v1, which relays them to Google.
+// on Gemini's generateContent at the Google route the v2 catalog names,
+// /inference/google/v1beta (#4740; 1.x's /zen/v1 relayed them to Google).
 // Each provider's other models stay on the API the client spoke: a GLM
 // is never asked on Gemini's.
 func TestOpenCodeZenGeminiAndOtherModelsUnchanged(t *testing.T) {
@@ -198,7 +201,7 @@ func TestOpenCodeZenGeminiAndOtherModelsUnchanged(t *testing.T) {
 
 	code, body := serve(s, "/v1/chat/completions", `{"model":"opencode-zen/gemini-3-flash","messages":[{"role":"user","content":"Say hi in one word"}]}`)
 	asked := took()
-	if len(asked) != 1 || asked[0].url != "opencode.ai/zen/v1/models/gemini-3-flash:streamGenerateContent?alt=sse" || asked[0].key != "sk-zen" || asked[0].session == "" {
+	if len(asked) != 1 || asked[0].url != "opencode.ai/inference/google/v1beta/models/gemini-3-flash:streamGenerateContent?alt=sse" || asked[0].key != "sk-zen" || asked[0].session == "" {
 		t.Errorf("zen gemini: asked %v (%d %s)", urlsOf(asked), code, body)
 	}
 	if code != 200 || gjson.Get(body, "choices.0.message.content").String() != "Hi." {
@@ -208,7 +211,7 @@ func TestOpenCodeZenGeminiAndOtherModelsUnchanged(t *testing.T) {
 	for _, id := range []string{"opencode-zen", "opencode-go"} {
 		code, body := serve(s, "/v1/chat/completions", `{"model":"`+id+`/glm-5.3","messages":[{"role":"user","content":"hi"}]}`)
 		asked := took()
-		root := map[string]string{"opencode-zen": "opencode.ai/zen/v1", "opencode-go": "opencode.ai/zen/go/v1"}[id]
+		root := map[string]string{"opencode-zen": "opencode.ai/inference/openai/v1", "opencode-go": "opencode.ai/inference/go/openai/v1"}[id]
 		if len(asked) != 1 || asked[0].url != root+"/chat/completions" || asked[0].auth != "Bearer "+map[string]string{"opencode-zen": "sk-zen", "opencode-go": "sk-go"}[id] {
 			t.Errorf("%s glm: asked %v", id, urlsOf(asked))
 		}

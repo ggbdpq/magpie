@@ -145,12 +145,15 @@ func TestZenAddKeyEmptyIsPublic(t *testing.T) {
 // models.dev's v2 catalog gives each protocol (#3491): /inference/openai/v1
 // for Chat and Responses, /inference/anthropic for Messages, from Zen's own
 // URL or 1.x's /inference/v1. Go's and other URLs are as they were.
-func TestOpenCodeFreeURL(t *testing.T) {
+func TestOpenCodeV2URL(t *testing.T) {
 	for _, c := range []struct {
 		in    string
 		proto Protocol
 		want  string
 	}{
+		// Zen, free and paid alike (#4740): 1.x's /zen paths move to the
+		// v2 catalog's, /inference/openai/v1 for Chat and Responses and
+		// /inference/anthropic/v1 for Messages
 		{"https://opencode.ai/zen/v1", Chat, "https://opencode.ai/inference/openai/v1"},
 		{"https://opencode.ai/zen/v1/", Chat, "https://opencode.ai/inference/openai/v1/"},
 		{"https://opencode.ai/zen/v1/chat/completions", Chat, "https://opencode.ai/inference/openai/v1/chat/completions"},
@@ -162,14 +165,34 @@ func TestOpenCodeFreeURL(t *testing.T) {
 		{"https://opencode.ai/zen/v1/messages", Anthropic, "https://opencode.ai/inference/anthropic/v1/messages"},
 		{"https://opencode.ai/inference", Anthropic, "https://opencode.ai/inference/anthropic"},
 		{"https://opencode.ai/inference/anthropic/v1", Anthropic, "https://opencode.ai/inference/anthropic/v1"},
-		{"https://opencode.ai/zen/v1", Gemini, "https://opencode.ai/inference/v1"},
+		// Gemini on the Google route the catalog names it
+		{"https://opencode.ai/zen/v1", Gemini, "https://opencode.ai/inference/google/v1beta"},
+		{"https://opencode.ai/zen/v1/models/gemini-3.5-flash:generateContent", Gemini, "https://opencode.ai/inference/google/v1beta/models/gemini-3.5-flash:generateContent"},
+		{"https://opencode.ai/inference/google/v1beta", Gemini, "https://opencode.ai/inference/google/v1beta"},
+		// Go: its 1.x /zen/go paths move to the inference API's /inference/go
+		{"https://opencode.ai/zen/go/v1", Chat, "https://opencode.ai/inference/go/openai/v1"},
+		{"https://opencode.ai/zen/go/v1/chat/completions", Chat, "https://opencode.ai/inference/go/openai/v1/chat/completions"},
+		{"https://opencode.ai/zen/go/v1/responses", Responses, "https://opencode.ai/inference/go/openai/v1/responses"},
+		{"https://opencode.ai/zen/go", Anthropic, "https://opencode.ai/inference/go/anthropic"},
+		{"https://opencode.ai/zen/go/v1/messages", Anthropic, "https://opencode.ai/inference/go/anthropic/v1/messages"},
+		{"https://opencode.ai/inference/go/v1", Chat, "https://opencode.ai/inference/go/openai/v1"},
+		{"https://opencode.ai/inference/go/v1", Gemini, "https://opencode.ai/inference/go/google/v1beta"},
+		{"https://opencode.ai/inference/go/openai/v1", Chat, "https://opencode.ai/inference/go/openai/v1"},
+		{"https://opencode.ai/inference/go/anthropic/v1", Anthropic, "https://opencode.ai/inference/go/anthropic/v1"},
+		// the vendor paths Go's docs gave in October 2026, dead at /zen/go
+		// today, move to the inference API's, where the catalog puts them
+		{"https://opencode.ai/zen/go/openai/v1", Chat, "https://opencode.ai/inference/go/openai/v1"},
+		{"https://opencode.ai/zen/go/anthropic/v1/messages", Anthropic, "https://opencode.ai/inference/go/anthropic/v1/messages"},
+		// untouched: a relay of the user's own at …/inference/custom, and
+		// anything not at the gateway's own depths (the models list is
+		// asked at the root's /v1/models, System One at /systemone —
+		// neither goes through here)
+		{"https://opencode.ai/inference/custom/relay/v1", Chat, "https://opencode.ai/inference/custom/relay/v1"},
 		{"https://opencode.ai/zenith/v1", Chat, "https://opencode.ai/zenith/v1"},
-		{"https://opencode.ai/zen/go/v1", Chat, "https://opencode.ai/zen/go/v1"},
-		{"https://opencode.ai/zen/go", Anthropic, "https://opencode.ai/zen/go"},
 		{"https://relay.test/zen/v1", Chat, "https://relay.test/zen/v1"},
 		{"https://api.opencode.ai/zen/v1", Chat, "https://api.opencode.ai/inference/openai/v1"},
 	} {
-		if got := OpenCodeFreeURL(c.in, c.proto); got != c.want {
+		if got := OpenCodeV2URL(c.in, c.proto); got != c.want {
 			t.Errorf("%s on %s: %s, want %s", c.in, c.proto, got, c.want)
 		}
 	}
@@ -180,8 +203,20 @@ func TestOpenCodeFreeURL(t *testing.T) {
 	if url, _ := tiny(p, Anthropic, "claude-free"); url != "https://opencode.ai/inference/anthropic/v1/messages" {
 		t.Fatalf("Messages probe %s", url)
 	}
-	if url, _ := tiny(p, Responses, "gpt-5.5"); url != "https://opencode.ai/zen/v1/responses" {
+	// paid, Zen: the same paths, asked with a key (#4740)
+	if url, _ := tiny(p, Responses, "gpt-5.5"); url != "https://opencode.ai/inference/openai/v1/responses" {
 		t.Fatalf("paid probe %s", url)
+	}
+	if url, _ := tiny(p, Anthropic, "claude-sonnet-5"); url != "https://opencode.ai/inference/anthropic/v1/messages" {
+		t.Fatalf("paid Messages probe %s", url)
+	}
+	// paid, Go
+	g, _ := FromPreset("opencode-go")
+	if url, _ := tiny(g, Chat, "kimi-k3"); url != "https://opencode.ai/inference/go/openai/v1/chat/completions" {
+		t.Fatalf("Go paid probe %s", url)
+	}
+	if url, _ := tiny(g, Anthropic, "minimax-m3"); url != "https://opencode.ai/inference/go/anthropic/v1/messages" {
+		t.Fatalf("Go paid Messages probe %s", url)
 	}
 }
 

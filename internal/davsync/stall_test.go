@@ -3,7 +3,10 @@ package davsync
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,8 +17,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // shortStall makes the watchdogs short for a test.
@@ -376,4 +382,119 @@ func TestGitHubSmallPostKeepsTheLimit(t *testing.T) {
 	if !errors.As(err, &st) || st.idle || took > 3*time.Second {
 		t.Fatalf("%v after %s, want the metadata limit on a small POST", err, took)
 	}
+}
+
+// A switch of the global proxy leaves the sync riding the old one: the
+// sync goes over http.DefaultTransport, whose idle connections only a
+// DefaultClient request would ever drop (#4824). The sync's own request
+// sees the move, drops them, and dials through the proxy in force.
+func TestGlobalSwitchDialsTheSyncThroughTheNewProxy(t *testing.T) {
+	target := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "dav") }))
+	target.EnableHTTP2 = true
+	target.StartTLS()
+	t.Cleanup(target.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(target.Certificate())
+	a, na := fakeSOCKS(t)
+	b, nb := fakeSOCKS(t)
+	cur := atomic.Pointer[url.URL]{}
+	cur.Store(a)
+	tr := http.DefaultTransport.(*http.Transport)
+	oldProxy := tr.Proxy
+	cfg := tr.TLSClientConfig
+	wasNil := cfg == nil
+	if wasNil {
+		cfg = &tls.Config{}
+		tr.TLSClientConfig = cfg
+	}
+	oldRoots := cfg.RootCAs
+	cfg.RootCAs = pool
+	t.Cleanup(func() {
+		tr.Proxy = oldProxy
+		cfg.RootCAs = oldRoots
+		if wasNil {
+			tr.TLSClientConfig = nil
+		}
+	})
+	tr.Proxy = func(*http.Request) (*url.URL, error) { return cur.Load(), nil }
+	get := func() {
+		res, err := syncClient.Get(target.URL)
+		if err != nil {
+			t.Fatalf("the sync: %v", err)
+		}
+		io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+		if res.ProtoMajor != 2 {
+			t.Fatalf("the sync went over %s, want HTTP/2", res.Proto)
+		}
+	}
+	if err := settings.Save(settings.Settings{Proxy: a.String()}); err != nil {
+		t.Fatal(err)
+	}
+	get()
+	if na.Load() != 1 || nb.Load() != 0 {
+		t.Fatalf("the first sync: %d connections through A, %d through B", na.Load(), nb.Load())
+	}
+	cur.Store(b)
+	if err := settings.Save(settings.Settings{Proxy: b.String()}); err != nil {
+		t.Fatal(err)
+	}
+	get()
+	if nb.Load() != 1 || na.Load() != 1 {
+		t.Fatalf("after the switch: %d connections through A, %d through B, want the sync to dial through B and no new one through A", na.Load(), nb.Load())
+	}
+}
+
+// fakeSOCKS is a SOCKS5 proxy counting the connections it carried.
+func fakeSOCKS(t *testing.T) (*url.URL, *atomic.Int32) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	var n atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				var h [2]byte
+				io.ReadFull(c, h[:])
+				io.CopyN(io.Discard, c, int64(h[1]))
+				c.Write([]byte{5, 0})
+				var r [4]byte
+				io.ReadFull(c, r[:])
+				var host string
+				switch r[3] {
+				case 1:
+					b := make([]byte, 4)
+					io.ReadFull(c, b)
+					host = net.IP(b).String()
+				case 3:
+					var l [1]byte
+					io.ReadFull(c, l[:])
+					b := make([]byte, l[0])
+					io.ReadFull(c, b)
+					host = string(b)
+				}
+				var pb [2]byte
+				io.ReadFull(c, pb[:])
+				up, err := net.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(int(binary.BigEndian.Uint16(pb[:])))))
+				if err != nil {
+					c.Write([]byte{5, 5, 0, 1, 0, 0, 0, 0, 0, 0})
+					return
+				}
+				defer up.Close()
+				n.Add(1)
+				c.Write([]byte{5, 0, 0, 1, 127, 0, 0, 1, 0, 0})
+				go io.Copy(up, c)
+				io.Copy(c, up)
+			}(c)
+		}
+	}()
+	return &url.URL{Scheme: "socks5", Host: ln.Addr().String()}, &n
 }

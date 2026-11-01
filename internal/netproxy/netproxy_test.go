@@ -324,3 +324,25 @@ func TestGlobalSwitchDropsTheOldProxyConnections(t *testing.T) {
 		t.Fatalf("after the switch: %d connections through A, %d through B, want the fresh dial through B and no new one through A", na.Load(), nb.Load())
 	}
 }
+
+// Each check Watch hands out keeps its own last value: a move is seen,
+// once, by every check, on the first call it makes after it (#4824).
+func TestWatchSeesTheGlobalProxyMove(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	w := Watch()
+	settings.Save(settings.Settings{Proxy: "socks5://127.0.0.1:1080"})
+	if w() {
+		t.Fatal("the first call sees a move")
+	}
+	settings.Save(settings.Settings{Proxy: "direct"})
+	if !w() {
+		t.Fatal("the move went unseen")
+	}
+	if w() {
+		t.Fatal("the setting standing is a move the second time")
+	}
+	v := Watch()
+	if v() {
+		t.Fatal("a check of its own starts in the middle")
+	}
+}

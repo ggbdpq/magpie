@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/netproxy"
 )
 
 // A sync is never given a time to end in: a backup of tens of MB to a
@@ -41,6 +43,13 @@ func (e *errStalled) Error() string {
 // syncClient is the client WebDAV and S3 are reached with.
 var syncClient = &http.Client{Transport: stallTransport{http.DefaultTransport}}
 
+// moved is whether the global proxy moved since the last sync request:
+// the sync rides http.DefaultTransport, whose idle connections a switch
+// would otherwise leave behind until some DefaultClient request dropped
+// them (#4824). The request after a move drops them itself, and dials
+// through the proxy in force.
+var moved = netproxy.Watch()
+
 // bigBody says whether the request hauls a body that a live but slow line
 // may take longer than the whole metaLimit to send: GitHub's blob POSTs
 // carry up to 16 MiB of file, about 21 MB of base64, where a flat 30 s
@@ -58,6 +67,11 @@ func bigBody(req *http.Request) bool {
 type stallTransport struct{ base http.RoundTripper }
 
 func (t stallTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if moved() {
+		if tr, ok := t.base.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+	}
 	moving := req.Method == http.MethodGet || req.Method == http.MethodPut || bigBody(req)
 	after := metaLimit
 	if moving {

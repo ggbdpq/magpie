@@ -3,12 +3,16 @@ package davsync
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -252,5 +256,124 @@ func TestMetadataRequestHasALimit(t *testing.T) {
 	var st *errStalled
 	if !errors.As(err, &st) || time.Since(start) > 3*time.Second {
 		t.Fatalf("%v after %s, want the limit", err, time.Since(start))
+	}
+}
+
+// slowGitHub is the least of GitHub's API a commit talks to, so a blob POST
+// can be eaten as slowly as a live line: chunk bytes every gap. GitHub is
+// the one backend whose uploads ride a method the watchdog used to see as
+// metadata: its blob POSTs haul up to 16 MiB of file each, about 21 MB of
+// base64 (#4576).
+type slowGitHub struct {
+	chunk     int
+	gap       time.Duration
+	hangTrees bool // sit on the tree POST for good, as a server that stopped
+}
+
+func (h *slowGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	send := func(status int, v any) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(v)
+	}
+	base := "/repos/alice/private"
+	switch {
+	case r.URL.Path == base:
+		send(http.StatusOK, map[string]any{"default_branch": "main", "private": true})
+	case strings.HasSuffix(r.URL.Path, "/git/ref/heads/main"):
+		send(http.StatusOK, map[string]any{"object": map[string]string{"type": "commit", "sha": "c1"}})
+	case strings.Contains(r.URL.Path, "/contents/"):
+		send(http.StatusNotFound, map[string]string{"message": "Not Found"})
+	case r.URL.Path == base+"/git/blobs" && r.Method == http.MethodPost:
+		var got bytes.Buffer
+		buf := make([]byte, max(h.chunk, 1))
+		for {
+			n, err := r.Body.Read(buf)
+			got.Write(buf[:n])
+			if err != nil {
+				break
+			}
+			time.Sleep(h.gap)
+		}
+		var in struct{ Content, Encoding string }
+		if json.Unmarshal(got.Bytes(), &in) != nil || in.Encoding != "base64" {
+			send(http.StatusUnprocessableEntity, map[string]string{"message": "Invalid blob"})
+			return
+		}
+		b, err := base64.StdEncoding.DecodeString(in.Content)
+		if err != nil {
+			send(http.StatusUnprocessableEntity, map[string]string{"message": "Invalid blob"})
+			return
+		}
+		send(http.StatusCreated, map[string]string{"sha": gitBlobSHA(b)})
+	case strings.Contains(r.URL.Path, "/git/commits/"):
+		send(http.StatusOK, map[string]any{"tree": map[string]string{"sha": "t1"}})
+	case r.URL.Path == base+"/git/trees" && r.Method == http.MethodPost:
+		if h.hangTrees {
+			// the body has to go for the server to see the client gone
+			io.Copy(io.Discard, r.Body)
+			select {
+			case <-time.After(5 * time.Second):
+			case <-r.Context().Done():
+			}
+			return
+		}
+		send(http.StatusOK, map[string]string{"sha": "t2"})
+	case r.URL.Path == base+"/git/commits" && r.Method == http.MethodPost:
+		send(http.StatusOK, map[string]string{"sha": "c2"})
+	case strings.HasSuffix(r.URL.Path, "/git/refs/heads/main") && r.Method == http.MethodPatch:
+		send(http.StatusOK, map[string]string{})
+	default:
+		send(http.StatusNotFound, map[string]string{"message": "Not Found"})
+	}
+}
+
+// githubOn wraps a test GitHub server the way the app reaches GitHub: the
+// API's host rewritten onto the test server, over the stall watchdog (and
+// the line's small buffers, as narrowLine holds them).
+func githubOn(t *testing.T, h http.Handler) *github {
+	t.Helper()
+	srv, client := narrowLine(t, h)
+	target, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := newGitHub(Config{URL: "github://alice/private/team", Password: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.client = &http.Client{Transport: githubTransport{client.Transport, target}}
+	return g
+}
+
+// A GitHub blob POST whose body goes up on a live but slow line is not cut
+// short: a flat 30 s killed the whole sync, for good, on any line that
+// couldn't push a 16 MiB part's 21 MB of base64 through it in half a
+// minute (#4576: the sync stopped at 10:30 and every attempt after died on
+// the same POST).
+func TestGitHubSlowBlobUploadIsNotCutShort(t *testing.T) {
+	shortStall(t, time.Second, 300*time.Millisecond)
+	h := &slowGitHub{chunk: 16 << 10, gap: 50 * time.Millisecond}
+	g := githubOn(t, h)
+	// 200 KB of file: about 272 KB of base64 body, ~0.9 s at the line's
+	// 320 KB/s, well over the whole metadata limit.
+	data := bytes.Repeat([]byte("magpie usage "), (200<<10)/13)
+	if _, err := g.put(context.Background(), data, ""); err != nil {
+		t.Fatalf("a slow but live blob POST: %v", err)
+	}
+}
+
+// A GitHub POST that hauls only a little (the tree, the commit, the ref —
+// kilobytes at most) keeps metaLimit in all, however long the server sits
+// on it: the big-body budget isn't a pass for every request.
+func TestGitHubSmallPostKeepsTheLimit(t *testing.T) {
+	shortStall(t, 300*time.Millisecond, 300*time.Millisecond)
+	g := githubOn(t, &slowGitHub{hangTrees: true})
+	start := time.Now()
+	_, err := g.put(context.Background(), []byte("sealed fixture"), "")
+	took := time.Since(start)
+	var st *errStalled
+	if !errors.As(err, &st) || st.idle || took > 3*time.Second {
+		t.Fatalf("%v after %s, want the metadata limit on a small POST", err, took)
 	}
 }

@@ -226,9 +226,10 @@ func newCycle(a, b QuotaPoint) bool {
 // (max2020 on Discord: an Antigravity card had no curve and no "runs
 // out" line; chowyuan1314, #4612: the Cursor plugin's Weekly and Grok
 // Bot are aside and had no curve). A window told as its text alone has
-// no share to draw.
+// no share to draw, and neither has one set aside whose Used is 0 for
+// want of a share said (noShare, #4825).
 func pointOf(w QuotaWindow, at, now time.Time) (QuotaPoint, bool) {
-	if w.Unlimited || w.Text || w.Family != "" || w.Name == "" || math.IsNaN(w.Used) {
+	if w.Unlimited || w.Text || w.noShare || w.Family != "" || w.Name == "" || math.IsNaN(w.Used) {
 		return QuotaPoint{}, false
 	}
 	p := QuotaPoint{At: at.UTC().Truncate(time.Second), Left: math.Round(max(0, min(100, 100-w.Used))*100) / 100}

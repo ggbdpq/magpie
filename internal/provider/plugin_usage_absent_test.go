@@ -163,3 +163,25 @@ func TestAWindowsCountIsItsShare(t *testing.T) {
 		t.Errorf("routing: known %v, used %v; want the count's 37", ok, used)
 	}
 }
+
+// A window set aside whose used was left out says no share: quota history
+// took its Used, left at 0, for a reading and drew a flat 100% left line
+// (#4825). One that said used, or whose amount and limit reckon to a
+// share, is a reading and keeps its line (chowyuan1314, #4612).
+func TestAsideWindowWithoutUsedDrawsNoLine(t *testing.T) {
+	var u plugin.Usage
+	if err := json.Unmarshal([]byte(`{"windows":[
+		{"name":"On-demand","display":"$12.34","amount":12.34,"aside":true},
+		{"name":"Points","amount":500,"aside":true},
+		{"name":"Weekly","used":56.1,"aside":true},
+		{"name":"Bonus","amount":5,"limit":20,"aside":true}]}`), &u); err != nil {
+		t.Fatal(err)
+	}
+	q := quotaOfPlugin(SubscriptionQuota{Provider: "acme-plugin", User: "u"}, u)
+	now := time.Now()
+	for i, w := range q.Windows {
+		if _, ok := pointOf(w, now, now); ok != (i >= 2) {
+			t.Errorf("%s: history point %v, want %v", w.Name, ok, i >= 2)
+		}
+	}
+}

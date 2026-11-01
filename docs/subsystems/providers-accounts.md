@@ -251,7 +251,10 @@ the gateway report. [`quota_last.go`](../../internal/provider/quota_last.go),
 Allowance readings are kept by provider, lowercased account and window in
 `quota-history.json` ([`quota_history.go`](../../internal/provider/quota_history.go)),
 for up to 45 days and 6000 points per window. Failed or stale readings add
-nothing. `newCycle` preserves a boundary when the previous deadline passes,
+nothing. A window set aside for routing is kept when it is measured (a
+pool's window, or the Cursor plugin's Weekly and Grok Bot, #4612); a
+text-only one tells no share and is not. `newCycle` preserves a boundary
+when the previous deadline passes,
 appears/disappears, moves backward by more than five minutes or forward by
 more than the elapsed sampling time plus five minutes. A refill of more
 than five percentage points with a deadline unchanged within five minutes

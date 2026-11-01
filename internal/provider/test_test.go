@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -409,5 +410,80 @@ func TestTestModelsAsAClientMovesAsTheGatewayDoes(t *testing.T) {
 	got = took()
 	if len(rs) != 1 || rs[0].OK || rs[0].Protocol != Anthropic || len(got) != 1 || got[0] != "/v1/messages claude-cli/2.1.0 (external, cli)" {
 		t.Errorf("as Claude Code: results %+v, asked %q", rs, got)
+	}
+}
+
+// The Anthropic probe is asked the way a relay of Claude Code's takes a
+// request: with a system prompt in it and streamed. One that serves Claude
+// Code alone turned a bare /v1/messages probe away with 503, and a
+// non-streaming one with 520, while agents' requests — always a system
+// prompt and a stream — were answered on the same model (double12gzh,
+// #4754).
+func TestTestAnthropicProbesAsTheGatewayRelays(t *testing.T) {
+	oneHome(t)
+	var mu sync.Mutex
+	var asked map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		b, _ := io.ReadAll(r.Body)
+		asked = map[string]any{}
+		if json.Unmarshal(b, &asked) != nil {
+			t.Errorf("the probe's body is not JSON: %s", b)
+			return
+		}
+		if _, ok := asked["system"]; !ok {
+			rw.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = rw.Write([]byte("503 Service Unavailable"))
+			return
+		}
+		if s, _ := asked["stream"].(bool); !s {
+			rw.WriteHeader(520)
+			_, _ = rw.Write([]byte("520 Cloudflare Error"))
+			return
+		}
+		rw.Header().Set("Content-Type", "text/event-stream")
+		_, _ = rw.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0}\n\n"))
+	}))
+	defer srv.Close()
+	p := Provider{ID: "relay", Name: "Relay", Key: "k", Anthropic: srv.URL}
+	rs := p.TestModels(context.Background(), []string{"claude-opus-5"})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(rs) != 1 || !rs[0].OK || rs[0].Status != http.StatusOK {
+		t.Fatalf("results %+v", rs)
+	}
+	sys, _ := asked["system"].([]any)
+	if len(sys) == 0 {
+		t.Fatalf("the probe asked with no system prompt: %v", asked["system"])
+	}
+	blk, _ := sys[0].(map[string]any)
+	if blk["type"] != "text" || blk["text"] == "" {
+		t.Errorf("the probe's system is %v, want a text block with words in it", asked["system"])
+	}
+	if s, _ := asked["stream"].(bool); !s {
+		t.Error("the probe asked without a stream")
+	}
+}
+
+// On Vertex AI the same probe goes where the SDK sends a streamed Claude
+// request: :streamRawPredict, with the system prompt along — the stream in
+// the body is what picks that route (VertexClaudeRequest).
+func TestTestAnthropicOnVertexStreamsAtStreamRawPredict(t *testing.T) {
+	q := Provider{ID: "vertex", Name: "Vertex", Preset: VertexPreset, Vertex: &Vertex{Project: "acme-vertex"}}
+	u, body := tinyBody(q, Anthropic, "claude-opus-5")
+	if !strings.HasSuffix(u, "/publishers/anthropic/models/claude-opus-5:streamRawPredict") {
+		t.Errorf("asked at %q", u)
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(body), &m) != nil {
+		t.Fatalf("body %q", body)
+	}
+	sys, _ := m["system"].([]any)
+	if len(sys) == 0 {
+		t.Errorf("asked with no system prompt: %s", body)
+	}
+	if s, _ := m["stream"].(bool); !s {
+		t.Errorf("asked without a stream: %s", body)
 	}
 }

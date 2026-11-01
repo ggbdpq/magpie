@@ -177,6 +177,10 @@ func (f *vertexGoogle) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case vertex && strings.Contains(r.URL.Path, "/models/gemini-9-pro:"):
 		w.WriteHeader(http.StatusNotFound)
 		io.WriteString(w, "{\"error\":{\"code\":404,\"message\":\"Publisher Model `projects/acme-vertex/locations/global/publishers/google/models/gemini-9-pro` was not found or your project does not have access to it. Please ensure you are using a valid model version. For more information, see: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions\",\"status\":\"NOT_FOUND\"}}")
+	case vertex && strings.HasSuffix(r.URL.Path, ":streamRawPredict") && strings.Contains(r.URL.Path, "/publishers/anthropic/models/"):
+		// a Claude request streamed, answered as Vertex AI streams one
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_vrtx_1\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n")
 	case vertex && strings.HasSuffix(r.URL.Path, ":rawPredict") && strings.Contains(r.URL.Path, "/publishers/anthropic/models/"):
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, `{"id":"msg_vrtx_1","type":"message","role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"Hi"}],"stop_reason":"max_tokens","usage":{"input_tokens":8,"output_tokens":1}}`)
@@ -1660,10 +1664,10 @@ func TestVertexPartnerModels(t *testing.T) {
 // token as Gemini and with nothing more set by the user: global lists the
 // current ones, the id alone puts a model on that API (one typed in with
 // Vertex's @date too), and its test is asked as Anthropic's Vertex SDK
-// asks: :rawPredict at the model's path, the model out of the body and
-// anthropic_version vertex-2023-10-16 in it. The provider's own test
-// still asks Gemini alone, as Claude answers only once the project turned
-// it on in Model Garden.
+// asks a streamed one: :streamRawPredict at the model's path, the model
+// out of the body and anthropic_version vertex-2023-10-16 in it. The
+// provider's own test still asks Gemini alone, as Claude answers only once
+// the project turned it on in Model Garden.
 func TestVertexClaudeModels(t *testing.T) {
 	vertexHome(t)
 	f := newVertexGoogle(t)
@@ -1711,11 +1715,12 @@ func TestVertexClaudeModels(t *testing.T) {
 	c := calls[1]
 	var body map[string]any
 	json.Unmarshal([]byte(c.body), &body)
-	if c.path != "/vertex/v1/projects/acme-vertex/locations/global/publishers/anthropic/models/claude-sonnet-4-5@20250929:rawPredict" ||
+	if c.path != "/vertex/v1/projects/acme-vertex/locations/global/publishers/anthropic/models/claude-sonnet-4-5@20250929:streamRawPredict" ||
 		c.header.Get("Authorization") != "Bearer ya29.minted-1" {
 		t.Errorf("Claude asked at %s with %q", c.path, c.header.Get("Authorization"))
 	}
-	if _, has := body["model"]; has || body["anthropic_version"] != "vertex-2023-10-16" || body["max_tokens"] != float64(16) {
+	if _, has := body["model"]; has || body["anthropic_version"] != "vertex-2023-10-16" || body["max_tokens"] != float64(16) ||
+		body["stream"] != true || body["system"] == nil {
 		t.Errorf("Claude asked with %s", c.body)
 	}
 }

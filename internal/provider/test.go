@@ -109,11 +109,17 @@ func (p Provider) Test(ctx context.Context) []Result {
 	return out
 }
 
+// anthropicProbeSystem is the system prompt the Anthropic probe carries, in
+// the shape Claude Code puts one in: the relay that asked for it (#4754)
+// answers the same model 200 with it and a stream, 503 without it.
+const anthropicProbeSystem = `[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}]`
+
 // tiny is the smallest request for model on proto's endpoint, streamed
 // to a backend that only streams.
 func tiny(q Provider, proto Protocol, model string) (url, body string) {
 	url, body = tinyBody(q, proto, model)
-	if q.Account != nil && q.Account.Stream && body != "" {
+	if q.Account != nil && q.Account.Stream && body != "" && !streams([]byte(body)) {
+		// an Anthropic body already names its stream (tinyBody)
 		body = strings.TrimSuffix(body, "}") + `,"stream":true}`
 	}
 	if q.OpenCodeFree(model) && body != "" {
@@ -210,13 +216,21 @@ func tinyBody(q Provider, proto Protocol, model string) (url, body string) {
 	case Responses:
 		return q.mantleBase(q.Responses, model) + "/responses", fmt.Sprintf(`{"model":%q,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"max_output_tokens":16}`, model)
 	case Anthropic:
+		// with a system prompt in it and streamed, as a relay of Claude
+		// Code's takes a request: one that serves Claude Code alone turned
+		// a bare /v1/messages probe away with 503, and a non-streaming one
+		// with 520, while agents' requests — always a system prompt and a
+		// stream — were answered on the same model (double12gzh, #4754).
+		// probe stops reading at the model's first word, so a stream is
+		// not waited out.
 		if q.IsVertex() {
 			// Claude at the project, as Anthropic's Vertex SDK asks it
-			// (VertexClaudeRequest)
-			at, b, _ := VertexClaudeRequest("/v1/messages", fmt.Appendf(nil, `{"model":%q,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`, model))
+			// (VertexClaudeRequest): the stream in the body is what picks
+			// :streamRawPredict there, so it goes in before the route is
+			at, b, _ := VertexClaudeRequest("/v1/messages", fmt.Appendf(nil, `{"model":%q,"max_tokens":16,"system":`+anthropicProbeSystem+`,"stream":true,"messages":[{"role":"user","content":"hi"}]}`, model))
 			return q.Base(Anthropic) + at, string(b)
 		}
-		return q.Anthropic + "/v1/messages", fmt.Sprintf(`{"model":%q,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`, model)
+		return q.Anthropic + "/v1/messages", fmt.Sprintf(`{"model":%q,"max_tokens":16,"system":%s,"stream":true,"messages":[{"role":"user","content":"hi"}]}`, model, anthropicProbeSystem)
 	case Gemini:
 		if q.IsVertex() {
 			return vertexTest(q, model)

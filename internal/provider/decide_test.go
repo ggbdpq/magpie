@@ -611,10 +611,13 @@ func TestAPIErrorUnsaid(t *testing.T) {
 }
 
 // A backend that only streams is tested with a streamed request: WorkBuddy
-// refuses any other with 400 (#124).
+// refuses any other with 400 (#124). The Anthropic probe streams with or
+// without an account, as the relay that takes a streamed request alone
+// asked for (#4754, TestTestAnthropicProbesAsTheGatewayRelays), so it has
+// no leg here.
 func TestTinyStreamsStreamOnly(t *testing.T) {
 	p := Provider{Chat: "https://x/v1", Responses: "https://x/v1", Anthropic: "https://x"}
-	for _, proto := range []Protocol{Chat, Responses, Anthropic} {
+	for _, proto := range []Protocol{Chat, Responses} {
 		if _, b := tiny(p, proto, "m"); strings.Contains(b, "stream") {
 			t.Errorf("%s: %s", proto, b)
 		}

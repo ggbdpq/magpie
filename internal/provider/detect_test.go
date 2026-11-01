@@ -121,7 +121,9 @@ func TestDetectProtocols(t *testing.T) {
 					t.Fatalf("%s asked for %v tokens", a.path, n)
 				}
 			}
-			if a.body["stream"] == true {
+			// the Anthropic probe streams, as the relay takes a streamed
+			// request alone (#4754); the others are asked for a body
+			if a.body["stream"] == true && a.path != "/v1/messages" {
 				t.Fatalf("%s streamed", a.path)
 			}
 		}

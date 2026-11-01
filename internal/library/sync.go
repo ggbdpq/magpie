@@ -119,6 +119,7 @@ func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
 	// ~/.agents/skills first: an agent that reads it too gets no second
 	// link to what is there already
 	shared := realDir(sharedSkillsDir())
+	steps = append(steps, func(l *Library) { l.sweepShared(append(slices.Clone(all), gone...), res) })
 	for _, first := range []bool{true, false} {
 		for _, t := range all {
 			switch {

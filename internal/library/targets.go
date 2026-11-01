@@ -277,7 +277,11 @@ func targetOf(a *agent.Agent) *Target {
 		// its own would hide Claude Code's from it — and ~/.config/agents/
 		// skills, ~/.agents/skills (kimi_cli/skill), wherever KIMI_SHARE_DIR
 		// is; before its 1.x brand/generic split, only the first of all five.
-		// The new Kimi Code (2.x) reads its own and ~/.agents/skills only.
+		// The new Kimi Code (2.x) reads its own folder of skills
+		// ($KIMI_CODE_HOME/skills, else ~/.kimi-code/skills, docs/
+		// customization/skills.md "Skill Locations") and ~/.agents/skills:
+		// its skills go into its own, for one in the shared folder reaches
+		// every reader of it whatever the library ticks (#4379).
 		//
 		// Its MCP servers are the mcp.json in its folder, which the old
 		// kimi-cli (fastmcp's MCPConfig) and the new Kimi Code read alike.
@@ -288,7 +292,7 @@ func targetOf(a *agent.Agent) *Target {
 			// user-wide one (loadAgentsMdForRoots in packages/agent-core-v2/
 			// src/agent/profile/context.ts, MoonshotAI/kimi-code afd95f64)
 			t.Instructions = filepath.Join(a.Dir, "AGENTS.md")
-			t.Skills = sharedSkillsDir()
+			t.Skills = filepath.Join(a.Dir, "skills")
 		} else if d := filepath.Join(h, ".config", "agents", "skills"); isDir(d) {
 			t.Skills = d
 		} else {
@@ -928,8 +932,9 @@ func (l *Library) held(have []*Target) []*Target {
 }
 
 // readsShared are the agents that read ~/.agents/skills as well as their
-// own folder (each one's docs or source).
-var readsShared = []string{"codex", "gemini", "opencode", "deveco", "crush", "dsh", "commandcode", "devin", "droid", "cline", "grok", "grok-app", "fx", "alma"}
+// own folder (each one's docs or source): Kimi Code's own is
+// ~/.kimi-code/skills besides it (#4379).
+var readsShared = []string{"codex", "gemini", "opencode", "deveco", "crush", "dsh", "commandcode", "devin", "droid", "cline", "grok", "grok-app", "fx", "alma", "kimi"}
 
 // readsWith adds to each agent's SkillsAlso the agents whose folder it
 // reads skills from too: one that is the very same folder (Kimi Code's,

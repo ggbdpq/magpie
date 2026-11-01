@@ -713,6 +713,43 @@ func (l *Library) syncSkills(t *Target, res *Result, all []*Target) {
 	a.Skills = mine
 }
 
+// sweepShared takes magpie's own entries out of ~/.agents/skills once no
+// agent whose folder it is, or that still reads it for the skill, has it
+// any more: an entry put there for an agent that reads its own folder now
+// (Kimi Code, #4379) would go on reaching every reader of the folder,
+// whatever the library ticks.
+func (l *Library) sweepShared(all []*Target, res *Result) {
+	es, err := os.ReadDir(sharedSkillsDir())
+	if err != nil {
+		return
+	}
+	shared := realDir(sharedSkillsDir())
+	var holders []*Target
+	for _, o := range all {
+		if o.Skills != "" && realDir(o.Skills) == shared {
+			holders = append(holders, o)
+		}
+	}
+	for _, e := range es {
+		name := e.Name()
+		p := filepath.Join(sharedSkillsDir(), name)
+		// the user's own entries stay, and so does a copy takeEdits
+		// couldn't scan, held in place for its edits
+		if !ours(p, name) || l.blockedSkills[realDir(p)] {
+			continue
+		}
+		s := l.skill(name)
+		if slices.ContainsFunc(holders, func(o *Target) bool { return s.gives(o.Agent.ID) }) {
+			continue
+		}
+		if err := unlink(p); err != nil {
+			res.fail("agents", "skill:"+name, err)
+			continue
+		}
+		dropOld(p, name)
+	}
+}
+
 // ---- finding skills to install --------------------------------------------
 
 // Candidate is a skill found where the user pointed: in a repository, or

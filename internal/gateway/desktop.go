@@ -453,6 +453,31 @@ func aliased(id string) (string, bool) {
 	return "", false
 }
 
+// magpieAliasAsked says asked is one of magpie's own alias ids for Claude
+// Desktop or Claude Science (aliased's forms, with or without Claude
+// Code's "[1m]"): anthropic/magpie-<number>, mythos-magpie-<number>,
+// magpie-<number>.anthropic.<Claude model> or claude-magpie-<number>, the
+// number one of magpie's own (aliasNumber's ten digits). Whether the
+// catalog still lists a model under it is not asked: a session saved on an
+// old alias is served all the same, and a reply to it must not name the
+// alias either (#4667).
+func magpieAliasAsked(id string) bool {
+	id = strings.TrimSuffix(id, "[1m]")
+	var n string
+	if rest, ok := strings.CutPrefix(id, desktopAlias); ok {
+		n = rest
+	} else if rest, ok := strings.CutPrefix(id, desktopEffortAlias); ok {
+		n = rest
+	} else if rest, ok := strings.CutPrefix(id, scienceAlias); ok {
+		n = rest
+	} else if rest, ok := strings.CutPrefix(id, "magpie-"); ok {
+		if i := strings.Index(rest, desktopClaudeInfix); i > 0 {
+			n = rest[:i]
+		}
+	}
+	return len(n) == 10 && strings.IndexFunc(n, func(r rune) bool { return r < '0' || r > '9' }) < 0
+}
+
 // isClaudeDesktop is a request from Claude Desktop's own gateway client: its
 // Electron session's User-Agent ("Mozilla/5.0 … Claude/2.7032.0 Chrome/…"),
 // which says nothing of it before the first slash.

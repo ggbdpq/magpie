@@ -305,6 +305,67 @@ func TestReplyNamesAskedModel(t *testing.T) {
 	}
 }
 
+// A reply to a request that came in under one of magpie's own aliases for
+// Claude Desktop or Claude Science keeps the vendor's own name (#4667):
+// the alias — magpie-<n>.anthropic.claude-opus-5-5 among them — is
+// magpie's deployment name, not one the vendor knows, and naming the reply
+// with it put that name in Claude Code's usage records, where ccusage
+// counts it as a model of its own instead of the one the subscription
+// served. Before the asked-name rule these ids were served the vendor's
+// name, as every other agent still is.
+func TestReplyToMagpieAliasKeepsVendorName(t *testing.T) {
+	const served = "opus-5-5" // what the subscription's reply says
+	aliases := []string{
+		"magpie-" + aliasNumber("sub/claude-opus-5-5") + desktopClaudeInfix + "claude-opus-5-5",
+		"magpie-" + aliasNumber("sub/claude-opus-5-5") + desktopClaudeInfix + "claude-opus-5-5[1m]",
+		aliasFor("sub/claude-opus-5-5"),
+		desktopEffortAlias + aliasNumber("sub/claude-opus-5-5"),
+		scienceAlias + aliasNumber("sub/claude-opus-5-5"),
+	}
+	for _, stream := range []bool{false, true} {
+		for _, asked := range aliases {
+			name := asked
+			if stream {
+				name += "/stream"
+			}
+			t.Run(name, func(t *testing.T) {
+				fresh(t)
+				up := httptest.NewServer(servedBy(provider.Anthropic, served))
+				t.Cleanup(up.Close)
+				if err := provider.Save(provider.Provider{ID: "sub", Name: "Sub", Key: "k", Anthropic: up.URL, Models: []string{"claude-opus-5-5"}}); err != nil {
+					t.Fatal(err)
+				}
+				m, _ := json.Marshal(asked)
+				body := `{"model":` + string(m) + `,"max_tokens":100,"messages":[{"role":"user","content":"hi"}]`
+				if stream {
+					body += `,"stream":true`
+				}
+				rec := httptest.NewRecorder()
+				s := New()
+				s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body+"}")))
+				if rec.Code != 200 || !strings.Contains(rec.Body.String(), "hi") {
+					t.Fatalf("%d %s", rec.Code, rec.Body)
+				}
+				names := modelsNamed(rec.Body.String(), stream)
+				if len(names) == 0 {
+					t.Fatalf("no model named in %s", rec.Body)
+				}
+				for _, n := range names {
+					if n != served {
+						t.Fatalf("the reply names %q, want the vendor's %q:\n%s", n, served, rec.Body)
+					}
+				}
+				if r := lastRoute(s); r.Served != served {
+					t.Errorf("the route says %q served it, want the vendor's %q", r.Served, served)
+				}
+				if calls := s.Recent(); len(calls) == 0 || calls[0].Usage.Served != served {
+					t.Errorf("the log says %+v served it, want the vendor's %q", calls, served)
+				}
+			})
+		}
+	}
+}
+
 // A Gemini agent asks in the URL, and the reply's modelVersion names that
 // model when the request went out under another name.
 func TestGeminiReplyNamesAskedModel(t *testing.T) {

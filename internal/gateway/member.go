@@ -12,14 +12,19 @@ package gateway
 // a provider/model id, a name the user gave the model upstream — since
 // agents compare it with what they asked and warn when it differs
 // (issennknight on Discord: deepseek-v4.1-flash served as
-// deepseek-v4.1-flash-1017). A request that went out under the name it
-// asked for keeps the vendor's text, a dated name included. Settings'
-// MemberModel, or a request's X-Magpie-Response-Model: member, has the
-// body's model say magpie's id instead, except for the agents that read
-// it themselves (vendorNamed); X-Magpie-Response-Model: vendor keeps the
-// vendor's text. The vendor's own name is still in the usage log
-// (Record.Served) and on the Routing page: the request's capture is
-// inside this writer.
+// deepseek-v4.1-flash-1017). One of magpie's own aliases for Claude
+// Desktop or Science (magpieAliasAsked) is not among these: it names the
+// model only to Desktop and its Code tab, and a reply that carried it put
+// magpie's deployment name in the agent's usage records, where ccusage
+// counted it as a model of its own (#4667), so such a request keeps the
+// vendor's text, as every reply did before the asked-name rule. A request
+// that went out under the name it asked for keeps the vendor's text, a
+// dated name included. Settings' MemberModel, or a request's
+// X-Magpie-Response-Model: member, has the body's model say magpie's id
+// instead, except for the agents that read it themselves (vendorNamed);
+// X-Magpie-Response-Model: vendor keeps the vendor's text. The vendor's
+// own name is still in the usage log (Record.Served) and on the Routing
+// page: the request's capture is inside this writer.
 
 import (
 	"bytes"
@@ -108,7 +113,7 @@ func namesMember(r *http.Request, agent string) bool {
 // the handler is done.
 func withMemberNames(w http.ResponseWriter, r *http.Request, from provider.Protocol, asked string) (http.ResponseWriter, *http.Request, func()) {
 	naming := replyNamingOf(r, agentOf(r))
-	if naming == nameVendor || naming == nameAsked && asked == "" {
+	if naming == nameVendor || naming == nameAsked && (asked == "" || magpieAliasAsked(asked)) {
 		return w, r, func() {}
 	}
 	mw := &memberWriter{w: w, naming: naming, asked: asked, paths: memberPathsOf(from)}

@@ -1,12 +1,16 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -749,4 +753,157 @@ func TestResponsesSocketChatDoneTurn(t *testing.T) {
 	if f.calls() != 2 {
 		t.Errorf("%d upstream calls, want 2", f.calls())
 	}
+}
+
+// The socket's ended line says the longest turn's body (#4668): a
+// session's turns differ by tens of MB, and the average the sent count
+// gives hid which of its sockets had the body that set the app's peak.
+func TestResponsesSocketLogsLongestTurn(t *testing.T) {
+	fresh(t)
+	sockUp(t, &respUp{})
+	_, ts := sockServer(t)
+	var logs lockedLogs
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+	c, _, err := dialSock(t, ts, "/v1/responses", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := c.turn(create("", userHi))
+	id := last(first).Get("response.id").String()
+	if id == "" {
+		t.Fatalf("no reply: %v", first)
+	}
+	// the second turn's instructions put its body far past the first's
+	c.turn(create(id, userMore, +strings.Repeat("x", 6000)+))
+	c.c.CloseNow()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(logs.String(), "the longest turn") {
+		time.Sleep(20 * time.Millisecond)
+	}
+	m := regexp.MustCompile().FindStringSubmatch(logs.String())
+	if m == nil {
+		t.Fatalf("no ended line with the longest turn: %s", logs.String())
+	}
+	var sent, peak int64
+	fmt.Sscan(m[1], &sent)
+	fmt.Sscan(m[2], &peak)
+	if peak < 6000 || peak >= sent {
+		t.Errorf("the longest turn %d, sent %d; the peak is the second turn's body, the first's and second's sum sent", peak, sent)
+	}
+}
+
+type lockedLogs struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *lockedLogs) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *lockedLogs) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+	c, _, err := dialSock(t, ts, "/v1/responses", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+// A Chat upstream that has said its reply over ([DONE]) and holds the
+// connection open: the turn is completed on the socket all the same, its
+// usage with it, and the socket stays open for the next turn (#5936 — a
+// Codex conversation stuck in progress on a Chat-only provider, the turn
+// canceled by the client after the reply was whole on its side).
+func TestResponsesSocketChatDoneTurn(t *testing.T) {
+	fresh(t)
+	f := &doneHold{held: make(chan struct{})}
+	up := doneHoldUp(t, f)
+	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Chat: up.URL + "/v1", Models: []string{"m1"}}); err != nil {
+		t.Fatal(err)
+	}
+	_, ts := sockServer(t)
+	c, _, err := dialSock(t, ts, "/v1/responses", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn := func(frame string) []gjson.Result {
+		t.Helper()
+		c.send(frame)
+		got, err := c.until("response.completed", "response.failed", "response.incomplete", "error")
+		if err != nil {
+			t.Fatalf("%v after %v", err, got)
+		}
+		return got
+	}
+	got := turn(create("", userHi))
+	if last(got).Get("type").String() != "response.completed" {
+		t.Fatalf("turn 1: %v", got)
+	}
+	var text string
+	for _, fr := range got {
+		if fr.Get("type").String() == "response.output_text.delta" {
+			text += fr.Get("delta").String()
+		}
+	}
+	if text != "hello" {
+		t.Errorf("turn 1 text = %q, want hello", text)
+	}
+	if in, out := last(got).Get("response.usage.input_tokens").Int(), last(got).Get("response.usage.output_tokens").Int(); in != 9 || out != 4 {
+		t.Errorf("turn 1 usage = %d in, %d out, want 9 in and 4 out", in, out)
+	}
+	id := last(got).Get("response.id").String()
+	got = turn(create(id, userMore))
+	if last(got).Get("type").String() != "response.completed" {
+		t.Fatalf("turn 2: %v", got)
+	}
+	if f.calls() != 2 {
+		t.Errorf("%d upstream calls, want 2", f.calls())
+	}
+}
+
+// The socket's ended line says the longest turn's body (#4668): a
+// session's turns differ by tens of MB, and the average the sent count
+// gives hid which of its sockets had the body that set the app's peak.
+func TestResponsesSocketLogsLongestTurn(t *testing.T) {
+	fresh(t)
+	sockUp(t, &respUp{})
+	_, ts := sockServer(t)
+	var logs lockedLogs
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+	c, _, err := dialSock(t, ts, "/v1/responses", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := c.turn(create("", userHi))
+	id := last(first).Get("response.id").String()
+	if id == "" {
+		t.Fatalf("no reply: %v", first)
+	}
+	// the second turn's instructions put its body far past the first's
+	c.turn(create(id, userMore, `"instructions":"`+strings.Repeat("x", 6000)+`"`))
+	c.c.CloseNow()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(logs.String(), "the longest turn") {
+		time.Sleep(20 * time.Millisecond)
+	}
+	m := regexp.MustCompile(`(\d+) sent on as whole requests, the longest turn (\d+)`).FindStringSubmatch(logs.String())
+	if m == nil {
+		t.Fatalf("no ended line with the longest turn: %s", logs.String())
+	}
+	var sent, peak int64
+	fmt.Sscan(m[1], &sent)
+	fmt.Sscan(m[2], &peak)
+	if peak < 6000 || peak >= sent {
+		t.Errorf("the longest turn %d, sent %d; the peak is the second turn's body, the first's and second's sum sent", peak, sent)
+	}
+}
+
+type lockedLogs struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
 }

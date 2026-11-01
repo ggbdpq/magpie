@@ -7621,6 +7621,15 @@ func buildFor(p provider.Provider, proto provider.Protocol, r *Request, model st
 	if proto == provider.Gemini && p.IsVertex() {
 		return buildVertex(r, model)
 	}
+	if proto == provider.Responses && p.Account != nil && p.Account.Agent == "codex" && !r.instructionsKept {
+		// the account's send shapes the instructions itself (codexBody):
+		// the client's system rides first as a developer item and the
+		// input's system items stand as developer ones, in place — the
+		// fold would move them out of conversation order (#4632)
+		c := *r
+		c.instructionsKept = true
+		r = &c
+	}
 	return build(proto, r, model, buildHost(p), p.RejectsTemperature(model))
 }
 

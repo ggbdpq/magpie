@@ -21,7 +21,7 @@ func TestDAVForbidden(t *testing.T) {
 		}
 		path := strings.TrimSuffix(r.URL.Path, "/")
 		switch {
-		case r.Method == "PROPFIND" && (path == "" || path == "/ro"):
+		case r.Method == "PROPFIND" && (path == "" || path == "/ro" || path == "/ro/magpie"):
 			w.WriteHeader(http.StatusMultiStatus)
 		case r.Method == "PROPFIND" && path == "/missing":
 			w.WriteHeader(http.StatusNotFound)
@@ -35,7 +35,7 @@ func TestDAVForbidden(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct{ dir, pass, want string }{
 		{"/missing", "pw", "there is no folder /missing"},
-		{"/ro", "pw", "doesn't let this account write in /ro"},
+		{"/ro", "pw", "doesn't let this account change files in /ro/magpie"},
 		{"/secret", "pw", "doesn't let this account use /secret"},
 		{"/missing", "bad", "user name or password"},
 	} {

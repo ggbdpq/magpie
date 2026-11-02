@@ -1347,13 +1347,14 @@ func (s *Server) searchRounds(ctx context.Context, q *Request, tool string, in <
 	}
 }
 
-// askTranslated is a round for a provider asked on to.
-func (s *Server) askTranslated(p provider.Provider, to provider.Protocol, model string, in http.Header, reply http.Header) round {
+// askTranslated is a round for a provider asked on to. query is the
+// caller's own, which rides the ask for it (#4899); "" for magpie's own.
+func (s *Server) askTranslated(p provider.Provider, to provider.Protocol, model string, in http.Header, reply http.Header, query string) round {
 	first := true
 	return func(ctx context.Context, req *Request) (<-chan Event, int, string) {
 		q := *req
 		q.Stream = true
-		res, actual, err := s.forwardTranslated(ctx, p, to, &q, model, in)
+		res, actual, err := s.forwardTranslated(ctx, p, to, &q, model, in, query)
 		if err != nil {
 			return nil, 502, p.Name + ": " + err.Error()
 		}

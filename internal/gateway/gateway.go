@@ -13,9 +13,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -5205,6 +5207,12 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 			}
 		}
 	}
+	if v := in.Get("X-Cid"); v != "" {
+		// the caller's correlation id goes on every request to the
+		// provider, translated or relayed (#4899); the user's own header
+		// for the provider is put in its place by the signing, after
+		req.Header.Set("X-Cid", v)
+	}
 	if provider.OpenCodeURL(req.URL.String()) {
 		if zenFree {
 			// only what OpenCode 2.2.5 sends its gateway: an agent's own
@@ -6610,7 +6618,7 @@ func (s *Server) usable(p provider.Provider, model string) []provider.Protocol {
 // Claude models only /chat/completions — so when it says the model isn't
 // served on this one, the request is built again for the next endpoint it
 // speaks, and the model is remembered there.
-func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to provider.Protocol, req *Request, model string, in http.Header) (*http.Response, provider.Protocol, error) {
+func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to provider.Protocol, req *Request, model string, in http.Header, query string) (*http.Response, provider.Protocol, error) {
 	if req.ThinkOff && req.Effort != "none" && slices.Contains(p.Efforts(model), "none") {
 		// the client turned reasoning off (Effort reads that as low), and
 		// the model can stop thinking: asked for none (#899)
@@ -6694,6 +6702,12 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 		if req.CacheKey != "" && !s.fits(p.ID, cacheKeyField, to) {
 			r := *req
 			r.CacheKey, req = "", &r
+		}
+		if len(req.Metadata) > 0 && to == provider.Chat && !s.fits(p.ID, metadataField, to) {
+			// an upstream that turned the caller's metadata away before is
+			// not sent it again (#4899)
+			r := *req
+			r.Metadata, req = nil, &r
 		}
 		if want := to == provider.Responses && loadsInPlace(p) && s.fits(p.ID, additionalToolsItem, to); want != req.LoadedInPlace {
 			r := *req
@@ -6893,7 +6907,7 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 			p.Chat = strings.TrimSuffix(p.Chat, "/v1")
 			path = "/beta" + path
 		}
-		res, err := s.forward(ctx, p, to, path, p.Prepare(body), in)
+		res, err := s.forward(ctx, p, to, withCallerQuery(path, query), p.Prepare(body), in)
 		if err != nil || res.StatusCode < 400 {
 			if dropped && err == nil {
 				// it was the key: not sent there again
@@ -7158,6 +7172,15 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 			r.CacheKey, req = "", &r
 			continue
 		}
+		if len(req.Metadata) > 0 && to == provider.Chat && badRequest(res.StatusCode) && !wrongEndpoint(res.StatusCode, b) && !provider.CopilotRefusal(b) && refusesField(res.StatusCode, b, metadataField) {
+			// the caller's metadata, which the translation carried on
+			// (#4899), turned away by name: asked again without it, and not
+			// sent it there again
+			s.markUnfit(p.ID, metadataField, to)
+			r := *req
+			r.Metadata, req = nil, &r
+			continue
+		}
 		dropped = false
 		// Responses is asked first there only for what it tells of the
 		// cache, not because the model needs it: a model the vendor doesn't
@@ -7320,6 +7343,10 @@ func hourMarksRefusal(status int, b []byte) bool {
 // tierField is the client's service tier as a request carries it upstream
 // (Request.Tier); a provider that refused it is remembered under it in unfit.
 const tierField = "service_tier"
+
+// metadataField is the caller's metadata object a translation carries on
+// (#4899); a provider that refused it is remembered under it in unfit.
+const metadataField = "metadata"
 
 // optionalFields are request fields OpenAI's APIs (or an agent's own
 // vendor, Kimi's and Qwen's thinking switches) take that a request does
@@ -7692,7 +7719,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	}
 	if request.WebSearch {
 		if !searching(r.Context()) && canSearchFor(p) && (!searchesFor(p, to, model, request) || magpieSearches(r.Context(), p)) {
-			ask := antigravityRound(w, p, s.askTranslated(p, to, model, r.Header, w.Header()))
+			ask := antigravityRound(w, p, s.askTranslated(p, to, model, r.Header, w.Header(), r.URL.RawQuery))
 			if zen != nil {
 				ask = zenRound(zen.z, ask)
 			}
@@ -7706,7 +7733,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	if stream {
 		return s.streamTranslated(w, r, p, from, to, request, model, zen, u)
 	}
-	res, actual, err := s.forwardTranslated(r.Context(), p, to, request, model, r.Header)
+	res, actual, err := s.forwardTranslated(r.Context(), p, to, request, model, r.Header, r.URL.RawQuery)
 	if err != nil {
 		return writeError(w, from, 502, p.Name+": "+err.Error()), err.Error()
 	}
@@ -7919,6 +7946,52 @@ func upstreamPath(p provider.Provider, proto provider.Protocol, model string) st
 		return provider.GeminiPath(model, true)
 	}
 	return pathOf(proto)
+}
+
+// withCallerQuery merges the caller's query string into the path a
+// translated request goes by: what the caller put in its URL rides to the
+// provider (#4899), the path's own parameters (Code Assist's alt=sse)
+// standing, and no parameter a caller's credential travels by with it —
+// a gateway key comes in the query (Gemini's clients), and a caller's key
+// is magpie's, never the provider's.
+func withCallerQuery(path, query string) string {
+	if query == "" {
+		return path
+	}
+	base, own := path, ""
+	if at := strings.IndexByte(path, '?'); at >= 0 {
+		base, own = path[:at], path[at+1:]
+	}
+	out := url.Values{}
+	if own != "" {
+		if v, err := url.ParseQuery(own); err == nil {
+			out = v
+		}
+	}
+	caller, err := url.ParseQuery(query)
+	if err != nil {
+		return path
+	}
+	for _, k := range slices.Sorted(maps.Keys(caller)) {
+		if callerSecretQuery(k) || out.Has(k) {
+			continue
+		}
+		out[k] = caller[k]
+	}
+	if q := out.Encode(); q != "" {
+		return base + "?" + q
+	}
+	return base
+}
+
+// callerSecretQuery is a name a caller's credential travels by in a query:
+// none of them goes to a provider with the caller's query (#4899).
+func callerSecretQuery(k string) bool {
+	switch strings.ToLower(k) {
+	case "key", "api_key", "apikey", "access_token", "token":
+		return true
+	}
+	return false
 }
 
 // parse is shared by translated routes and account/subscription backends.

@@ -529,6 +529,12 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 	if r.CacheKey != "" {
 		out["prompt_cache_key"] = r.CacheKey
 	}
+	if len(r.Metadata) > 0 {
+		// the caller's metadata goes on translated as it was sent (#4899);
+		// an upstream that won't take it here is asked again without it
+		// (forwardTranslated)
+		out["metadata"] = r.Metadata
+	}
 	if r.Stream {
 		out["stream_options"] = map[string]any{"include_usage": true}
 	}

@@ -279,6 +279,7 @@ type rRequest struct {
 	PromptCacheRetention string          `json:"prompt_cache_retention,omitempty"`
 	Include              []string        `json:"include,omitempty"`
 	ClientMetadata       json.RawMessage `json:"client_metadata,omitempty"`
+	Metadata             json.RawMessage `json:"metadata,omitempty"`
 	AccessPrograms       json.RawMessage `json:"access_programs,omitempty"`
 	Text                 json.RawMessage `json:"text,omitempty"`
 	Reasoning            *struct {
@@ -341,7 +342,7 @@ func readResponsesFor(body []byte, facts, keepInstructions bool) (*Request, erro
 	}
 	r := &Request{Model: q.Model, System: q.Instructions, MaxTokens: q.MaxOutputTokens, Temp: q.Temperature,
 		TopP: q.TopP, Stream: q.Stream, Parallel: q.ParallelToolCalls, Fast: q.ServiceTier == "priority" || q.ServiceTier == "ultrafast", Ultrafast: q.ServiceTier == "ultrafast", Tier: q.ServiceTier, CacheKey: q.PromptCacheKey, Include: q.Include,
-		ClientMetadata: sentRaw(q.ClientMetadata), AccessPrograms: q.AccessPrograms}
+		ClientMetadata: sentRaw(q.ClientMetadata), Metadata: sentRaw(q.Metadata), AccessPrograms: q.AccessPrograms}
 	r.Text, r.Format = textFormat(sentRaw(q.Text))
 	// a Responses client's turns go to Claude with hour-long cache marks,
 	// unless it asked for its prompt to be kept in memory only

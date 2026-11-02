@@ -20,7 +20,7 @@ func probeTranslated(ctx context.Context, p provider.Provider, proto provider.Pr
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel() // the reader stops once the first word is in
 	req := &Request{MaxTokens: 16, Messages: []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: "hi"}}}}}
-	events, code, msg := probeServer().askTranslated(p, proto, model, http.Header{}, http.Header{})(ctx, req)
+	events, code, msg := probeServer().askTranslated(p, proto, model, http.Header{}, http.Header{}, "")(ctx, req)
 	if events == nil {
 		return code, errors.New(msg)
 	}

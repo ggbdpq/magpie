@@ -1858,7 +1858,7 @@ func (s *Server) drawCodeAssist(ctx context.Context, p provider.Provider, model 
 	req := &Request{Messages: []Message{{Role: "user", Parts: parts}}, draws: true}
 	return s.eachDrawing(d.N, func() (drawn, int, error) {
 		// one each: the drawings are asked for at once
-		ask := s.askTranslated(p, provider.CodeAssist, model, http.Header{}, http.Header{})
+		ask := s.askTranslated(p, provider.CodeAssist, model, http.Header{}, http.Header{}, "")
 		events, code, msg := ask(ctx, req)
 		if events == nil {
 			return drawn{}, code, errors.New(msg)

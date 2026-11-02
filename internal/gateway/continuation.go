@@ -502,7 +502,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 		if cont.resume {
 			req = cont.request(request)
 		}
-		res, actual, err := s.forwardTranslated(r.Context(), p, to, req, model, r.Header)
+		res, actual, err := s.forwardTranslated(r.Context(), p, to, req, model, r.Header, r.URL.RawQuery)
 		if err != nil {
 			if !cont.resume {
 				return writeError(w, from, 502, p.Name+": "+err.Error()), err.Error()

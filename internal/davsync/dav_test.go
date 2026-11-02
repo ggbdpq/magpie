@@ -53,6 +53,55 @@ func TestDAVForbidden(t *testing.T) {
 	}
 }
 
+// A 403 on the write itself, with everything listing fine, is told apart by
+// magpie's own folder: there, the server refuses to change files in it —
+// 坚果云 (Nutstore)'s free tier refuses writes with 403 once the account's
+// upload quota is used up (#4927) — and the error names the folder the write
+// went to, not just the address's, and says the quota. Missing, the server
+// refused to have magpie make it, and the error says to make it by hand.
+func TestDAVWriteRefused(t *testing.T) {
+	ctx := context.Background()
+	refuse := func(statusOf func(r *http.Request) int) *dav {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(statusOf(r))
+		}))
+		t.Cleanup(srv.Close)
+		d, err := newDAV(Config{URL: srv.URL + "/dav/"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+
+	// the folder is there (an earlier sync made it), the write is refused
+	d := refuse(func(r *http.Request) int {
+		switch {
+		case r.Method == "PROPFIND" && (r.URL.Path == "/dav/" || r.URL.Path == "/dav/magpie/"):
+			return http.StatusMultiStatus
+		default:
+			return http.StatusForbidden
+		}
+	})
+	if _, err := d.put(ctx, []byte("x"), ""); err == nil || !strings.Contains(err.Error(), "change files in /dav/magpie") || !strings.Contains(err.Error(), "quota") {
+		t.Fatalf("a refused write into the folder there: %v", err)
+	}
+
+	// the folder isn't there, and the server refuses to have magpie make it
+	d = refuse(func(r *http.Request) int {
+		switch {
+		case r.Method == "PROPFIND" && r.URL.Path == "/dav/":
+			return http.StatusMultiStatus
+		case r.Method == "MKCOL":
+			return http.StatusForbidden
+		default:
+			return http.StatusConflict
+		}
+	})
+	if _, err := d.put(ctx, []byte("x"), ""); err == nil || !strings.Contains(err.Error(), "doesn't let magpie make its folder /dav/magpie") || !strings.Contains(err.Error(), "make the folder magpie there first") {
+		t.Fatalf("a refused folder: %v", err)
+	}
+}
+
 // OpenList's and Alist's /dav/ lists their storages: a folder can't be made
 // there (MKCOL 405, as if it were) and a file can't be put (404). The error
 // says to put a storage in the address, naming them.

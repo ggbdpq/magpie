@@ -132,8 +132,25 @@ handed over as `WebFetch`; handed over whole, the client answered "No
 such tool available: mcp__magpie__WebFetch" (steven_4422, 11-08). One of
 another client MCP server called as `mcp__magpie__mcp__linear__…` is
 handed over as `mcp__linear__…`. A deferred tool the run's model calls
-by the bare client name (`WebFetch`, `mcp__linear__…`) is the run's
-Claude Code's to answer and is not handed over.
+by the bare client name is the client's when the client said the name
+(the next paragraph); one it never said — a deferred built-in it calls
+bare (`WebFetch`), a tool of the run's own claude.ai connector — is the
+run's Claude Code's to answer and is not handed over.
+
+A tool of the client's own MCP server, called by its own name with no
+`mcp__magpie__` before it — `mcp__linear__get_issue` before a ToolSearch
+loads it (#4956), `mcp__yfinance__get_stock_info` after one (#4854) — is
+handed to the client under the name the run's model called, which is the
+client's own, when that name is one the client said: a tool it sent
+(`subscriptionRun.tools`) or one its conversation names
+(`subscriptionRun.announced`, `clientMCPTools`: the deferred-tools
+reminder's `mcp__…` names, and the tools a result loads, #2660).
+Answered by the run instead, the client never saw the call and the model
+retried under the helper's full name ("No MCP server provides it", "No
+such tool available"). The run's own claude.ai connectors carry such
+names too and stay the run's, which alone can answer them: a name the
+client neither sent nor announced is not handed over
+(`TestClaudeBridgeHandsOverAClientMCPToolByItsOwnName`).
 
 Claude Code's `/advisor` (`advisor_20260301`, sent with
 `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL`, which the Claude Code

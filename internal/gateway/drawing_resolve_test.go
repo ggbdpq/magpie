@@ -174,6 +174,63 @@ func TestRelayDrawingNoGPTImageClaimsNoneOfTheFamily(t *testing.T) {
 	}
 }
 
+// loscoy's relay (v0.1.2670) namespaces its list — openai/gpt-image-1,
+// openai/gpt-image-2 and the rest, all Draws (#4432): the family is the
+// name's own past the namespace, as the bare one a Codex harness asks
+// its provider for. A relay whose list draws none of the family is still
+// not taken to (TestRelayDrawingNoGPTImageClaimsNoneOfTheFamily).
+func TestRelayDrawsTheGPTImageFamilyFromANamespacedList(t *testing.T) {
+	fresh(t)
+	e := &easel{}
+	up := httptest.NewServer(e)
+	defer up.Close()
+	p := provider.Provider{ID: "relay", Name: "Relay", Responses: up.URL + "/v1", Key: "key"}
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive(p.ID, p.Responses, []catalog.Model{
+		{ID: "text"},
+		{ID: "openai/gpt-image-1", Draws: true},
+		{ID: "openai/gpt-image-1.5", Draws: true},
+		{ID: "openai/gpt-image-2", Draws: true},
+		{ID: "openai/gpt-image-2.5-flare", Draws: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	code, a, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"model":"gpt-image-2","prompt":"a magpie"}`)
+	if code != 200 || a.Model != "relay/gpt-image-2" {
+		t.Fatalf("%d %s", code, raw)
+	}
+	requests := e.got("/v1/images/generations")
+	if len(requests) != 1 || !strings.Contains(requests[0], `"model":"gpt-image-2"`) {
+		t.Fatalf("asked %v", requests)
+	}
+}
+
+// Codex's native image tool draws with its turn's provider's own list,
+// namespaced or not: the bare gpt-image-2 it asks for draws there as
+// itself, not as the Settings' pick instead of it (#4432).
+func TestCodexNativeDrawsItsOwnModelOnANamespacedRelay(t *testing.T) {
+	fresh(t)
+	relay := drawingRelay(t, "relay", "openai/gpt-image-2.5-flare")
+	st := settings.Load()
+	st.ImageGen = "relay/openai/gpt-image-2.5-flare"
+	if err := settings.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	drawingMainTurn(t, s, "relay/text", "session-a", "turn-a", "", "magpie-codex")
+	code, answer, raw := drawingToolCall(t, s, "/v1/images/generations", "gpt-image-2", "", "turn-a", "magpie-codex")
+	if code != 200 || answer.Model != "relay/gpt-image-2" {
+		t.Fatalf("%d %s", code, raw)
+	}
+	requests := relay.got("/v1/images/generations")
+	if len(requests) != 1 || !strings.Contains(requests[0], `"model":"gpt-image-2"`) {
+		t.Fatalf("asked %v", requests)
+	}
+}
+
 // Codex's native image tool asks its turn's provider for the one it names
 // (gpt-image-2, #870): on a Codex backend whose list names another of the
 // family, it draws there as the one it asked for, not as magpie's pick

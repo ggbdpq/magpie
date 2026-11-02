@@ -177,11 +177,12 @@ func resolveDrawing(id string) (provider.Provider, string, bool) {
 // are of: any grok-imagine-image* on a Grok subscription, any gpt-image-*
 // on a ChatGPT account, and any gpt-image-* on a keyed relay at a Responses
 // base (a Codex backend relay such as sub2api) whose own list draws one of
-// that family already (#4432). The vendor's newer ones work before magpie
-// names them, as grok-imagine-video* do for videos; one it doesn't serve is
-// refused by the vendor, in its own words. A relay whose list draws no
-// GPT Image isn't taken to: a Codex turn on it draws with the Settings
-// pick, as it did (TestCodexDrawingFallsBackToImageSetting).
+// that family already (#4432), by the name past the namespace its list may
+// carry (openai/gpt-image-2, loscoy's). The vendor's newer ones work before
+// magpie names them, as grok-imagine-video* do for videos; one it doesn't
+// serve is refused by the vendor, in its own words. A relay whose list
+// draws no GPT Image isn't taken to: a Codex turn on it draws with the
+// Settings pick, as it did (TestCodexDrawingFallsBackToImageSetting).
 func drawsFamily(p provider.Provider, id string) bool {
 	switch {
 	case drawsGrok(p):
@@ -189,7 +190,9 @@ func drawsFamily(p provider.Provider, id string) bool {
 	case drawsCodex(p):
 		return strings.HasPrefix(id, codexDrawerFamily)
 	case p.Account == nil && p.Base(provider.Responses) != "" && strings.HasPrefix(id, codexDrawerFamily):
-		return slices.ContainsFunc(Drawers(p), func(m catalog.Model) bool { return strings.HasPrefix(m.ID, codexDrawerFamily) })
+		return slices.ContainsFunc(Drawers(p), func(m catalog.Model) bool {
+			return strings.HasPrefix(m.ID[strings.LastIndexByte(m.ID, '/')+1:], codexDrawerFamily)
+		})
 	}
 	return false
 }

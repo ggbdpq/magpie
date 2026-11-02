@@ -215,6 +215,12 @@ type Request struct {
 	// replayed: the run started was given the conversation as a
 	// transcript (replaySession)
 	replayed bool
+	// printRetry, for the Claude bridge, is a turn Anthropic refused in
+	// the interactive mode as a third-party app's (#4503): it is redone
+	// as claude -p once, which serves the same request (the interactive
+	// mode is what Anthropic judges by the prompt, not -p), and is not
+	// redone again
+	printRetry bool
 	// hourMarks has the cache marks magpie adds on Anthropic's Messages
 	// (anthropicBody) last an hour: a Responses client's (Codex's), whose
 	// turns are often more than five minutes apart and whose own vendor

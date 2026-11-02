@@ -1011,7 +1011,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	// runs them interactively. A run it can't take is refused, never made
 	// -p: a refused request never ran, and isn't the last run
 	tui, code := claudeTUI(req, binary)
-	if !tui && code != "off" && code != "no-shim" {
+	if !tui && code != "off" && code != "no-shim" && code != "retry" {
 		cleanup()
 		return nil, nil, &tuiRefusal{claudeTUIErr(claudeNotTUIWhy(req, binary))}
 	}
@@ -1231,6 +1231,12 @@ var claudeTUIRuns = true
 // The code is claudePrint's, for the provider editor's last run
 // (ClaudeMode.Last).
 func claudeTUI(req *Request, binary claudeCLI) (bool, string) {
+	if req.printRetry {
+		// Anthropic refused this turn in the interactive mode as a
+		// third-party app's (#4503): it is redone as claude -p once,
+		// which serves the same prompt
+		return false, "retry"
+	}
 	code, why := claudePrint(req, binary)
 	if why != "" && code != "no-shim" {
 		log.Printf("claude: not the interactive mode: %s", why)
@@ -5765,39 +5771,63 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from 
 	if run == nil && name == "Claude Code" {
 		req.branch = s.subscription.branch(req, owner)
 	}
-	if run == nil {
-		run, events, err = start(r.Context(), req)
-		if err == nil {
-			// its agent is running already: what it was told is set
-			// under the run's lock, as offers and shelve read it
-			tools := map[string]bool{}
-			for _, t := range req.Tools {
-				tools[t.Name] = true
-			}
-			run.mu.Lock()
-			run.tools = tools
-			if search.Name != "" {
-				run.search, run.searchName = s.webSearch, search.Name
-			}
-			if answer.Name != "" && run.tui {
-				run.answerName, run.answerSchema = answer.Name, answerSchema
-			}
-			run.mu.Unlock()
+	// what a fresh run is told of the turn before it answers: its agent is
+	// running already, so what it was told is set under the run's lock, as
+	// offers and shelve read it. A run redone as claude -p is told the
+	// same (#4503).
+	equip := func(run *subscriptionRun) {
+		tools := map[string]bool{}
+		for _, t := range req.Tools {
+			tools[t.Name] = true
 		}
+		run.mu.Lock()
+		run.tools = tools
+		if search.Name != "" {
+			run.search, run.searchName = s.webSearch, search.Name
+		}
+		if answer.Name != "" && run.tui {
+			run.answerName, run.answerSchema = answer.Name, answerSchema
+		}
+		run.mu.Unlock()
 	}
-	if err != nil {
-		// no room for another Claude Code on this machine is no fault of
-		// the account: a 503 passes it to the next (#2956)
-		code := 502
-		var full *claudeFull
-		var refused *cliSchemaRefused
-		var tui *tuiRefusal
-		if errors.As(err, &full) {
-			code = 503
-		} else if errors.As(err, &refused) || errors.As(err, &tui) {
-			code = 400
+	// A turn the interactive mode's Anthropic refuses as a third-party
+	// app's (#4503) is redone once as claude -p, which serves the same
+	// prompt. The reply's start is held till the peek knows; on the
+	// refusal the run is let go and started again, printRetry saying the
+	// redo is -p and is not redone itself.
+	for first := true; ; first = false {
+		if run == nil {
+			run, events, err = start(r.Context(), req)
+			if err == nil {
+				equip(run)
+			}
 		}
-		return writeError(w, from, code, name+": "+err.Error()), err.Error()
+		if err != nil {
+			// no room for another Claude Code on this machine is no fault of
+			// the account: a 503 passes it to the next (#2956)
+			code := 502
+			var full *claudeFull
+			var refused *cliSchemaRefused
+			var tui *tuiRefusal
+			if errors.As(err, &full) {
+				code = 503
+			} else if errors.As(err, &refused) || errors.As(err, &tui) {
+				code = 400
+			}
+			return writeError(w, from, code, name+": "+err.Error()), err.Error()
+		}
+		if !first || !run.tui {
+			break
+		}
+		head, redo := thirdPartyPeek(events)
+		if !redo {
+			events = heldEvents(head, events)
+			break
+		}
+		log.Printf("%s on %s: Anthropic refused the interactive mode's turn as a third-party app's; it is redone as claude -p", name, model)
+		run.abort()
+		req.printRetry = true
+		run, events, err = nil, nil, nil
 	}
 	cacheDropped(w, req)
 	run.heard(req.Messages)
@@ -5834,6 +5864,58 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from 
 		}
 		run.ended(req, said, stop, ok)
 	})
+}
+
+// thirdPartyWords is how Anthropic refuses an interactive Claude Code a
+// turn whose prompt is another agent harness's own — the tools, rules and
+// skills of Pi, OpenCode and the like, judged as a whole, no phrase of
+// them alone (#4503). The refusal is a notice, not a dead end: it says
+// "keep going", and the same request as claude -p is served, whose
+// sdk-cli entrypoint the prompt does not condemn (#4503's own tests).
+// What extra usage the account turns on is the user's to decide; the
+// turn is redone as claude -p once rather than told back to the caller
+// as a bare 400 the way it was.
+const thirdPartyWords = "Third-party apps now draw from your extra usage"
+
+// thirdPartyExtraUsage is whether msg is that refusal.
+func thirdPartyExtraUsage(msg string) bool {
+	return strings.Contains(msg, thirdPartyWords)
+}
+
+// thirdPartyPeek holds a run of the interactive mode's first events while
+// it looks for the turn Anthropic refuses as a third-party app's (#4503):
+// a 400 that says no reply began. What was held is told again either way
+// (heldEvents); redo says whether the events began with the refusal, and
+// the turn is to be redone as claude -p.
+func thirdPartyPeek(events <-chan Event) (head []Event, redo bool) {
+	for ev := range events {
+		head = append(head, ev)
+		switch ev.Kind {
+		case KStart, KUsage:
+			// the reply's start: a refusal, if it comes, is later
+			continue
+		case KError:
+			redo = ev.Status == 400 && thirdPartyExtraUsage(ev.Text)
+		}
+		return head, redo
+	}
+	return head, false
+}
+
+// heldEvents is events with head told again before them: what the peek
+// held while it looked for the third-party refusal (#4503).
+func heldEvents(head []Event, events <-chan Event) <-chan Event {
+	out := make(chan Event, len(head)+8)
+	for _, ev := range head {
+		out <- ev
+	}
+	go func() {
+		defer close(out)
+		for ev := range events {
+			out <- ev
+		}
+	}()
+	return out
 }
 
 // bridgeFailed is the status and words a client is answered with when an

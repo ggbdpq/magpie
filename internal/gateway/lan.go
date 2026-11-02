@@ -368,6 +368,18 @@ func lanGuard(next http.Handler) http.Handler {
 			http.Error(w, "magpie isn't shared on the local network", http.StatusForbidden)
 			return
 		}
+		// a browser's preflight carries no key, and CORS forbids putting
+		// one on it: it could never pass the key check below, so corsGuard,
+		// next, answers it instead — a listed origin's (204 and the
+		// headers), any other page refused as on loopback — while the call
+		// it asks after still needs the key (#4931: a preflight from
+		// another machine, direct on the LAN or behind a reverse proxy,
+		// was refused 401 for the key it may not carry, and the browser
+		// gave up before the keyed call)
+		if remote && corsPreflight(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		// the key page itself is the same bytes for everyone, so it is
 		// opened before the key it asks for is typed; its data isn't
 		if remote && keyPageOpen(r) {

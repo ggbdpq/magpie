@@ -5950,6 +5950,14 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name 
 		ended(said, stop, failed == "" && r.Context().Err() == nil)
 		// an error event already ended the reply in the client's protocol
 		if failed == "" {
+			// a reply whose messages name no model left the usage without
+			// Served: its row read as a 200 that nothing answered, the
+			// routing log's reader left guessing what replied (#4533).
+			// What answered was, the reply saying nothing else, the model
+			// asked for
+			if usage.Served == "" {
+				usage.add(Usage{Served: req.Model})
+			}
 			enc.finish()
 		}
 		return 200, failed
@@ -5986,6 +5994,11 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name 
 	res := col.finish()
 	usage.add(res.Usage)
 	usage.add(Usage{Served: res.Model})
+	// as in a stream: a reply that names no model answers with the one
+	// asked for (#4533)
+	if usage.Served == "" {
+		usage.add(Usage{Served: req.Model})
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
 	_, _ = w.Write(renderUsage(from, res, req, usage))

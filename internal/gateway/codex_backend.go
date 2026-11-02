@@ -2412,6 +2412,9 @@ func codexInputAs(body []byte, magpieModel, native bool) (_ []byte, compact bool
 			}
 			out = append(out, it)
 		default:
+			if !magpieModel && dropCitationsWithoutOffsets(it) {
+				changed = true
+			}
 			out = append(out, it)
 		}
 	}
@@ -2483,8 +2486,82 @@ func codexInputItemChanges(it []byte, magpieModel, native bool) bool {
 		}
 		enc, _ := stringBytes(memberOrNil(it, "encrypted_content"))
 		return len(enc) == 0 || hasPrefix(enc, claudeseal.Mark)
+	case !magpieModel:
+		// whatever else carries an output_text part — the message items
+		// that do on the wire, any item that carries one off it — a
+		// citation without its offsets goes (#4921)
+		return hasCitationWithoutOffsets(it)
 	}
 	return false
+}
+
+// hasCitationWithoutOffsets reports whether it, an input item, carries an
+// output_text annotation without both of the offsets OpenAI's schema
+// wants: read as the scan reads it, without decoding the conversation.
+func hasCitationWithoutOffsets(it []byte) bool {
+	if !bytes.Contains(it, []byte(`"annotations"`)) {
+		return false
+	}
+	for _, part := range elementsOf(memberOrNil(it, "content")) {
+		if !bytes.Contains(part, []byte(`"annotations"`)) {
+			continue
+		}
+		if typ, _ := stringBytes(memberOrNil(part, "type")); string(typ) != "output_text" {
+			continue
+		}
+		for _, a := range elementsOf(memberOrNil(part, "annotations")) {
+			if citationWithoutOffsets(a) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// citationWithoutOffsets is whether an annotation lacks start_index or
+// end_index, as absent or null. OpenAI's schema wants both of every kind,
+// and one without them — a url_citation as another vendor's Responses
+// reply writes it (Volcengine's Ark, #4921) — cannot be sent back there.
+func citationWithoutOffsets(a []byte) bool {
+	for _, k := range []string{"start_index", "end_index"} {
+		v := memberOrNil(a, k)
+		if len(v) == 0 || string(v) == "null" {
+			return true
+		}
+	}
+	return false
+}
+
+// dropCitationsWithoutOffsets takes an input item's output_text
+// annotations that carry no offsets, which the backend refuses the replay
+// of the history whole ("Missing required parameter:
+// 'input[N].content[0].annotations[0].start_index'"), every later turn of
+// the thread with it (#4921). The text and a citation with its offsets
+// stay. It reports whether it took one out.
+func dropCitationsWithoutOffsets(it map[string]any) bool {
+	content, _ := it["content"].([]any)
+	changed := false
+	for _, c := range content {
+		part, ok := c.(map[string]any)
+		if !ok || part["type"] != "output_text" {
+			continue
+		}
+		notes, _ := part["annotations"].([]any)
+		kept := notes[:0]
+		dropped := false
+		for _, n := range notes {
+			a, ok := n.(map[string]any)
+			if !ok || a["start_index"] == nil || a["end_index"] == nil {
+				changed, dropped = true, true
+				continue
+			}
+			kept = append(kept, n)
+		}
+		if dropped {
+			part["annotations"] = kept
+		}
+	}
+	return changed
 }
 
 // turnMetadataHeader is where Codex says what a request is for, as it does

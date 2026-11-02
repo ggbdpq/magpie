@@ -183,6 +183,7 @@ func responsesWholeEvents(b []byte) []wholeEvent {
 	}
 	send("response.created", obj{"response": raw(begun)})
 	send("response.in_progress", obj{"response": raw(begun)})
+	cleaned := false
 	for i, item := range output {
 		at, id := raw(i), item["id"]
 		added := maps.Clone(item)
@@ -193,6 +194,10 @@ func responsesWholeEvents(b []byte) []wholeEvent {
 		switch str(item, "type") {
 		case "message":
 			json.Unmarshal(item["content"], &parts)
+			if tidyCitations(parts) {
+				cleaned = true
+				item["content"] = raw(parts)
+			}
 			added["content"] = raw([]any{})
 			send("response.output_item.added", obj{"output_index": at, "item": raw(added)})
 			for j, part := range parts {
@@ -255,6 +260,10 @@ func responsesWholeEvents(b []byte) []wholeEvent {
 		}
 		send("response.output_item.done", obj{"output_index": at, "item": raw(item)})
 	}
+	if cleaned {
+		// the reply the client keeps carries the tidied items too
+		v["output"] = raw(output)
+	}
 	end := "response.completed"
 	switch str(v, "status") {
 	case "incomplete":
@@ -264,6 +273,40 @@ func responsesWholeEvents(b []byte) []wholeEvent {
 	}
 	send(end, obj{"response": raw(v)})
 	return events
+}
+
+// tidyCitations takes a message item's content parts' output_text
+// annotations that carry no offsets, as another vendor's Responses reply
+// writes its citations (Volcengine's Ark, #4921): the client stores what
+// it is handed and replays it where OpenAI's schema holds, and there a
+// reply history carrying one is refused whole ("Missing required
+// parameter: 'input[N].content[0].annotations[0].start_index'"), the
+// thread's every later turn with it. The text and a citation with its
+// offsets stay. It reports whether it took one out.
+func tidyCitations(parts []obj) bool {
+	changed := false
+	for _, part := range parts {
+		if str(part, "type") != "output_text" {
+			continue
+		}
+		var notes []json.RawMessage
+		if json.Unmarshal(part["annotations"], &notes) != nil {
+			continue
+		}
+		kept := notes[:0]
+		dropped := false
+		for _, a := range notes {
+			if citationWithoutOffsets(a) {
+				changed, dropped = true, true
+				continue
+			}
+			kept = append(kept, a)
+		}
+		if dropped {
+			part["annotations"] = raw(kept)
+		}
+	}
+	return changed
 }
 
 // anthropicWholeEvents streams an Anthropic message: started with no

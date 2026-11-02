@@ -902,6 +902,60 @@ func TestCodexOwnModelKeepsReasoningWithNullContent(t *testing.T) {
 	}
 }
 
+// The thread history Codex replays keeps what another vendor's Responses
+// reply planted in it (#4921): a citation without the offsets OpenAI's
+// schema wants (Volcengine's Ark writes its url_citation so) has the
+// backend refuse the replay whole ("Missing required parameter:
+// 'input[N].content[0].annotations[0].start_index'"), every later turn of
+// the thread with it. It goes before the turn does; the text and a
+// citation with its offsets go as their item comes.
+func TestCodexOwnModelDropsCitationsWithoutOffsets(t *testing.T) {
+	bad := `{"type":"url_citation","title":"V","url":"https://example.com/v","site_name":"Ark","publish_time":"2026-11-02","summary":"s"}`
+	good := `{"type":"url_citation","start_index":90,"end_index":152,"url":"https://example.com/g","title":"G"}`
+	body := `{"model":"gpt-5.5","input":[{"type":"message","role":"assistant","id":"msg_1","content":[{"type":"output_text","text":"Sun.","annotations":[` + good + `,` + bad + `]}]}]}`
+	got, _ := codexInput([]byte(body), false)
+	if strings.Contains(string(got), "site_name") || strings.Contains(string(got), "publish_time") {
+		t.Fatalf("the citation without its offsets went to the backend:\n%s", got)
+	}
+	if !strings.Contains(string(got), `"url":"https://example.com/g"`) || !strings.Contains(string(got), `"text":"Sun."`) {
+		t.Fatalf("the text or the citation with its offsets went with it:\n%s", got)
+	}
+	// a thread whose citations carry their offsets goes as it came
+	clean := `{"model":"gpt-5.5","input":[{"type":"message","role":"assistant","id":"msg_1","content":[{"type":"output_text","text":"Sun.","annotations":[` + good + `]}]}]}`
+	if got, _ := codexInput([]byte(clean), false); string(got) != clean {
+		t.Fatalf("input: %s", got)
+	}
+	// magpie's own models take the history as it came
+	if got, _ := codexInput([]byte(body), true); string(got) != body {
+		t.Fatalf("magpie input: %s", got)
+	}
+}
+
+// The turn scan says what the rewrite does, without decoding the
+// conversation: a citation without its offsets (#4921) on an output_text
+// part of a message, and no change for one with them, for the same
+// annotation on an input_text part, and for a turn without annotations.
+func TestCodexInputScanSeesCitationsWithoutOffsets(t *testing.T) {
+	bad := `{"type":"message","content":[{"type":"output_text","text":"x","annotations":[{"type":"url_citation","url":"u"}]}]}`
+	if !codexInputItemChanges([]byte(bad), false, false) {
+		t.Fatal("the scan missed a citation without its offsets")
+	}
+	if codexInputItemChanges([]byte(bad), true, false) {
+		t.Fatal("the scan has something to do for a magpie model")
+	}
+	good := `{"type":"message","content":[{"type":"output_text","text":"x","annotations":[{"type":"url_citation","start_index":0,"end_index":1,"url":"u"}]}]}`
+	if codexInputItemChanges([]byte(good), false, false) {
+		t.Fatal("the scan has something to do in a turn whose citations carry their offsets")
+	}
+	onInput := `{"type":"message","content":[{"type":"input_text","text":"x","annotations":[{"type":"url_citation","url":"u"}]}]}`
+	if codexInputItemChanges([]byte(onInput), false, false) {
+		t.Fatal("the scan has something to do in a turn whose annotations are not an output's")
+	}
+	if codexInputItemChanges([]byte(`{"type":"message","content":[{"type":"output_text","text":"the \"annotations\" member"}]}`), false, false) {
+		t.Fatal("the scan has something to do in a turn that only names annotations")
+	}
+}
+
 // Codex signed in with an API key OpenAI refuses, asked for one of its own
 // models: the refusal says what happened and what to do.
 func TestCodexOwnModelKeyRefused(t *testing.T) {

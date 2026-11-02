@@ -257,6 +257,58 @@ func TestWholeAsStreamResponsesCitations(t *testing.T) {
 	}
 }
 
+// A citation another vendor's Responses reply wrote without the offsets
+// OpenAI's schema wants (Volcengine's Ark writes its url_citation so,
+// #4921) goes to no one: the client stores what it is handed and replays
+// it where the backend refuses the reply whole ("Missing required
+// parameter: 'input[N].content[0].annotations[0].start_index'"), the
+// thread's every later turn with it. The text and a citation with its
+// offsets stay, in the citation events and in the item and the reply the
+// client keeps.
+func TestWholeAsStreamDropsCitationsWithoutOffsets(t *testing.T) {
+	rec := httptest.NewRecorder()
+	good := `{"type":"url_citation","start_index":0,"end_index":4,"url":"https://example.com/g","title":"G"}`
+	bad := `{"type":"url_citation","title":"V","url":"https://example.com/v","site_name":"Ark","publish_time":"2026-11-02","summary":"s"}`
+	if !wholeAsStream(rec, provider.Responses, []byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"m","output":[{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Sun.","annotations":[`+good+`,`+bad+`]}]}]}`)) {
+		t.Fatal("not streamed")
+	}
+	got := rec.Body.String()
+	if strings.Contains(got, "site_name") || strings.Contains(got, "publish_time") {
+		t.Fatalf("the citation without its offsets went out:\n%s", got)
+	}
+	var added, done, completed int
+	for _, ev := range events(got) {
+		switch ev["type"] {
+		case "response.output_text.annotation.added":
+			added++
+			a, _ := ev["annotation"].(map[string]any)
+			if a["url"] != "https://example.com/g" || a["start_index"] != float64(0) {
+				t.Fatalf("annotation.added: %v", ev)
+			}
+		case "response.output_item.done":
+			done++
+			it, _ := ev["item"].(map[string]any)
+			part, _ := it["content"].([]any)[0].(map[string]any)
+			notes, _ := part["annotations"].([]any)
+			if len(notes) != 1 || notes[0].(map[string]any)["url"] != "https://example.com/g" {
+				t.Fatalf("item done: %v", ev)
+			}
+		case "response.completed":
+			completed++
+			out, _ := ev["response"].(map[string]any)["output"].([]any)
+			it, _ := out[0].(map[string]any)
+			part, _ := it["content"].([]any)[0].(map[string]any)
+			notes, _ := part["annotations"].([]any)
+			if len(notes) != 1 || notes[0].(map[string]any)["url"] != "https://example.com/g" {
+				t.Fatalf("completed: %v", ev)
+			}
+		}
+	}
+	if added != 1 || done != 1 || completed != 1 || !strings.Contains(got, `"text":"Sun."`) {
+		t.Fatalf("added=%d done=%d completed=%d\n%s", added, done, completed, got)
+	}
+}
+
 // A held try's reply under a type that says neither JSON nor a stream,
 // once the agent has a stream's headers: its first bytes decide, however
 // they are split. A stream is held as a stream from there, read event by

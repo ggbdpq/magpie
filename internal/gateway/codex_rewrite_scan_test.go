@@ -167,6 +167,22 @@ var codexMarks = []func(it map[string]any){
 	func(it map[string]any) { it["encrypted_content"] = nil },
 	func(it map[string]any) { it["type"] = "context_compaction"; it["encrypted_content"] = "gAAAA" },
 	func(it map[string]any) { it["internal_chat_message_metadata_passthrough"] = nil },
+	// a citation another vendor's reply planted without the offsets
+	// OpenAI's schema wants (#4921), beside one with them
+	func(it map[string]any) {
+		it["content"] = []any{map[string]any{"type": "output_text", "text": "t", "annotations": []any{
+			map[string]any{"type": "url_citation", "start_index": 0, "end_index": 1, "url": "https://example.com/g", "title": "G"},
+			map[string]any{"type": "url_citation", "url": "https://example.com/v", "title": "V", "site_name": "Ark", "publish_time": "2026-11-02", "summary": "s"},
+		}}}
+	},
+	func(it map[string]any) {
+		it["content"] = []any{map[string]any{"type": "output_text", "text": "t", "annotations": []any{
+			map[string]any{"type": "url_citation", "start_index": nil, "end_index": 1, "url": "https://example.com/v", "title": "V"},
+		}}}
+	},
+	func(it map[string]any) {
+		it["content"] = []any{map[string]any{"type": "input_text", "text": "t", "annotations": []any{map[string]any{"type": "url_citation", "url": "u"}}}}
+	},
 }
 
 // codexRawMarks are what a map can't say: duplicate and escaped keys,
@@ -340,6 +356,9 @@ func wasCodexInputAs(body []byte, magpieModel, native bool) (_ []byte, compact b
 			}
 			out = append(out, it)
 		default:
+			if !magpieModel && dropCitationsWithoutOffsets(it) {
+				changed = true
+			}
 			out = append(out, it)
 		}
 	}

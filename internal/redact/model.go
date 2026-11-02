@@ -344,6 +344,12 @@ func modelFits(s string, a, b int, kind string) bool {
 		}
 		return strings.IndexFunc(v, unicode.IsLetter) >= 0
 	case "SECRET":
+		// a name code goes on from is no value: a dotted identifier a call
+		// is made on (gctx.GetInt64 in gctx.GetInt64("user_id") went as a
+		// made-up key, #4444), by the same check the rules' values ask
+		if !notCode(s, a, b) {
+			return false
+		}
 		if !wordByte(v[0]) || patternWords(v) || regexpLike(v) || idAfter(s, a) || strings.ContainsRune(v, ' ') && clockIn.MatchString(v) || uuidIn.MatchString(v) || strings.Contains(v, `": `) || strings.Contains(v, `", "`) || linkRe.MatchString(v) {
 			return false
 		}

@@ -69,6 +69,9 @@ func TestModelMisreadsNotMasked(t *testing.T) {
 		{"wait until CI is green", "CI", "private_person"},
 		{"CodeRabbit\tpending\t0", "CodeRabbit", "private_person"},
 		{"Greptile Review at https://app.greptile.com/r/1", "Greptile", "private_person"},
+		// the method a call is made on: gctx.GetInt64 went as a made-up key
+		// in the reporter's redaction shot (#4444)
+		{`rows, err := gctx.GetInt64("user_id")`, "gctx.GetInt64", "secret"},
 	} {
 		f := &fakeModel{values: map[string]string{c.value: c.label}}
 		if out, n := Mask(c.text, Options{Secrets: true, Personal: true, Model: f.find}); n != 0 {
@@ -94,6 +97,8 @@ func TestModelFindsStillMasked(t *testing.T) {
 		{"write to rina.k@kowalczyk.pl", "rina.k@kowalczyk.pl", "private_email"},
 		// beside what the checks above leave out
 		{"the stripe one is sk_test_AbCdEfGh_IjKlMn", "sk_test_AbCdEfGh_IjKlMn", "secret"},
+		// a real secret of dotted parts, where no rule reaches it
+		{"the vault phrase is alpha.bravo.charlie9", "alpha.bravo.charlie9", "secret"},
 		{"the token is 9f2c4e1a7b3d5c8e9f2c", "9f2c4e1a7b3d5c8e9f2c", "secret"},
 		{"ask McDonald, he knows", "McDonald", "private_person"},
 		{"write to Rina at rina.lee@kowalczyk.pl", "Rina", "private_person"},

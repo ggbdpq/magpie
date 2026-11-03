@@ -609,7 +609,7 @@ func wasPlainItemIDs(body []byte) []byte {
 			continue
 		}
 		if len(id) > itemIDCap {
-			id = boundItemID(id)
+			id = boundItemID(id, typ)
 		} else {
 			id = unsafeToolID.ReplaceAllString(id, "_")
 		}

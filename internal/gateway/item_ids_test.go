@@ -37,8 +37,11 @@ var openaiItemID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // idChecker plays OpenAI's /responses as Copilot passes it on: an input
 // item whose id has another character is refused with OpenAI's 400, word
-// for word as echo_ts got it (Copilot's name is magpie's, before it).
-// With check off it takes any id, as OpenCode does its own.
+// for word as echo_ts got it (Copilot's name is magpie's, before it),
+// and one without its kind's prefix with Copilot's bare 400, word for
+// word as ChenxiGao84 got it (#4972): isnine's live matrix (#4525) has a
+// message's id refused bare and taken under msg_. With check off it takes
+// any id, as OpenCode does its own.
 type idChecker struct {
 	mu     sync.Mutex
 	check  bool
@@ -71,6 +74,14 @@ func (u *idChecker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			io.WriteString(w, `{"error":{"message":"Invalid 'input[`+mustString(int64(i))+`].id': string too long. Expected a string with maximum length 64, but got a string with length `+mustString(int64(len(id)))+` instead.","type":"invalid_request_error","param":"input[`+mustString(int64(i))+`].id","code":"string_too_long"}}`)
+			return
+		}
+		// and one of no kind's prefix, with Copilot's bare 400, which says
+		// nothing of the field (#4972)
+		if p := idKindPrefix[it["type"].(string)]; p != "" && !strings.HasPrefix(id, p) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"error":{"message":"","code":"invalid_request_body"}}`)
 			return
 		}
 	}
@@ -234,13 +245,18 @@ func TestCodexOwnModelTakesAnotherVendorsItemIDs(t *testing.T) {
 // copilotLongMessageID and copilotLongReasoningID are ids of the lengths
 // Copilot hands out and Codex carries back: 444 as ghjkllasdf-fake
 // recorded from an approval session (#4527), 420 as isnine's three
-// sessions each showed (#4525) — every one of the characters OpenAI
-// takes an id of, so only their length makes an upstream that checks
-// ids turn the request away.
+// sessions each showed (#4525). The message's is of the opaque Base64
+// shape isnine's follow-up reproduced — `+` and `/` in it, no msg_ prefix
+// — so only its kind's prefix makes an upstream that checks ids take it;
+// the reasoning's carries its own.
 var (
-	copilotLongMessageID   = "msg_" + strings.Repeat("A", 440)
+	copilotLongMessageID   = strings.Repeat("Ab+/", 105)
 	copilotLongReasoningID = "rs_" + strings.Repeat("b", 417)
 )
+
+// idKindPrefix is the id prefix OpenAI takes for an input item of each
+// kind, the check behind Copilot's bare 400 (#4972).
+var idKindPrefix = map[string]string{"message": "msg_", "reasoning": "rs_", "function_call": "fc_"}
 
 // copilotOverlongConversation is a conversation Codex sends Copilot on a
 // later turn: the user's ask, Copilot's own reasoning (sealed, its to
@@ -459,5 +475,71 @@ func TestPlainItemIDsBoundItemIDs(t *testing.T) {
 		if id != want {
 			t.Errorf("a cut id was cut again: %q then %q", want, id)
 		}
+	}
+}
+
+// Copilot's opaque ids (#4525's follow-up, #4972) carry no prefix of
+// their own: a message's is Base64 with + and / in it, and Copilot's
+// /responses turns the whole request away over the prefixless bound id
+// with the bare 400 (#4972). Each kind's id goes out under the prefix
+// OpenAI takes for it, everything else in the item as it was, and a
+// bound id stays bound.
+func TestPlainItemIDsOpaqueKinds(t *testing.T) {
+	for _, tt := range []struct{ typ, prefix string }{
+		{"message", "msg_"},
+		{"", "msg_"},
+		{"reasoning", "rs_"},
+		{"function_call", "fc_"},
+		{"custom_tool_call", "ctc_"},
+		{"tool_search_call", "tsc_"},
+	} {
+		t.Run(tt.typ, func(t *testing.T) {
+			item := map[string]any{"id": strings.Repeat("A", 442) + "==", "type": tt.typ}
+			switch tt.typ {
+			case "", "message":
+				item["role"] = "assistant"
+				item["content"] = []any{map[string]any{"type": "output_text", "text": "OK"}}
+			case "reasoning":
+				// Copilot's own reasoning, its id of the characters the
+				// checker takes and none of its prefixes, is its own to
+				// read back: kept, under rs_
+				item["id"] = strings.Repeat("a", 420)
+				item["encrypted_content"] = "gAAAA"
+				item["summary"] = []any{}
+			case "custom_tool_call":
+				item["call_id"], item["name"], item["input"] = "call_keep", "apply_patch", "patch"
+			case "tool_search_call":
+				item["call_id"], item["execution"] = "call_keep", "client"
+				item["arguments"] = map[string]any{"query": "search"}
+			case "function_call":
+				item["call_id"], item["name"], item["arguments"] = "call_keep", "shell", "{}"
+			}
+			if tt.typ == "" {
+				delete(item, "type")
+			}
+			body := mustJSON(map[string]any{"input": []any{item}})
+			got := plainItemIDs(body)
+			var q struct {
+				Input []map[string]any `json:"input"`
+			}
+			if err := json.Unmarshal(got, &q); err != nil || len(q.Input) != 1 {
+				t.Fatalf("item lost: %s (%v)", got, err)
+			}
+			id, _ := q.Input[0]["id"].(string)
+			if !strings.HasPrefix(id, tt.prefix) || len(id) > 64 || !openaiItemID.MatchString(id) {
+				t.Errorf("bounded %s id %q lacks its kind's prefix or the shape an id checker takes", tt.typ, id)
+			}
+			if _, has := q.Input[0]["call_id"]; has && q.Input[0]["call_id"] != "call_keep" {
+				t.Errorf("the call's call_id changed: %s", got)
+			}
+			delete(item, "id")
+			delete(q.Input[0], "id")
+			if !bytes.Equal(mustJSON(item), mustJSON(q.Input[0])) {
+				t.Errorf("an item's other members changed: %s", got)
+			}
+			if next := plainItemIDs(got); !bytes.Equal(got, next) {
+				t.Errorf("a bound id bound again: %s", next)
+			}
+		})
 	}
 }

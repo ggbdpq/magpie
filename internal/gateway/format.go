@@ -175,6 +175,50 @@ func (r *Request) asObject() *Request {
 	return &q
 }
 
+// formatToldInBody is a passed-through body with its format told in the
+// system prompt beside the field it asked in, the field kept as it was:
+// an upstream that honors the field answers as asked, and one that takes
+// it and drops it without a word — a relay in front of a model without
+// structured output (new-api, #5082), whose 200 says nothing — has the
+// words reach its model instead. The body and false when there is
+// nothing to change.
+func formatToldInBody(proto provider.Protocol, body []byte) ([]byte, bool) {
+	f := bodyFormat(proto, body)
+	if f == nil {
+		return body, false
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var m map[string]any
+	if dec.Decode(&m) != nil {
+		return body, false
+	}
+	line := f.instruction()
+	switch proto {
+	case provider.Responses:
+		s, _ := m["instructions"].(string)
+		m["instructions"] = withLine(s, line)
+	case provider.Chat:
+		m["messages"] = withSystemLine(m["messages"], line)
+	case provider.Anthropic:
+		switch s := m["system"].(type) {
+		case []any:
+			m["system"] = append(s, map[string]any{"type": "text", "text": line})
+		case string:
+			m["system"] = withLine(s, line)
+		default:
+			m["system"] = line
+		}
+	}
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetEscapeHTML(false) // <, > and & as the agent wrote them
+	if enc.Encode(m) != nil {
+		return body, false
+	}
+	return bytes.TrimSuffix(out.Bytes(), []byte("\n")), true
+}
+
 // withLine is a system prompt with s said at its end.
 func withLine(system, s string) string {
 	if system != "" {

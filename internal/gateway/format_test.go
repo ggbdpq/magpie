@@ -252,6 +252,52 @@ func TestRefusedFormatToldInWords(t *testing.T) {
 	}
 }
 
+// A relay that takes the format field as sent and answers plain text
+// (new-api in front of models without structured output: Claude Code's
+// session-title request, #5082) is told the format in words beside the
+// field it dropped, so the ask reaches the model either way; a field an
+// upstream honors is still asked for as it was.
+func TestSilentlyIgnoredFormatToldInWords(t *testing.T) {
+	fresh(t)
+	up := &formatVendor{}
+	srv := httptest.NewServer(up)
+	t.Cleanup(srv.Close)
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k",
+		Chat: srv.URL + "/v1", Responses: srv.URL + "/v1", Anthropic: srv.URL + "/v1",
+		Models: []string{"deepseek-chat"}}); err != nil {
+		t.Fatal(err)
+	}
+	titleSchema := `{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}`
+	titleBody := `{"model":"relay/deepseek-chat","max_tokens":256,"system":"Generate a concise title for this session.",` +
+		`"messages":[{"role":"user","content":"help me add a header mod"}],"output_config":{"format":{"type":"json_schema","schema":` + titleSchema + `}}}`
+	for _, c := range []struct {
+		name, path, body, field string // where the upstream reads the format
+	}{
+		{"Claude Code's session-title request", "/v1/messages", titleBody, "output_config.format.schema"},
+		{"a chat.completions.parse", "/v1/chat/completions", strings.Replace(sdkChatParse, "%s", "relay/deepseek-chat", 1), "response_format.json_schema.schema"},
+		{"a responses.parse", "/v1/responses", strings.Replace(sdkResponsesParse, "%s", "relay/deepseek-chat", 1), "text.format.schema"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			code, _ := post(t, c.path, c.body)
+			if code != 200 {
+				t.Fatalf("status %d", code)
+			}
+			_, sent := up.sent()
+			var got any = sent
+			for _, k := range strings.Split(c.field, ".") {
+				m, _ := got.(map[string]any)
+				got = m[k]
+			}
+			if got == nil {
+				t.Fatalf("the format field was dropped: %s", jsonOf(sent))
+			}
+			if !strings.Contains(jsonOf(sent), "Respond with a single JSON") {
+				t.Fatalf("format not told in words: %s", jsonOf(sent))
+			}
+		})
+	}
+}
+
 // Gemini's structured output (responseMimeType with responseJsonSchema)
 // is read into the format, and a Gemini upstream (Code Assist, Factory's
 // generateContent) is asked for one in those fields.

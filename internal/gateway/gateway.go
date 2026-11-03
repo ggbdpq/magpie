@@ -6133,11 +6133,16 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		body, _, _ = withHistoryTools(proto, body)
 	}
 	// structured output an upstream turned away before (#2126): a schema
-	// as any JSON object, or the format told in the system prompt alone
+	// as any JSON object, or the format told in the system prompt alone;
+	// one that takes the format as sent without honoring it (#5082) is
+	// told it in words beside the field, so the ask reaches the model
+	// either way
 	if !s.fits(p.ID, formatRefused(model), proto) {
 		body, _ = formatInBody(proto, body, false)
 	} else if !s.fits(p.ID, schemaRefused(model), proto) {
 		body, _ = formatInBody(proto, body, true)
+	} else {
+		body, _ = formatToldInBody(proto, body)
 	}
 	// xAI's own API takes neither a sealed reasoning item's null content
 	// nor a system turn in Messages (xai_body.go, #3392)

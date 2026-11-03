@@ -3,6 +3,7 @@ package claudebridge
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -48,7 +50,10 @@ func TestCallbackGoesPastTheAgentsProxy(t *testing.T) {
 	if err != nil {
 		t.Skip("can't listen on", ip, err)
 	}
+	started := time.Now()
+	var callbackAt atomic.Int64 // when the helper's callback reached the server, 0 before
 	cb := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callbackAt.CompareAndSwap(0, time.Since(started).Milliseconds())
 		_ = json.NewEncoder(w).Encode(map[string]any{"content": []map[string]any{{"type": "text", "text": "file body"}}})
 	}))
 	cb.Listener.Close()
@@ -87,10 +92,13 @@ func TestCallbackGoesPastTheAgentsProxy(t *testing.T) {
 		"ALL_PROXY="+p, "all_proxy="+p, "NO_PROXY=localhost,127.0.0.1,::1", "no_proxy=localhost,127.0.0.1,::1")
 	in, _ := cmd.StdinPipe()
 	out, _ := cmd.StdoutPipe()
+	errs := &strings.Builder{}
+	cmd.Stderr = errs // the helper's own account of its failure, kept for the report
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { in.Close(); cmd.Wait() })
+	written := time.Since(started)
 	in.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","arguments":{},"_meta":{"claudecode/toolUseId":"toolu_1"}}}` + "\n"))
 	line := make(chan string, 1)
 	go func() {
@@ -105,7 +113,14 @@ func TestCallbackGoesPastTheAgentsProxy(t *testing.T) {
 	select {
 	case got = <-line:
 	case <-time.After(20 * time.Second):
-		t.Fatal("no answer from the helper")
+		// one window covers the child's start, its stdin processing, the
+		// callback and the reply; say how far it got (#4782)
+		stage := "the helper never reached the callback server"
+		if at := callbackAt.Load(); at != 0 {
+			stage = fmt.Sprintf("the callback arrived at %dms but no line followed", at)
+		}
+		t.Fatalf("no answer from the helper in 20s (written %dms): %s; helper stderr:\n%s",
+			written.Milliseconds(), stage, strings.TrimSpace(errs.String()))
 	}
 	if !strings.Contains(got, "file body") {
 		t.Fatalf("the call didn't reach magpie: %s", got)

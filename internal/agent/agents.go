@@ -1105,8 +1105,11 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 		Sync: func() error {
 			var err error
 			// a model of magpie's chosen, but its provider gone from the
-			// file: put it back, or the agent has nothing to send it to
-			if _, ok := edit.GetJSON(path, "provider."+magpieID); !ok && onMagpie() {
+			// file: put it back, or the agent has nothing to send it to —
+			// unless the file keeps it under providers, OpenCode 2's
+			// spelling: there the v1 key stays out, what the sync under
+			// providers brings current is what OpenCode 2 reads (#5064)
+			if _, ok := edit.GetJSON(path, "provider."+magpieID); !ok && onMagpie() && !openCodeNativeOn(path) {
 				err = edit.SetJSON(path, edit.KV{Path: "provider." + magpieID, Value: provider()})
 			} else {
 				err = syncJSONInOrder(path, "provider."+magpieID, provider)
@@ -1153,6 +1156,12 @@ func openCodeRefAt(at place, path, id, v string) (string, error) {
 		return own + "/" + ref, nil
 	}
 	block := func() any { return magpieProviderJSONAt("opencode", id, at.gw()) }
+	// where the file keeps magpie's provider under providers, OpenCode 2's
+	// spelling, the v1 key stays out: the copy under providers is what the
+	// pick reads there, brought current (#5064)
+	if openCodeNativeOn(path) {
+		return v, syncOpenCodeNative(path, block)
+	}
 	if err := edit.SetJSON(path, edit.KV{Path: "provider." + magpieID, Value: openCodeKept(path, block)()}); err != nil {
 		return v, err
 	}

@@ -184,7 +184,15 @@ talks to it as it talks to `-p`: stream-json in and out. The helper:
   other words stays words). Claude Code reads the file after the paste
   returns, so the helper waits for `[Image #N]` with N past the last
   before pasting the next piece; without that wait the second of two
-  images was lost. The transcript holds real image blocks, and Claude Code
+  images was lost. `imageAfter` reads the rendered terminal grid from
+  the last input prompt (`❯`), including its continuation rows, so a
+  chip redrawn only at its changed digit is still recognized. Earlier
+  prompts and unchanged markers don't confirm a paste. `clearScreen`
+  clears the raw diagnostic output but keeps the grid's cells for those
+  partial redraws. A missing newer marker still fails the send after
+  `pasteWait`; the helper never skips an unconfirmed image. The marker's
+  number can share a sequence with pasted text and isn't an image count.
+  The transcript holds real image blocks, and Claude Code
   notes each one's path to the model (`[Image: source: …]`). The folder
   is removed once its message is sent (Claude Code has read the files
   by then), and when the helper ends, on SIGINT, SIGTERM and SIGHUP too:
@@ -1487,6 +1495,7 @@ go test -tags nogui ./internal/gateway/ -run '^TestClaudeClientCache' -count=1
 go test -tags nogui ./internal/gateway/ -run '^TestClaudeLeanPrompt' -count=1
 go test -tags nogui ./internal/gateway/ -run '^TestClaudeTUIChosen$' -count=1
 go test ./internal/claudetui/ -count=1
+go test -tags nogui ./internal/claudetui/ -run 'TestPasteImage|TestImageRedraw|TestImageAfter' -count=1
 go test -tags nogui ./internal/claudecode/ -count=1
 go test -tags nogui ./internal/claudecode/ -run TestKeepCurrent -count=1
 go test -tags nogui ./internal/gateway/ -run '^TestClaudeCodeGivenTheBridgeForASOCKSProxy$' -count=1

@@ -1043,6 +1043,30 @@ func (s *shim) send(pieces []piece) error {
 
 var imageShown = regexp.MustCompile(`\[Image #(\d+)\]`)
 
+// imageAfter reads the current input prompt from the rendered screen:
+// Claude Code can draw only the changed digit of an existing image chip.
+// Earlier prompts and unchanged chips don't acknowledge a new paste.
+func (s *shim) imageAfter(after int) int {
+	s.screenMu.Lock()
+	defer s.screenMu.Unlock()
+	if s.grid == nil {
+		return 0
+	}
+	lines := strings.Split(s.grid.text(), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if !strings.HasPrefix(strings.TrimSpace(lines[i]), "❯") {
+			continue
+		}
+		for _, m := range imageShown.FindAllStringSubmatch(strings.Join(lines[i:], "\n"), -1) {
+			if n, err := strconv.Atoi(m[1]); err == nil && n > after {
+				return n
+			}
+		}
+		break
+	}
+	return 0
+}
+
 // path is where Claude Code reads a file of the helper's at path: one in
 // WSL under the distro's mount of the drive.
 func (s *shim) path(path string) string {
@@ -1062,10 +1086,8 @@ func (s *shim) pasteImage(path string, after int) (int, error) {
 	}
 	by := time.After(pasteWait)
 	for {
-		for _, m := range imageShown.FindAllStringSubmatch(s.plain(), -1) {
-			if n, _ := strconv.Atoi(m[1]); n > after {
-				return n, nil
-			}
+		if n := s.imageAfter(after); n > 0 {
+			return n, nil
 		}
 		select {
 		case <-s.changed:

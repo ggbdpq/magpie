@@ -4637,6 +4637,13 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 						missing++
 					}
 				}
+				// A message that ends the turn called nothing, so none of
+				// those awaited will be written: left out, it would be lost,
+				// and nothing else would end the reply.
+				if whole.StopReason == "end_turn" || whole.StopReason == "stop_sequence" {
+					missing += len(awaited)
+					clear(awaited)
+				}
 				if missing > 0 {
 					log.Printf("claude: %d calls told by themselves were not in the message written after them", missing)
 				}

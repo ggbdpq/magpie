@@ -327,8 +327,14 @@ message began (`owed`) are given up on when another message comes
 without them; a call told by itself after that waits for the next
 message. Before, a message left out in an earlier turn made the next
 turn's late message look like one written after calls it didn't have:
-those calls were dropped and the message told whole. A reply told this
-way has no words or
+those calls were dropped and the message told whole. A message that
+ends the turn (`end_turn` or `stop_sequence`) gives up every call still
+awaited: those stops come with no call, so no later message will have
+them. Left out as their message, its words were lost and nothing else
+ended the reply, which waited until the client gave up. Any other stop
+gives up nothing, since a refused message was seen holding its own call;
+a `max_tokens` or `refusal` message without its call still leaves the
+reply waiting. A reply told this way has no words or
 thinking: the model's text before its call is lost to the client.
 
 A reply that more than one message makes (a late message, Claude Code's

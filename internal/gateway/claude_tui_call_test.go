@@ -599,6 +599,102 @@ func TestClaudeTUIMessageReallyWithoutItsCall(t *testing.T) {
 	}
 }
 
+// The message after one that left out a call told by itself, its own
+// calls not made yet and its turn not over: the call is given up on then,
+// and the message is told whole, its words with its call. Kept waiting for
+// a call that won't come, the message was left out in turn and its words
+// were lost; only the turn's last message gave the call up.
+func TestClaudeTUIMessageAfterOneWithoutItsCall(t *testing.T) {
+	logs := keepLog(t)
+	c := newTUICalls(t)
+	var replies [][]string
+	first := c.run.segment
+	c.call("toolu_a", `{"p":1}`)
+	if _, calls, _, _, raw := c.reply(first); len(calls) != 1 || calls[0] != `toolu_a{"p":1}` {
+		t.Fatalf("first reply %v:\n%s", calls, raw)
+	}
+	replies = append(replies, []string{`toolu_a{"p":1}`})
+	seg := c.answer("toolu_a")
+	// written after toolu_a, without it
+	c.write(tuiRow("msg_m1", tuiCall("toolu_x", 2), "tool_use", 20), `{}`)
+	c.call("toolu_x", `{"p":2}`)
+	_, calls, _, _, raw := c.reply(seg)
+	if len(calls) != 1 || calls[0] != `toolu_x{"p":2}` {
+		t.Fatalf("second reply %v:\n%s", calls, raw)
+	}
+	replies = append(replies, calls)
+	seg = c.answer("toolu_x")
+	c.write(
+		tuiRow("msg_m2", `{"type":"text","text":"looking again"}`, "tool_use", 30),
+		tuiRow("msg_m2", tuiCall("toolu_y", 3), "tool_use", 30),
+	)
+	c.call("toolu_y", `{"p":3}`)
+	text, calls, stop, _, raw := c.reply(seg)
+	if text != "looking again" || len(calls) != 1 || calls[0] != `toolu_y{"p":3}` || stop != "tool_use" {
+		t.Fatalf("third reply %q %v %q:\n%s", text, calls, stop, raw)
+	}
+	replies = append(replies, calls)
+	time.Sleep(3 * callFirst) // the call's own turn to tell the client passes
+	seg = c.answer("toolu_y")
+	c.write(tuiRow("msg_ans", `{"type":"text","text":"done"}`, "end_turn", 7), tuiDone)
+	text, calls, stop, _, raw = c.reply(seg)
+	replies = append(replies, calls)
+	if text != "done" || len(calls) != 0 || stop != "end_turn" {
+		t.Fatalf("last reply %q %v %q:\n%s", text, calls, stop, raw)
+	}
+	toldOnce(t, replies)
+	got := strings.Count(logs.String(), notInMessage)
+	if got != 1 || !strings.Contains(logs.String(), "claude: 1 calls told by themselves "+notInMessage) {
+		t.Fatalf("want one warning for 1 call, got %d:\n%s", got, logs.String())
+	}
+}
+
+// A call told by itself whose message is never written (its attempt was
+// cut and asked again, say), and the model answers in words, ending the
+// turn: the answer is told and the reply ends. Left out as the call's
+// message, the answer was lost and nothing else ended the reply.
+func TestClaudeTUILastMessageWithoutCallFirstTurn(t *testing.T) {
+	c := newTUICalls(t)
+	first := c.run.segment
+	c.call("toolu_a", `{"p":1}`)
+	if _, calls, _, _, raw := c.reply(first); len(calls) != 1 || calls[0] != `toolu_a{"p":1}` {
+		t.Fatalf("first reply %v:\n%s", calls, raw)
+	}
+	seg := c.answer("toolu_a")
+	c.write(tuiRow("msg_ans", `{"type":"text","text":"done"}`, "end_turn", 7), tuiDone)
+	if text, calls, stop, _, raw := c.reply(seg); text != "done" || len(calls) != 0 || stop != "end_turn" {
+		t.Fatalf("last reply %q %v %q:\n%s", text, calls, stop, raw)
+	}
+}
+
+// The same after a turn whose message was left out as it should be. The
+// stale lateID once told this answer by chance; giving up only on the
+// calls owed left it out, and the reply never ended.
+func TestClaudeTUILastMessageWithoutCallSecondTurn(t *testing.T) {
+	logs := keepLog(t)
+	c := newTUICalls(t)
+	first := c.run.segment
+	c.call("toolu_a", `{"p":1}`)
+	if _, calls, _, _, raw := c.reply(first); len(calls) != 1 || calls[0] != `toolu_a{"p":1}` {
+		t.Fatalf("first reply %v:\n%s", calls, raw)
+	}
+	seg := c.answer("toolu_a")
+	c.write(tuiRow("msg_late1", tuiCall("toolu_a", 1), "tool_use", 40), `{}`)
+	c.call("toolu_b", `{"p":2}`)
+	if _, calls, _, _, raw := c.reply(seg); len(calls) != 1 || calls[0] != `toolu_b{"p":2}` {
+		t.Fatalf("second reply %v:\n%s", calls, raw)
+	}
+	seg = c.answer("toolu_b")
+	c.write(tuiRow("msg_ans", `{"type":"text","text":"done"}`, "end_turn", 7), tuiDone)
+	text, calls, stop, _, raw := c.reply(seg)
+	if text != "done" || len(calls) != 0 || stop != "end_turn" {
+		t.Fatalf("last reply %q %v %q:\n%s", text, calls, stop, raw)
+	}
+	if !strings.Contains(logs.String(), notInMessage) {
+		t.Fatalf("no warning:\n%s", logs.String())
+	}
+}
+
 // The attempt that made toolu_b was asked again, and its message came with
 // a call of a new id: nothing is stuck, every call is told once, and
 // toolu_b is given up on, logged, once the message after that one comes.
@@ -638,5 +734,52 @@ func TestClaudeTUIRetriedMessageWithNewCall(t *testing.T) {
 	toldOnce(t, replies)
 	if !strings.Contains(logs.String(), notInMessage) {
 		t.Fatalf("no warning:\n%s", logs.String())
+	}
+}
+
+// Each stop that ends a turn ends the wait for a message that won't come.
+func TestClaudeTUILastMessageStops(t *testing.T) {
+	for _, why := range []string{"end_turn", "stop_sequence"} {
+		t.Run(why, func(t *testing.T) {
+			c := newTUICalls(t)
+			first := c.run.segment
+			c.call("toolu_a", `{"p":1}`)
+			if _, calls, _, _, raw := c.reply(first); len(calls) != 1 {
+				t.Fatalf("first reply %v:\n%s", calls, raw)
+			}
+			seg := c.answer("toolu_a")
+			c.write(tuiRow("msg_ans", `{"type":"text","text":"done"}`, why, 7), tuiDone)
+			if text, calls, _, _, raw := c.reply(seg); text != "done" || len(calls) != 0 {
+				t.Fatalf("last reply %q %v:\n%s", text, calls, raw)
+			}
+		})
+	}
+}
+
+// A refused message may still hold its call (seen once in real
+// transcripts, its thinking row first): only a stop no call comes with
+// gives up on the calls awaited, so this one is neither given up on nor
+// told again.
+func TestClaudeTUIRefusedMessageWithItsCall(t *testing.T) {
+	logs := keepLog(t)
+	c := newTUICalls(t)
+	first := c.run.segment
+	c.call("toolu_a", `{"p":1}`)
+	if _, calls, _, _, raw := c.reply(first); len(calls) != 1 {
+		t.Fatalf("first reply %v:\n%s", calls, raw)
+	}
+	seg := c.answer("toolu_a")
+	c.write(
+		tuiRow("msg_r", `{"type":"thinking","thinking":"hm","signature":"s"}`, "refusal", 9),
+		tuiRow("msg_r", tuiCall("toolu_a", 1), "refusal", 9),
+		tuiRow("msg_ans", `{"type":"text","text":"done"}`, "end_turn", 7),
+		tuiDone,
+	)
+	text, calls, _, _, raw := c.reply(seg)
+	if text != "done" || len(calls) != 0 || strings.Contains(raw, `"hm"`) {
+		t.Fatalf("last reply %q %v:\n%s", text, calls, raw)
+	}
+	if strings.Contains(logs.String(), notInMessage) {
+		t.Fatalf("a call was given up on:\n%s", logs.String())
 	}
 }

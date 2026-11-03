@@ -1126,10 +1126,10 @@ const leadSpace = " \t\r\n"
 
 // thoughtTags are the tags a leading block of thinking comes between in a
 // Chat reply's text, by its opening tag.
-var thoughtTags = map[string]string{"<thought>": "</thought>", "<think>": "</think>"}
+var thoughtTags = map[string]string{"<thought>": "</thought>", "<thinking>": "</thinking>", "<think>": "</think>"}
 
-// text sends a piece of the reply's text, a leading <thought> or <think>
-// block of it as thinking.
+// text sends a piece of the reply's text, a leading <thought>, <thinking> or
+// <think> block of it as thinking.
 func (d *chatDecoder) text(s string, emit func(Event)) {
 	if !d.past && !d.thought {
 		d.lead += s

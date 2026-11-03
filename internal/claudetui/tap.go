@@ -146,11 +146,12 @@ func (t *tap) read() {
 
 func (t *tap) line(b []byte) {
 	var l struct {
-		Tap   string          `json:"tap"`
-		S     int             `json:"s"`
-		Open  bool            `json:"open"`
-		End   string          `json:"end"`
-		Event json.RawMessage `json:"e"`
+		Tap    string            `json:"tap"`
+		S      int               `json:"s"`
+		Open   bool              `json:"open"`
+		End    string            `json:"end"`
+		Event  json.RawMessage   `json:"e"`
+		Limits map[string]string `json:"limits"`
 	}
 	if json.Unmarshal(b, &l) != nil || t.ended[l.S] {
 		return
@@ -158,6 +159,10 @@ func (t *tap) line(b []byte) {
 	switch {
 	case l.Tap != "":
 		t.on = l.Tap == "on"
+	case len(l.Limits) > 0:
+		if info := limitsInfo(l.Limits); info != nil {
+			t.out.emit(map[string]any{"type": "rate_limit_event", "rate_limit_info": info, "session_id": t.sid})
+		}
 	case l.Open:
 		t.open[l.S] = &tapStream{}
 	case len(l.Event) > 0:
@@ -205,6 +210,47 @@ func (t *tap) end(n int) {
 
 func (t *tap) event(e json.RawMessage) {
 	t.out.emit(map[string]any{"type": "stream_event", "event": e, "session_id": t.sid, "parent_tool_use_id": nil})
+}
+
+// limitWindows are the windows a reply's anthropic-ratelimit-unified-*
+// headers name, by the short name in the header (5h-utilization), as
+// Claude Code reads them into a rate_limit_event's unifiedWindows.
+var limitWindows = [][2]string{{"five_hour", "5h"}, {"seven_day", "7d"}, {"seven_day_overage_included", "7d_oi"}}
+
+// limitsInfo is the rate_limit_info -p tells for a reply whose
+// anthropic-ratelimit-unified-* headers are h, keyed without that prefix:
+// its status, the window it is about and when that renews, and each
+// window whose share used is said. Nil when h says none of that.
+func limitsInfo(h map[string]string) map[string]any {
+	info := map[string]any{}
+	windows := map[string]any{}
+	for _, w := range limitWindows {
+		used, err := strconv.ParseFloat(h[w[1]+"-utilization"], 64)
+		if err != nil {
+			continue // not said: unknown, not none used
+		}
+		win := map[string]any{"utilization": used}
+		if at, err := strconv.ParseFloat(h[w[1]+"-reset"], 64); err == nil {
+			win["resetsAt"] = int64(at + 0.5)
+		}
+		windows[w[0]] = win
+	}
+	if len(windows) > 0 {
+		info["unifiedWindows"] = windows
+	}
+	if s := h["status"]; s != "" {
+		info["status"] = s
+	}
+	if c := h["representative-claim"]; c != "" {
+		info["rateLimitType"] = c
+		if at, err := strconv.ParseFloat(h["reset"], 64); err == nil {
+			info["resetsAt"] = int64(at + 0.5)
+		}
+	}
+	if len(windows) == 0 && info["status"] != "rejected" {
+		return nil // nothing the bridge keeps (claudeLimits)
+	}
+	return info
 }
 
 // going says whether a stream is open, one with no message yet if bare.

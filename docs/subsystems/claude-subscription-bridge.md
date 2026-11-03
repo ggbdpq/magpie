@@ -224,6 +224,21 @@ The tap parses the other and writes one JSON line per event to the file:
 `{tap: "on"}`, or `{tap: "none"}` when there is no `FetchSession` to
 replace.
 
+For every reply to such a main-turn `/v1/messages` request, streamed or
+not, the tap also writes `{limits}`: its `anthropic-ratelimit-unified-*`
+headers, keyed without that prefix. The transcript keeps a reply's
+`rate_limit_info` only for a request turned away, so without them an
+account that can't run `/usage` (a setup-token's) stayed unknown in
+interactive mode. The helper tells them as the `rate_limit_event` `-p`
+tells for the same reply (`limitsInfo`): `status`, `rateLimitType` and
+`resetsAt` from `status`, `representative-claim` and `reset`, and each of
+`5h`, `7d` and `7d_oi` whose `-utilization` parses as the
+`unifiedWindows` entry `five_hour`, `seven_day` and
+`seven_day_overage_included`, as Claude Code itself maps them. A share that
+doesn't parse is a window not told, never one unused, and headers that tell
+no share and no refusal tell nothing (`TestTapTellsLimits`,
+`TestTapLimitsUnsaid`).
+
 The helper reads the file every time round the tail loop, every 10ms
 while a stream is open, and tells each event as `-p` does: a
 `stream_event` line. Order is kept two ways:

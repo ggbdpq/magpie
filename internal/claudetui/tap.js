@@ -5,7 +5,9 @@
 // and TLS untouched, and copies the reply of each of the main turn's
 // requests (x-claude-code-request-class: main), as it streams, to the
 // file MAGPIE_CLAUDE_TAP names: a JSON line an event. Claude Code reads
-// its own copy of the stream as before.
+// its own copy of the stream as before. Each such reply's
+// anthropic-ratelimit-unified-* headers, the account's allowance, are
+// written too: the transcript keeps them only for a request turned away.
 //
 // MAGPIE_CLAUDE_GUARD names a file of the bridge's holding the
 // CLAUDE_CODE_EXTRA_BODY a turn of the client's gave (its safeguards).
@@ -132,9 +134,18 @@
       try {
         const url = String((input && input.url) || input);
         const headers = new Headers((init && init.headers) || (input && input.headers) || undefined);
+        const main = headers.get("x-claude-code-request-class") === "main" && /\/v1\/messages(\?|$)/.test(url);
+        if (main) {
+          const limits = {};
+          res.headers.forEach((v, k) => {
+            if (k.toLowerCase().startsWith("anthropic-ratelimit-unified-")) {
+              limits[k.toLowerCase().slice("anthropic-ratelimit-unified-".length)] = v;
+            }
+          });
+          if (Object.keys(limits).length) put({ limits });
+        }
         if (
-          headers.get("x-claude-code-request-class") === "main" &&
-          /\/v1\/messages(\?|$)/.test(url) &&
+          main &&
           res.body &&
           /^text\/event-stream/.test(res.headers.get("content-type") || "")
         ) {

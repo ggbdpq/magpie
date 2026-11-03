@@ -1,9 +1,11 @@
 package claudetui
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -273,5 +275,53 @@ func TestShimStreamsThroughTap(t *testing.T) {
 	}
 	if d := out[4]["event"].(map[string]any)["delta"].(map[string]any)["text"]; d != "hello" {
 		t.Fatalf("the stream said %v", d)
+	}
+}
+
+// A reply's allowance headers, which the transcript keeps only for a
+// request turned away, are told as the rate_limit_event -p tells for the
+// same reply: Claude Code 2.1.309's, on a setup-token account, is
+// rateLimitEvent.
+func TestTapTellsLimits(t *testing.T) {
+	const rateLimitEvent = `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1793690400,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.32,"resetsAt":1793690400},"seven_day":{"utilization":0.3,"resetsAt":1793718000}}}}`
+	l := &lines{}
+	tp, write := testTap(t, l)
+	write(`{"tap":"on"}`,
+		`{"limits":{"status":"allowed","5h-status":"allowed","5h-reset":"1793690400","5h-utilization":"0.32","7d-status":"allowed","7d-reset":"1793718000","7d-utilization":"0.3","representative-claim":"five_hour","reset":"1793690400","fallback-percentage":"0.5","overage-status":"rejected","overage-disabled-reason":"org_level_disabled"}}`,
+		`{"s":1,"open":true}`)
+	tp.read()
+	if len(l.out) != 1 || l.out[0]["type"] != "rate_limit_event" {
+		t.Fatalf("told %v", l.out)
+	}
+	var want map[string]any
+	_ = json.Unmarshal([]byte(rateLimitEvent), &want)
+	got := l.out[0]["rate_limit_info"].(map[string]any)
+	for _, k := range []string{"status", "rateLimitType", "resetsAt", "unifiedWindows"} {
+		if !reflect.DeepEqual(got[k], want["rate_limit_info"].(map[string]any)[k]) {
+			t.Fatalf("%s: told %v, -p tells %v", k, got[k], want["rate_limit_info"].(map[string]any)[k])
+		}
+	}
+}
+
+// Headers that say no window's share and no refusal tell nothing, and a
+// share that doesn't parse is a window not said, never one unused.
+func TestTapLimitsUnsaid(t *testing.T) {
+	for _, h := range []map[string]string{
+		{"status": "allowed"},
+		{"status": "allowed", "5h-utilization": "", "5h-reset": "1793690400"},
+		{"status": "allowed", "7d-utilization": "n/a"},
+	} {
+		if info := limitsInfo(h); info != nil {
+			t.Fatalf("%v told %v", h, info)
+		}
+	}
+	info := limitsInfo(map[string]string{"status": "rejected", "representative-claim": "seven_day", "reset": "1793718000"})
+	if info == nil || info["status"] != "rejected" || info["rateLimitType"] != "seven_day" || info["resetsAt"] != int64(1793718000) || info["unifiedWindows"] != nil {
+		t.Fatalf("a refusal told %v", info)
+	}
+	info = limitsInfo(map[string]string{"5h-utilization": "0.5", "7d-utilization": "x"})
+	w, _ := info["unifiedWindows"].(map[string]any)
+	if len(w) != 1 || w["five_hour"].(map[string]any)["resetsAt"] != nil {
+		t.Fatalf("told %v", info)
 	}
 }

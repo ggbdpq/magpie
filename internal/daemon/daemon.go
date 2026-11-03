@@ -266,6 +266,23 @@ func Stop() error { return installed(manager.stop) }
 // as the new version.
 func Restart() error { return installed(manager.restart) }
 
+// RestartReplaced restarts the installed service when it is running: an
+// update has put a new magpie where the file the running one came from
+// was (on the Mac the swap deletes the old bundle, and a process left
+// running its binary runs a file that is no longer there, which macOS
+// holds against it — its TCC refuses Desktop, Documents and Downloads,
+// and every program it starts with them, #4335), and Restart has it
+// serve the new one. One that isn't running starts as the new one the
+// next time the system starts it. Says whether it restarted; nothing to
+// restart is no error.
+func RestartReplaced() (bool, error) {
+	st, err := Get()
+	if err != nil || !st.Installed || !st.Running {
+		return false, nil
+	}
+	return true, Restart()
+}
+
 // Get is what the system says of the service.
 func Get() (Status, error) {
 	m, err := current()

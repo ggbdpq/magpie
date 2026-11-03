@@ -316,6 +316,81 @@ func TestLaunchdInstall(t *testing.T) {
 	}
 }
 
+// An update puts a new magpie where the file the service's process runs
+// from was (on the Mac the swap deletes the old bundle), and a service
+// left running goes on with the old one, one the Mac can't vouch for:
+// it is restarted into the new one; a service that isn't installed or
+// isn't running is left alone, to start as the new one the next time the
+// system starts it (#4335).
+func TestRestartReplaced(t *testing.T) {
+	for _, os_ := range []string{"linux", "darwin"} {
+		t.Run(os_, func(t *testing.T) {
+			log, dir := fakes(t, os_)
+			// none installed: nothing to restart, nothing run
+			if restarted, err := RestartReplaced(); restarted || err != nil {
+				t.Errorf("none installed: %v, %v", restarted, err)
+			}
+			if c := calls(t, log); c[0] != "" {
+				t.Errorf("none installed ran %v", c)
+			}
+			if err := Install(Options{}); err != nil {
+				t.Fatal(err)
+			}
+			idle, up := "ActiveState=inactive\nSubState=dead\nMainPID=0\nUnitFileState=enabled\nExecMainStatus=0\n",
+				"ActiveState=active\nSubState=running\nMainPID=4242\nUnitFileState=enabled\nExecMainStatus=0\n"
+			idleFile, upFile := filepath.Join(dir, "systemctl.show.out"), filepath.Join(dir, "systemctl.show.out")
+			restart, fail := "systemctl --user restart magpie.service", filepath.Join(dir, "systemctl.restart.fail")
+			if os_ == "darwin" {
+				idle, up = "gui/501/com.yetone.magpie.serve = {\n\tstate = not running\n}\n",
+					"gui/501/com.yetone.magpie.serve = {\n\tstate = running\n\tpid = 777\n}\n"
+				idleFile, upFile = filepath.Join(dir, "launchctl.print.out"), filepath.Join(dir, "launchctl.print.out")
+				uid := strconv.Itoa(os.Getuid())
+				restart = "launchctl kickstart -k gui/" + uid + "/com.yetone.magpie.serve"
+				fail = filepath.Join(dir, "launchctl.kickstart.fail")
+			}
+			// installed, not running: left alone
+			write(t, idleFile, idle)
+			os.Remove(log)
+			if restarted, err := RestartReplaced(); restarted || err != nil {
+				t.Errorf("not running: %v, %v", restarted, err)
+			}
+			for _, c := range calls(t, log) {
+				if strings.Contains(c, "restart") || strings.Contains(c, "kickstart") {
+					t.Errorf("a service not running had %q run", c)
+				}
+			}
+			// installed and running: restarted
+			write(t, upFile, up)
+			os.Remove(log)
+			restarted, err := RestartReplaced()
+			if err != nil || !restarted {
+				t.Errorf("running: %v, %v", restarted, err)
+			}
+			got := calls(t, log)
+			if len(got) == 0 || got[len(got)-1] != restart {
+				t.Errorf("a running service was restarted with %v, want %q", got, restart)
+			}
+			// a restart that fails is the caller's to say
+			write(t, fail, "no such process")
+			t.Cleanup(func() { os.Remove(fail) })
+			if _, err := RestartReplaced(); err == nil || !strings.Contains(err.Error(), "no such process") {
+				t.Errorf("a failed restart: %v", err)
+			}
+		})
+	}
+	// no service of magpie's kind here (Windows, Android): nothing to
+	// restart, and no error
+	t.Run("windows", func(t *testing.T) {
+		fakes(t, "linux")
+		prev := goos
+		t.Cleanup(func() { goos = prev })
+		goos = "windows"
+		if restarted, err := RestartReplaced(); restarted || err != nil {
+			t.Errorf("windows: %v, %v", restarted, err)
+		}
+	})
+}
+
 // Windows and Android have no service of this kind: the error points to
 // what they have.
 func TestUnsupported(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/daemon"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/update"
@@ -792,6 +793,23 @@ func updateRoutes(mux *http.ServeMux, w Windows) {
 // relaunchBinary is update.RelaunchBinary; tests stand in for it.
 var relaunchBinary = update.RelaunchBinary
 
+// restartReplaced is daemon.RestartReplaced; tests stand in for it.
+var restartReplaced = daemon.RestartReplaced
+
+// restartTheService has magpie's own service (`magpie daemon install`)
+// serve the update just put in: it runs magpie from the very binary the
+// swap replaced, and on the Mac the swap deletes the file it runs, a
+// process left running which macOS can't vouch for (its TCC refuses
+// Desktop, Documents and Downloads — #4335). Restarted, it serves the
+// new one; not running, it starts as the new one the next time the
+// system starts it. A failure is logged; the restart into the update
+// itself went through.
+func restartTheService() {
+	if _, err := restartReplaced(); err != nil {
+		log.Println("update:", err)
+	}
+}
+
 // restartFrom is restartToUpdate asked from w's page, on view: a browser
 // on the app's page restarts the app, with its window up as it was, not
 // opened on the tab the browser was on.
@@ -826,10 +844,21 @@ func restartInto(web, window bool, view string, bySelf bool) bool {
 		version = updates.latest.Version
 	}
 	updates.mu.Unlock()
+	// an update another magpie put in (`magpie update`, in a terminal)
+	// isn't this one's to act on: that command restarted the service for
+	// what it put in
+	swapped := !updates.replaced()
 	if !updates.install(true) {
 		return false
 	}
 	updatedInApp(version) // its first start leaves the notes to Settings (#525)
+	// the service runs magpie from the binary this swap replaced:
+	// restarted, it serves the new one (#4335). Not the web's to do,
+	// which reexecs itself in its own place, as the service when it is
+	// one.
+	if swapped && !web {
+		restartTheService()
+	}
 	if bySelf && !web {
 		markQuietRestart() // it comes back without taking focus
 	} else {

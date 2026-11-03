@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/daemon"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/update"
@@ -25,6 +26,26 @@ var (
 	updateInContainer = gateway.InContainer
 	updatePackagedBy  = update.PackagedBy
 )
+
+// serviceRestart is daemon.RestartReplaced; tests stand in for it.
+var serviceRestart = daemon.RestartReplaced
+
+// restartService is what magpie update says of magpie's own service
+// (`magpie daemon install`) after putting an update in: the service runs
+// magpie from the very binary the update replaced — on the Mac one whose
+// file the swap has deleted, which macOS holds against the process
+// (#4335) — so it is restarted into the new one. "" with none running,
+// which the ask to the magpie serving the gateway follows.
+var restartService = func(version string) string {
+	restarted, err := serviceRestart()
+	if err != nil {
+		return "the magpie service couldn't be restarted: " + err.Error()
+	}
+	if restarted {
+		return "the magpie service restarts into " + version + " now"
+	}
+	return ""
+}
 
 // updateEveries are the intervals magpie update auto takes, by their
 // minutes in settings.UpdateEveries.
@@ -233,7 +254,11 @@ func updateCmd(args []string) error {
 			return err
 		}
 		fmt.Println(green.Render("✓"), "updated", tilde(app), "to", rel.Version)
-		fmt.Println(muted.Render("  " + restartRunning(gateway.URL(), rel.Version)))
+		if said := restartService(rel.Version); said != "" {
+			fmt.Println(muted.Render("  " + said))
+		} else {
+			fmt.Println(muted.Render("  " + restartRunning(gateway.URL(), rel.Version)))
+		}
 		if stale := update.StaleCLI(rel.Version); stale != "" {
 			// The copy won't follow the app; the fix is the link install.sh
 			// makes. `magpie update` run from the copy can't do it (it
@@ -261,7 +286,11 @@ func updateCmd(args []string) error {
 		return err
 	}
 	fmt.Println(green.Render("✓"), "updated to", rel.Version)
-	fmt.Println(muted.Render("  " + restartRunning(gateway.URL(), rel.Version)))
+	if said := restartService(rel.Version); said != "" {
+		fmt.Println(muted.Render("  " + said))
+	} else {
+		fmt.Println(muted.Render("  " + restartRunning(gateway.URL(), rel.Version)))
+	}
 	return nil
 }
 

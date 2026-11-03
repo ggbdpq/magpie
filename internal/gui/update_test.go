@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -69,5 +70,74 @@ func TestUpdateStagedGivesWayToNewer(t *testing.T) {
 	}
 	if j := u.json(); j.State != "ready" || j.Latest != "0.1.13" || downloads.Load() != 2 || u.staged == "" {
 		t.Fatalf("%+v, %d downloads", j, downloads.Load())
+	}
+}
+
+// The service (`magpie daemon install`) runs magpie from the very binary
+// an update replaces: a restart into the update restarts the service
+// into the new one (#4335). An update another magpie put in (`magpie
+// update`, in a terminal) isn't this one's to act on, that command
+// having restarted the service already; and magpie web reexecs itself in
+// its own place, as the service when it is one.
+func TestUpdateRestartsTheService(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	exe := filepath.Join(t.TempDir(), "magpie")
+	os.WriteFile(exe, []byte("running magpie"), 0o755)
+
+	var restarts atomic.Int32
+	wasRestart := restartReplaced
+	restartReplaced = func() (bool, error) { restarts.Add(1); return true, nil }
+	defer func() { restartReplaced = wasRestart }()
+	var relaunched atomic.Bool
+	wasRelaunch := relaunchBinary
+	relaunchBinary = func(string, string, bool, string) error {
+		relaunched.Store(true)
+		return nil
+	}
+	defer func() { relaunchBinary = wasRelaunch }()
+
+	u := &updater{exe: exe, latest: &update.Release{Version: "0.1.11"}}
+	u.self, _ = os.Stat(exe)
+	u.staged = exe + ".new"
+	os.WriteFile(u.staged, []byte("new magpie"), 0o755)
+	defer os.Remove(u.staged)
+	o := updates
+	updates = u
+	defer func() { updates = o }()
+
+	// a swap this one makes: the service restarted with it
+	if !restartToUpdate(false, true, "") {
+		t.Fatal("restart to update failed")
+	}
+	if !relaunched.Load() {
+		t.Fatal("the new version never opened")
+	}
+	if restarts.Load() != 1 {
+		t.Fatalf("the service was restarted %d times", restarts.Load())
+	}
+
+	// an update another magpie put in: the service is not restarted here
+	os.WriteFile(exe, []byte("another magpie's update, in already"), 0o755)
+	u.staged, u.state = "", "ready"
+	if !restartInto(false, true, "", true) {
+		t.Fatal("a restart beside another magpie's update failed")
+	}
+	if restarts.Load() != 1 {
+		t.Fatalf("the service was restarted %d times for another magpie's update", restarts.Load())
+	}
+
+	// the web reexecs itself in its own place, as the service when it is
+	// one: no restart of it from here either
+	os.WriteFile(exe, []byte("running magpie"), 0o755)
+	u.self, _ = os.Stat(exe)
+	u.staged, u.state = exe+".new", "ready"
+	os.WriteFile(u.staged, []byte("new magpie"), 0o755)
+	wasReexec := webReexec.Load()
+	defer webReexec.Store(wasReexec)
+	if !restartInto(true, false, "", true) {
+		t.Fatal("a web restart to update failed")
+	}
+	if restarts.Load() != 1 {
+		t.Fatalf("the service was restarted %d times beside the web's own reexec", restarts.Load())
 	}
 }

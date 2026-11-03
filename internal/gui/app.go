@@ -452,7 +452,15 @@ func Run(version string, showMain bool, link string) error {
 			// Codex's own, for the threads no Codex has open: with magpie
 			// gone they still go on (LukeMa on X)
 			agent.PortCodexRollouts(3 * time.Second)
+			// the service runs magpie from the binary this swap replaced,
+			// if this one made one (an update another magpie put in is
+			// that one's to restart the service for): restarted, it
+			// serves the new one (#4335)
+			swapped := !updates.replaced()
 			updates.install(false)
+			if swapped {
+				restartTheService()
+			}
 		},
 		// Wails exits on some webview errors; say why before it does.
 		ErrorHandler: func(err error) { log.Println("magpie:", err) },

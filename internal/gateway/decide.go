@@ -424,10 +424,10 @@ func (s *Server) systemOne(ctx context.Context, p provider.Provider, model strin
 	start := time.Now()
 	d, err := s.postDecideSent(ctx, p, model, body)
 	status, b, header := d.status, d.answer, d.header
+	c := Call{Time: start, From: provider.Chat, To: provider.Chat, Model: p.ID + "/" + model, Provider: p.ID,
+		Agent: usage.AgentOf(RouterAgent), Kind: "routing", Millis: time.Since(start).Milliseconds()}
 	archived := ""
 	if d.sent != nil {
-		c := Call{Time: start, From: provider.Chat, To: provider.Chat, Model: p.ID + "/" + model, Provider: p.ID,
-			Agent: usage.AgentOf(RouterAgent), Kind: "routing", Millis: time.Since(start).Milliseconds()}
 		if err != nil {
 			c.Error = err.Error()
 		} else if status >= 300 {
@@ -456,9 +456,20 @@ func (s *Server) systemOne(ctx context.Context, p provider.Provider, model strin
 	if p.Account == nil && p.Key != "" {
 		keyID, keyName = provider.KeyID(p.Key), p.KeyName
 	}
-	usage.Append(usage.Record{Time: start, Agent: usage.AgentOf(RouterAgent), Kind: "routing", Provider: p.ID, Host: p.Where(), Model: model, Requested: model, Served: use.Model,
+	// the call is magpie's own: its request and the answer are in hand, and
+	// an observer wanting bodies reads them here as it reads a chat's (#5102)
+	if usage.ObservedBodies() != usage.NoBodies {
+		c.RequestBody, c.RequestTruncated = captureRequestBody(d.body)
+		c.ResponseBody, c.ResponseTruncated = captureRequestBody(b)
+		if usage.ObservedBodies() == usage.WholeBodies {
+			c.wholeIn, c.wholeOut = d.body, b
+		}
+	}
+	rec := usage.Record{Time: start, Agent: usage.AgentOf(RouterAgent), Kind: "routing", Provider: p.ID, Host: p.Where(), Model: model, Requested: model, Served: use.Model,
 		ProviderKeyID: keyID, ProviderKeyName: keyName, ProviderAccount: accountOf(p),
-		Input: use.Usage.Input, Output: use.Usage.Output, Millis: time.Since(start).Milliseconds(), Status: status, Archive: archived})
+		Input: use.Usage.Input, Output: use.Usage.Output, Millis: time.Since(start).Milliseconds(), Status: status, Archive: archived}
+	withBodies(&rec, &c)
+	usage.Append(rec)
 	return b, nil
 }
 

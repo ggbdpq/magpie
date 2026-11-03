@@ -414,6 +414,120 @@ func TestOTelExportsBodiesWhenOn(t *testing.T) {
 	}
 }
 
+// with bodies on (#5102) a System One call's span carries its request and
+// reply the way a chat's does — a client's POST /v1/systemone and the
+// router's own classifier call alike — and with it off neither
+func TestOTelExportsSystemOneBodiesWhenOn(t *testing.T) {
+	for _, c := range []struct{ name, bodies string }{
+		{"off", "false"},
+		{"on", "true"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fresh(t)
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, `{"model":"jev","answers":{"intent":{"choice":"PRIVATE-JEV-SCORES"}},"usage":{"input_tokens":120,"output_tokens":2}}`)
+			}))
+			defer up.Close()
+			if err := provider.Save(provider.Provider{ID: "jev", Name: "Jev", Key: "k-jev", Decide: up.URL + "/v1"}); err != nil {
+				t.Fatal(err)
+			}
+			received := make(chan string, 16)
+			collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				received <- string(b)
+				io.WriteString(w, `{}`)
+			}))
+			defer collector.Close()
+			t.Setenv("MAGPIE_OTEL_ENABLED", "true")
+			t.Setenv("MAGPIE_OTEL_ENDPOINT", collector.URL)
+			t.Setenv("MAGPIE_OTEL_HEADERS", "")
+			t.Setenv("MAGPIE_OTEL_METRICS", "false")
+			t.Setenv("MAGPIE_OTEL_BODIES", c.bodies)
+			fastOTel(t)
+			stop := startOTel()
+			t.Cleanup(stop)
+			s := New()
+			if code, body := sendTo(s, "/v1/systemone", `{"model":"jev/jev-latest","state":{"message":"PRIVATE-CLIENT-QUESTION"},"questions":{"intent":{"options":["bug"]}}}`); code != 200 || !strings.Contains(body, "PRIVATE-JEV-SCORES") {
+				t.Fatalf("System One: %d %s", code, body)
+			}
+			p, err := provider.Find("jev")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.systemOne(context.Background(), *p, "jev-latest", []byte(`{"questions":{"intent":{"options":["PRIVATE-ROUTER-QUESTION"]}}}`)); err != nil {
+				t.Fatal(err)
+			}
+			stop()
+			var spans []map[string]string
+			timer := time.After(2 * time.Second)
+		drain:
+			for {
+				select {
+				case exported := <-received:
+					var wire struct {
+						ResourceSpans []struct {
+							ScopeSpans []struct {
+								Spans []struct {
+									Name       string
+									Attributes []struct {
+										Key   string
+										Value map[string]string
+									}
+								}
+							}
+						}
+					}
+					if err := json.Unmarshal([]byte(exported), &wire); err != nil {
+						t.Fatal(err)
+					}
+					for _, rs := range wire.ResourceSpans {
+						for _, ss := range rs.ScopeSpans {
+							for _, sp := range ss.Spans {
+								if sp.Name != "chat jev-latest" {
+									continue
+								}
+								attrs := map[string]string{}
+								for _, a := range sp.Attributes {
+									attrs[a.Key] = a.Value["stringValue"]
+								}
+								spans = append(spans, attrs)
+							}
+						}
+					}
+					if len(spans) == 2 {
+						break drain
+					}
+				case <-timer:
+					break drain
+				}
+			}
+			if len(spans) != 2 {
+				t.Fatalf("System One spans: %d, want 2", len(spans))
+			}
+			var clientIn, clientOut, routerIn, routerOut bool
+			for _, attrs := range spans {
+				in, out := attrs["langfuse.observation.input"], attrs["langfuse.observation.output"]
+				switch {
+				case strings.Contains(in, "PRIVATE-CLIENT-QUESTION"):
+					clientIn, clientOut = true, strings.Contains(out, "PRIVATE-JEV-SCORES")
+				case strings.Contains(in, "PRIVATE-ROUTER-QUESTION"):
+					routerIn, routerOut = true, strings.Contains(out, "PRIVATE-JEV-SCORES")
+				}
+			}
+			if c.bodies == "false" {
+				if clientIn || routerIn || clientOut || routerOut {
+					t.Fatalf("bodies exported while off: client in=%t out=%t, router in=%t out=%t", clientIn, clientOut, routerIn, routerOut)
+				}
+				return
+			}
+			if !clientIn || !clientOut || !routerIn || !routerOut {
+				t.Fatalf("System One bodies missing: client in=%t out=%t, router in=%t out=%t", clientIn, clientOut, routerIn, routerOut)
+			}
+		})
+	}
+}
+
 func TestOTelWaterfallIncludesUnbilledFallback(t *testing.T) {
 	plan := &fake{ctype: "application/json", code: 429, reply: `{"error":{"message":"PRIVATE-ERROR"}}`}
 	spare := &fake{ctype: "application/json", reply: `{"id":"ok","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}`}

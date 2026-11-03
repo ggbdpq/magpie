@@ -249,9 +249,20 @@ func (s *Server) serveDecideTries(w http.ResponseWriter, r *http.Request, body [
 		}
 		call.Status, call.Error, call.Fallback = status, errMsg, strings.Join(skipped, "; ")
 		call.Usage = Usage{Input: use.Usage.Input, Output: use.Usage.Output, Served: use.Model}
-		appendUsage(r, usage.Record{RouteID: tr.ID, Time: start, Agent: who.agent, Via: who.via, Provider: c.p.ID, Host: c.p.Where(), Model: c.model, Requested: asked, Served: use.Model,
+		// the answer is in hand though the client reads it only below, and
+		// the capture keeps it after: an observer wanting bodies has the
+		// exchange here, as a chat's row has its (#5102)
+		if usage.ObservedBodies() != usage.NoBodies {
+			call.ResponseBody, call.ResponseTruncated = captureRequestBody(b)
+			if usage.ObservedBodies() == usage.WholeBodies {
+				call.wholeIn, call.wholeOut = body, b
+			}
+		}
+		rec := usage.Record{RouteID: tr.ID, Time: start, Agent: who.agent, Via: who.via, Provider: c.p.ID, Host: c.p.Where(), Model: c.model, Requested: asked, Served: use.Model,
 			ProviderKeyID: keyID, ProviderKeyName: keyName, ProviderAccount: accountOf(c.p),
-			Input: use.Usage.Input, Output: use.Usage.Output, Millis: took, Status: status, Archive: call.archiveName()})
+			Input: use.Usage.Input, Output: use.Usage.Output, Millis: took, Status: status, Archive: call.archiveName()}
+		withBodies(&rec, &call)
+		appendUsage(r, rec)
 		ctype := header.Get("Content-Type")
 		if ctype == "" || status < 300 {
 			ctype = "application/json"

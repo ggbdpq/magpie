@@ -1173,6 +1173,18 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	tuiBody, guard := "", ""
 	if tui && len(req.Safeguards) > 0 {
 		tuiBody = claudeExtraBody(req.Safeguards, "")
+		// The entry is one environment string, and the kernel takes no
+		// string that long: the exec failed "argument list too long" for
+		// magpie's own binary, the turn was answered 502, and Claude Code
+		// asked again, every try failing the same way, so the conversation
+		// went on nowhere (#4978). Refused here, the sizes are said, no
+		// account is asked for it (#4778), and print mode takes the same
+		// conversation, its safeguards handed over stdin.
+		if size := len("CLAUDE_CODE_EXTRA_BODY=") + len(tuiBody); size >= maxArgStrlen {
+			cleanup()
+			log.Printf("claude: the interactive run's safety context is %d bytes as one environment entry, and one carries at most %d; the run is refused", size, maxArgStrlen)
+			return nil, nil, &tuiRefusal{claudeTUIErr(fmt.Sprintf("its safety context is %d bytes as one environment entry, and one environment entry may not carry %d bytes or more", size, maxArgStrlen))}
+		}
 		env = append(env, "CLAUDE_CODE_EXTRA_BODY="+tuiBody)
 		guard = filepath.Join(tmp, "guard.json")
 		if writeGuard(guard, tuiBody) == nil {
@@ -1470,6 +1482,14 @@ func ClaudeModeNow() ClaudeMode {
 func safeguardBody(raw json.RawMessage) string {
 	return claudeExtraBody(raw, "")
 }
+
+// maxArgStrlen is the most one exec argument or environment string carries
+// where the run is started: the kernel's MAX_ARG_STRLEN, 32 pages, on
+// Linux, the smallest per-string bound named here. Over it the exec fails
+// "argument list too long" (E2BIG) with magpie's own binary named, which
+// reads as a fault of magpie's, of the account's, or of the conversation's
+// size, none of which it is (#4978).
+const maxArgStrlen = 131072
 
 // claudeExtraBody passes the safety field and opted-in cache tail through
 // EXTRA_BODY. It leaves the CLI's own beta headers intact.

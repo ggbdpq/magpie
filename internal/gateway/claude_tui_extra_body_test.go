@@ -78,6 +78,32 @@ func TestClaudeTUISafeguardsInEnv(t *testing.T) {
 	}
 }
 
+// The interactive mode's Claude Code is given its safeguards in one
+// environment entry (CLAUDE_CODE_EXTRA_BODY), read once as it starts. In a
+// long auto-mode conversation the classifier context the client sends
+// grows turn by turn (#4804), and an entry over what one exec argument or
+// environment string may carry (the kernel's MAX_ARG_STRLEN, 32 pages, on
+// Linux) failed the exec "argument list too long" for magpie's own
+// binary: the turn was answered 502, Claude Code asked again, and every
+// try failed the same way, so the conversation went on nowhere (#4978).
+// Such a run is refused before it is started, with the sizes said, as a
+// 400 no account is asked for (#4778); turned to print mode, the same
+// conversation runs, its safeguards handed over stdin.
+func TestClaudeTUISafeguardsOverOneEnvEntryRefused(t *testing.T) {
+	h := tuiScriptHarness(t, `echo "extra ${CLAUDE_CODE_EXTRA_BODY-unset}" >> $log`)
+	h.extra = `"safeguards":[{"type":"dangerous_tool_use","classifier_context":"` + strings.Repeat("a", 200000) + `"}],`
+	code, msg := h.askCode("rules", "hi")
+	if code != 400 {
+		t.Fatalf("a run over one environment entry's bound was started: %d %s, want a refusal", code, msg)
+	}
+	if !strings.Contains(msg, "safety context") || !strings.Contains(msg, "environment entry") {
+		t.Fatalf("the refusal doesn't say the sizes: %s", msg)
+	}
+	if runs := h.runs(); len(runs) != 0 {
+		t.Fatalf("%d runs were started for a request refused before its exec", len(runs))
+	}
+}
+
 // Claude Code's auto-mode context changes on nearly every request in parts
 // of its own: the tool ids of the turns before, git's status, the
 // system-reminder ids. A turn whose safeguards differ only there goes on in

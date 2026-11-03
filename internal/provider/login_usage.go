@@ -40,15 +40,23 @@ type readState struct {
 	failed bool
 }
 
-// state is what e says of the account's reading: a reading kept from
-// before (AsOf) or one that failed counts as failed, as of the good one.
+// state is what e says of the account's reading: one that failed counts
+// as failed, as of the good one. A reading kept from before (AsOf) that
+// no one asked for again (ReadDeferred) is what the account last said,
+// not a failed one: it stands as its reading, dated as the rounds see
+// it, as a kept reading in memory is (#5085) — a careful provider would
+// hold a saved Claude account for good otherwise, its usage read only
+// when its card is refreshed, the switch off a spent one needs it, or
+// the keep-alive runs, and its re-read asked for comes back as kept as
+// it was. A kept reading shown in place of one that failed keeps
+// counting as failed, as of the good one.
 func (e loginUsageEntry) state() readState {
 	at := e.at
 	if !e.readAt.IsZero() {
 		at = e.readAt
 	}
 	switch {
-	case e.read.AsOf != nil:
+	case e.read.AsOf != nil && !e.read.ReadDeferred:
 		return readState{at: *e.read.AsOf, failed: true}
 	case e.read.Error != "" || len(e.read.Windows) == 0:
 		return readState{failed: true}

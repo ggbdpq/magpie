@@ -79,6 +79,67 @@ func TestUsageReadAndReadAgain(t *testing.T) {
 	}
 }
 
+// A reading kept from before that no one asked for again (ReadDeferred,
+// #5085: a saved Claude account's, read only when its card is refreshed,
+// the switch off a spent one needs it, or the keep-alive runs) is what
+// the account last said, and is not a failed read: it stands as its
+// reading, dated as the rounds see it, so a careful provider holds it
+// for its age alone, not as one whose usage couldn't be told. A read
+// that failed and was answered from what was kept is a failed one, as
+// before.
+func TestUsageReadDeferredIsNotAFailedRead(t *testing.T) {
+	signIn(t)
+	resets := time.Now().Add(3 * time.Hour)
+	kept := time.Now().Add(-2 * time.Hour)
+	var fail atomic.Bool
+	LoginUsageVia(func(context.Context, string) map[string]SubscriptionQuota {
+		q := SubscriptionQuota{Windows: []QuotaWindow{{Span: 5 * time.Hour, Used: 30, ResetsAt: &resets}}, AsOf: &kept, ReadDeferred: true}
+		if fail.Load() {
+			q.ReadDeferred = false // the read failed; what is shown was kept
+		}
+		return map[string]SubscriptionQuota{"me@example.com": q}
+	})
+	clear := func() {
+		usedCache.Lock()
+		usedCache.m, usedCache.at, usedCache.loading = map[string]map[string]Allowance{}, map[string]time.Time{}, map[string]chan struct{}{}
+		usedCache.stale, usedCache.renewed, usedCache.seen, usedCache.read = nil, nil, nil, nil
+		usedCache.Unlock()
+	}
+	clear()
+	t.Cleanup(func() {
+		usedCache.Lock()
+		done := usedCache.loading["codex"]
+		usedCache.Unlock()
+		if done != nil {
+			<-done
+		}
+		LoginUsageVia(nil)
+		clear()
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	before := time.Now()
+	if !ReadUsageNow(ctx, "codex", "me@example.com") {
+		t.Fatal("no reading came back")
+	}
+	at, failed, ok := UsageRead("codex", "me@example.com")
+	if !ok || failed {
+		t.Fatalf("a kept reading no one asked for again: failed %v ok %v", failed, ok)
+	}
+	if !at.After(before) {
+		t.Fatalf("a kept reading stands dated as the rounds see it: at %v, asked %v", at, before)
+	}
+
+	// a read that failed, answered from what was kept: failed, as before
+	fail.Store(true)
+	if !ReadUsageNow(ctx, "codex", "me@example.com") {
+		t.Fatal("no second reading")
+	}
+	if _, failed, _ = UsageRead("codex", "me@example.com"); !failed {
+		t.Fatal("a failed read answered from what was kept: not failed")
+	}
+}
+
 // An account within the given points of a window's cap, or past it, is
 // near it; one further off, a window renewed since, or no cap is not.
 func TestNearCap(t *testing.T) {

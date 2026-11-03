@@ -695,6 +695,27 @@ func TestShimNeverPrints(t *testing.T) {
 	}
 }
 
+// A folder Claude Code asks whether to trust is one only its user
+// answers for, and the helper ends saying so: it said "the folder"
+// without saying which, so the user didn't know what to trust, and the
+// failure's log line named no directory either (#4779, WillSuo-Github).
+// The turn itself is answered in magpie's own folder since (startTrusted
+// in the gateway), so this message is for the logs, and for the rare run
+// whose retry never comes.
+func TestShimNamesTheUntrustedFolder(t *testing.T) {
+	wd, _ := os.Getwd()
+	out, stderr, err := runEnds(t, t.TempDir(), []string{"FAKE_TRUST=1"})
+	if err == nil || strings.Contains(out, "print mode") {
+		t.Fatalf("ended %v, wrote %q", err, out)
+	}
+	if !strings.Contains(stderr, "claude-tui: Claude Code asks whether to trust the folder (") || !strings.Contains(stderr, wd) || !strings.Contains(stderr, "run Claude Code once in it") {
+		t.Fatalf("stderr %q", stderr)
+	}
+	if strings.Contains(stderr, "-p") {
+		t.Fatalf("stderr %q", stderr)
+	}
+}
+
 // The first message waits for Claude Code to have listed the tools of
 // magpie's tool server, which it connects as its prompt shows: sent at
 // the prompt, it was answered without the agent's tools (MinhuWang on X,

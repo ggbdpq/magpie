@@ -446,8 +446,6 @@ func (s *shim) late(d time.Duration) string {
 	return fmt.Sprintf("Claude Code %s in the %s its caller waits for it: %s", doing, d.Round(100*time.Millisecond), s.lastScreen())
 }
 
-var errUntrusted = errors.New(Untrusted + ", which only its user answers")
-
 // signIn is what Claude Code's interactive mode shows where it is not
 // signed in, as -p may be (CLAUDE_CODE_OAUTH_TOKEN, a container whose
 // ~/.claude.json has no onboarding done): nothing the helper may answer.
@@ -526,7 +524,11 @@ func (s *shim) ready() error {
 		s.doing.Store(doing)
 		switch {
 		case strings.Contains(p, "trust this folder") && os.Getenv(TrustEnv) != "1":
-			return errUntrusted
+			// the folder named, or the user doesn't know what to trust,
+			// and the failure's log line says "the folder" only (#4779,
+			// WillSuo-Github). The prefix (Untrusted) is what the bridge
+			// reads to retry the turn in a folder of magpie's (startTrusted)
+			return fmt.Errorf("%s (%s), which only its user answers: run Claude Code once in it as yourself and choose to trust it", Untrusted, folder)
 		case strings.Contains(words, "Bypass Permissions mode") && os.Getenv(BypassEnv) != "1":
 			return fmt.Errorf("Claude Code's interactive mode runs in Bypass Permissions mode and asks to accept it, which only its user answers: %s", s.lastScreen())
 		case signIn.MatchString(p):

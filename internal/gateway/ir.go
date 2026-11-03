@@ -519,6 +519,12 @@ type Usage struct {
 	// cacheUnknown: the reply said its vendor counts no cache tokens
 	// (a plugin's magpie_cache_unknown), so a CacheRead of 0 is not a miss
 	cacheUnknown bool
+	// usageReported: the reply said its usage at all — the usage member's
+	// own wire evidence, not a counter. Reported and every count zero is
+	// a reply that counted no token (yetone/magpie#3967), which nothing
+	// generated can stand beside; never reported stays unknown, as a
+	// reply that ignores stream_options' include_usage is
+	usageReported bool
 	// searches: the web searches the reply says its model ran with its
 	// provider's own tool (searchTally), for the request log's Web search
 	// rows; told nowhere else
@@ -609,6 +615,7 @@ func (u *Usage) add(v Usage) {
 	}
 	u.cacheCreationReported = u.cacheCreationReported || v.cacheCreationReported
 	u.cacheUnknown = u.cacheUnknown || v.cacheUnknown
+	u.usageReported = u.usageReported || v.usageReported
 	u.searches = max(u.searches, v.searches)
 	if v.Reasoning > 0 {
 		u.Reasoning = v.Reasoning

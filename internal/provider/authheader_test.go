@@ -248,3 +248,68 @@ func TestRetryOneAuthOnlyOnThatRefusal(t *testing.T) {
 		t.Errorf("own header asked %v", got)
 	}
 }
+
+// #5021 (Jasonpetrelli): a vendor that takes one auth header alone can
+// answer a request carrying both with a bare 403 "invalid api-key" — no
+// word about the headers. Asked again with x-api-key alone it passes, and
+// that is kept; a 403 that says nothing of the key is handed on as it came.
+func TestRetryOneAuthOnKeyRefused403(t *testing.T) {
+	azureHome(t)
+	var mu sync.Mutex
+	var asked [][2]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		x, a := r.Header.Get("x-api-key"), r.Header.Get("Authorization")
+		mu.Lock()
+		asked = append(asked, [2]string{x, a})
+		mu.Unlock()
+		if x != "" && a != "" {
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"error":{"message":"relay: invalid api-key","type":"permission_error"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"hi"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	if err := Save(Provider{ID: "relay", Name: "Relay", Anthropic: srv.URL, Key: "k", Models: []string{"claude-haiku-4-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := Find("relay")
+	rs := p.TestModels(context.Background(), []string{"claude-haiku-4-5"})
+	if len(rs) != 1 || !rs[0].OK {
+		t.Fatalf("test: %+v", rs)
+	}
+	mu.Lock()
+	got := append([][2]string(nil), asked...)
+	mu.Unlock()
+	if len(got) != 2 || got[0] != [2]string{"k", "Bearer k"} || got[1] != [2]string{"k", ""} {
+		t.Errorf("asked %v", got)
+	}
+	if q, _ := Find("relay"); q.AuthHeader != AuthXAPIKey {
+		t.Fatalf("kept %q", q.AuthHeader)
+	}
+
+	// a 403 that says nothing of the key goes as it came, asked once
+	var mu2 sync.Mutex
+	var asked2 [][2]string
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		x, a := r.Header.Get("x-api-key"), r.Header.Get("Authorization")
+		mu2.Lock()
+		asked2 = append(asked2, [2]string{x, a})
+		mu2.Unlock()
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":{"message":"region not served"}}`))
+	}))
+	t.Cleanup(srv2.Close)
+	if err := Save(Provider{ID: "relay2", Name: "Relay2", Anthropic: srv2.URL, Key: "k", Models: []string{"claude-haiku-4-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	q, _ := Find("relay2")
+	q.TestModels(context.Background(), []string{"claude-haiku-4-5"})
+	mu2.Lock()
+	got2 := asked2
+	mu2.Unlock()
+	if len(got2) != 1 {
+		t.Errorf("region 403 asked %v", got2)
+	}
+}

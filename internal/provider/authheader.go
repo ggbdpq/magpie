@@ -34,11 +34,13 @@ func (p Provider) BothAuth() bool {
 
 // RetryOneAuth hands on res, the answer to req, which p signed for its
 // Anthropic API; or, when the vendor refused it for carrying the key in
-// both x-api-key and Authorization (catalog.BothAuthRefused), the answer to
-// req asked again with each alone, x-api-key first, and remembers for p the
-// one it took (LearnAuthHeader). do sends a request as req was sent.
+// both x-api-key and Authorization — said outright (catalog.BothAuthRefused,
+// a 401) or read as an invalid key with no word about the headers
+// (catalog.AuthKeyRefused, a 403, #5021) — the answer to req asked again
+// with each alone, x-api-key first, and remembers for p the one it took
+// (LearnAuthHeader). do sends a request as req was sent.
 func RetryOneAuth(p Provider, req *http.Request, res *http.Response, do func(*http.Request) (*http.Response, error)) (*http.Response, error) {
-	if res == nil || res.StatusCode != http.StatusUnauthorized || p.AuthHeader != AuthBoth || !p.BothAuth() || req.GetBody == nil {
+	if res == nil || res.StatusCode != http.StatusUnauthorized && res.StatusCode != http.StatusForbidden || p.AuthHeader != AuthBoth || !p.BothAuth() || req.GetBody == nil {
 		return res, nil
 	}
 	// the user's own Authorization or x-api-key (Headers) is theirs
@@ -48,7 +50,7 @@ func RetryOneAuth(p Provider, req *http.Request, res *http.Response, do func(*ht
 	b, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
 	res.Body.Close()
 	res.Body = io.NopCloser(bytes.NewReader(b))
-	if !catalog.BothAuthRefused(res.StatusCode, b) {
+	if !catalog.BothAuthRefused(res.StatusCode, b) && !catalog.AuthKeyRefused(res.StatusCode, b) {
 		return res, nil
 	}
 	for i, only := range catalog.OneAuthOrder {

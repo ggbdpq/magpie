@@ -41,6 +41,27 @@ func BothAuthRefused(status int, body []byte) bool {
 	return false
 }
 
+// AuthKeyRefused is a 403 whose body says the api-key itself is invalid.
+// A vendor that takes one auth header alone can answer a request carrying
+// both this way — the pair reads as two keys, neither valid — without a
+// word about the headers (Jasonpetrelli, #5021: 403 "invalid api-key" with
+// both, 200 with Authorization alone).
+func AuthKeyRefused(status int, body []byte) bool {
+	if status != http.StatusForbidden {
+		return false
+	}
+	b := bytes.ToLower(body)
+	for _, s := range []string{
+		"invalid api-key", "invalid api key", "invalid_api_key",
+		"invalid x-api-key", "invalid key", "无效的 api",
+	} {
+		if bytes.Contains(b, []byte(s)) {
+			return true
+		}
+	}
+	return false
+}
+
 // OneAuth leaves h with the key in the one header only names: x-api-key
 // alone, or Authorization alone.
 func OneAuth(h http.Header, only string) {

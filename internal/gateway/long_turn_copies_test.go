@@ -7,15 +7,22 @@ import (
 	"testing"
 )
 
-// allocatedEach is what f allocates a run, over a few runs.
+// allocatedEach is what f allocates a run, over a few runs: the least of
+// a few windows of one run each. TotalAlloc is process-wide, so anything
+// else allocating during a window only adds to it; the average of one
+// shared window carried such noise into every run (a 1.6 MB bump read as
+// +400 KB a run, 3.2× against a 3× bound), while the least window is the
+// run's own cost (#4882).
 func allocatedEach(f func()) uint64 {
 	f()
 	const n = 4
-	return allocated(func() {
-		for range n {
-			f()
+	var least uint64
+	for range n {
+		if got := allocated(f); least == 0 || got < least {
+			least = got
 		}
-	}) / n
+	}
+	return least
 }
 
 // A long Responses turn sent to a Chat upstream is copied as few times

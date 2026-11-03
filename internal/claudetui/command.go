@@ -7,7 +7,9 @@ const Command = "claude-tui-helper"
 // to trust the folder it runs in: the bridge sets it for magpie's own
 // folder, and for a caller's in an account folder of magpie's, whose
 // Claude Code no one else runs. Otherwise the question is the user's to
-// answer in their own Claude Code, and the run ends, saying so.
+// answer in their own Claude Code, and the run ends, saying so. The
+// Bypass Permissions disclaimer Claude Code asks over the mode its own
+// run was given is told yes the same way (#5042).
 const TrustEnv = "MAGPIE_CLAUDE_TUI_TRUST"
 
 // DeadlineEnv holds, in Unix milliseconds, when a one-off run's caller

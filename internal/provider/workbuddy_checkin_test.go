@@ -306,6 +306,44 @@ func TestWorkBuddyCheckinOfflineRetriesSoon(t *testing.T) {
 	}
 }
 
+// A Mac that sleeps through midnight is woken now and then by a DarkWake
+// too short for the check-in to finish (#5020, mufanmu: "The operation
+// timed out" in a 2-7 s wake); each of those, hours apart, counted as a
+// try in a row of them, and the backoff the row had earned — up to half an
+// hour — stood between the machine's waking and the day's check-in, so the
+// day went by without one. A failure counts as the last try's again only
+// while the backoff was still running, which a DarkWake hours later is
+// past; on waking for good, the first look asks at once. The clock is
+// stepped, never slept.
+func TestWorkBuddyCheckinDarkWakeFailsNotStacked(t *testing.T) {
+	f := &fakeWBCheckin{active: true, down: true}
+	srv := f.serve(t)
+	// asleep at midnight; the first DarkWake, 03:40 Beijing, fails in 2 s
+	now := time.Date(2026, 11, 2, 19, 40, 0, 0, time.UTC) // 03:40 Beijing
+	c := wbCheckinFixture(t, srv, &now)
+	ctx := context.Background()
+	var l wbCheckinLoop
+	for _, dark := range []int{340, 751, 938} {
+		h, m := dark/100, dark%100
+		now = time.Date(2026, 11, 2, h-8, m, 0, 0, time.UTC)
+		if rs := l.tick(ctx, c); len(rs) != 1 || rs[0].Outcome != CheckinFailed || !rs[0].Offline || rs[0].Tries != 0 {
+			t.Fatalf("DarkWake at %02d:%02d: %+v, want the day's first offline try", h, m, rs)
+		}
+	}
+	// the lid opened, 09:40 Beijing; the loop's minute tick looks two
+	// minutes on, the network back
+	f.mu.Lock()
+	f.down = false
+	f.mu.Unlock()
+	now = time.Date(2026, 11, 2, 1, 42, 0, 0, time.UTC) // 09:42 Beijing
+	if rs := l.tick(ctx, c); len(rs) != 1 || rs[0].Outcome != CheckinClaimed || !rs[0].Asked {
+		t.Fatalf("awake for good: %+v, want the day's check-in", rs)
+	}
+	if _, cl := f.counts(); cl != 1 {
+		t.Fatalf("claims %d", cl)
+	}
+}
+
 // A moved account's check-in goes through the plugin's fetch, whose failure
 // comes back as Bun's text, not a net.Error. The connection reset that
 // plugins #149 showed is a check-in that never got an answer: tried again a

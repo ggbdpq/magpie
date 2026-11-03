@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -68,6 +69,80 @@ func TestRemoteMagpieQuotaIsAskedNotReplayed(t *testing.T) {
 	mu.Unlock()
 	if code != http.StatusOK || !strings.Contains(got, "new member") || n != 1 {
 		t.Fatalf("after the group changed on the remote: %d %s; the remote was asked %d times", code, got, n)
+	}
+}
+
+// XIQI's #4202: a group on another computer's magpie whose lone member was
+// refused with a 429 that named a session limit ("You've hit your session
+// limit · resets 3pm"), so this magpie rested the remote's model for as
+// long as the Retry-After it passed on said (an hour, the most a Retry-After
+// is trusted), and gave the 429 again on every request for the rest of the
+// hour — the remote's own quota had come back an hour before that, and the
+// client was still told the session limit. A 429 out of quota rests that
+// model of the remote as a 402 does (remoteModelRest), so it is asked again
+// all the same: the remote holds its own rests, and asks the official one
+// again as its own rest ends.
+func TestRemoteMagpie429IsAskedNotReplayed(t *testing.T) {
+	fresh(t)
+	var mu sync.Mutex
+	spent := true
+	asked := 0
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model string `json:"model"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		asked++
+		out := spent
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if out {
+			// what the remote says holding its group's lone member against
+			// the official "session limit · resets 3pm": its own Retry-After
+			// for when it will ask the official one again
+			w.Header().Set("Retry-After", "3600")
+			w.Header().Set(providerHeader, "claude")
+			w.WriteHeader(http.StatusTooManyRequests)
+			io.WriteString(w, `{"error":{"type":"rate_limit_error","message":"Magpie: Claude Code: You've hit your session limit · resets 3pm (Asia/Singapore)"}}`)
+			return
+		}
+		// the model is a Claude one, asked on Anthropic's Messages as the
+		// remote serves it there
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range []string{
+			`{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"` + req.Model + `","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"once the official reset came"}}`,
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+			`{"type":"message_stop"}`,
+		} {
+			fmt.Fprintf(w, "data: %s\n\n", event)
+		}
+	}))
+	t.Cleanup(remote.Close)
+	if err := provider.Save(provider.Provider{ID: "office", Name: "Remote magpie", Preset: provider.RemoteMagpiePreset, Key: "k",
+		Chat: remote.URL + "/v1", Models: []string{"group/claude-sonnet-5.5"}}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	body := `{"model":"office/group/claude-sonnet-5.5","messages":[{"role":"user","content":"hi"}]}`
+	if code, got := postAs(t, s, "", body); code != http.StatusTooManyRequests {
+		t.Fatalf("the remote's 429: %d %s", code, got)
+	}
+	// a second refusal, as the agent's retry meets it
+	postAs(t, s, "", body)
+	// the official quota comes back on the remote, as a reset does
+	mu.Lock()
+	spent, asked = false, 0
+	mu.Unlock()
+	code, got := postAs(t, s, "", body)
+	mu.Lock()
+	n := asked
+	mu.Unlock()
+	if code != http.StatusOK || !strings.Contains(got, "once the official reset came") || n != 1 {
+		t.Fatalf("after the official reset came: %d %s; the remote was asked %d times", code, got, n)
 	}
 }
 

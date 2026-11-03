@@ -241,6 +241,37 @@ func TestClaudeCallersWorkDirElsewhereIsNotUsed(t *testing.T) {
 	}
 }
 
+// A folder the caller names that is here but that magpie may not enter
+// (a container's /root: 0700 root:root, with magpie running as a nonroot
+// user) is not worked in: os.Stat only says it is a folder here, and a
+// run there failed to start, its chdir reported as a permission denied on
+// the Claude Code binary itself. It works in magpie's own folder, told
+// the caller's environment is where its tools run (#4314).
+func TestClaudeCallersWorkDirItCannotEnterIsNotUsed(t *testing.T) {
+	var locked string
+	dirs, work, _, _, told := claudeWorkDirsTold(t, nil, func(home string) string {
+		locked = filepath.Join(home, "locked")
+		if err := os.MkdirAll(locked, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(locked, 0); err != nil {
+			t.Fatal(err)
+		}
+		if f, err := os.OpenFile(locked, os.O_RDONLY, 0); err == nil {
+			f.Close()
+			t.Skip("the test may enter a folder with no access bits (root)")
+		}
+		return "You are a coding agent.\n - Primary working directory: " + locked
+	})
+	t.Cleanup(func() { os.Chmod(locked, 0o700) })
+	if len(dirs) != 2 || dirs[0] != work || dirs[1] != work {
+		t.Fatalf("working directories %q, want magpie's %s: a folder it may not enter was worked in", dirs, work)
+	}
+	if got := strings.Count(told, "every tool runs in"); got != 2 {
+		t.Fatalf("told the environment is elsewhere in %d of 2 runs, want 2: %s", got, told)
+	}
+}
+
 func btoi(b bool) int {
 	if b {
 		return 1

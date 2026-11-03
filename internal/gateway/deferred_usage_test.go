@@ -29,7 +29,9 @@ func TestSniffChatDeferredUsage(t *testing.T) {
 		t.Fatalf("deferred %+v", got.Deferred)
 	}
 	got.Deferred = nil
-	if own := (Usage{Input: 4, Output: 2240, CacheRead: 181266, CacheWrite: 4400, ResponseID: "c", Stop: "tool_calls"}); got != own {
+	// the reply said its usage on the wire (usageReported, #3967), counts
+	// beside the point
+	if own := (Usage{Input: 4, Output: 2240, CacheRead: 181266, CacheWrite: 4400, usageReported: true, ResponseID: "c", Stop: "tool_calls"}); got != own {
 		t.Fatalf("own %+v want %+v", got, own)
 	}
 }

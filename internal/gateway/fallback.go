@@ -2651,6 +2651,11 @@ type holdWriter struct {
 	// to be read event by event
 	after []byte
 	whole bool // a reply that isn't streamed, held whole until release
+	// saidUsage: the upstream said a usage on its wire this try (the
+	// sniffer's usageReported, #3967). What the held body carries is no
+	// evidence of its own once a translation's rendering has been through:
+	// its usage is all zero even for an upstream that never said one
+	saidUsage bool
 	// wholeUnsure: held whole only as the agent has a stream's headers,
 	// under a type that says neither JSON nor a stream: the reply's first
 	// bytes say whether it streams after all (Write)
@@ -3602,6 +3607,18 @@ func (h *holdWriter) settle() {
 		if status, msg, ok := errorReply(h.held.Bytes()); ok {
 			h.failure, h.failMsg = status, msg
 			return
+		}
+		// and one that counted no token beside it, its usage said on the
+		// wire: nothing was generated, so what the body says is not the
+		// answer either (uncountedReply, #3967). The wire is what says so
+		// (saidUsage): the body here can be magpie's own rendering of a
+		// translation, which carries a usage all zero whatever the
+		// upstream said — one that never reported a usage stays an answer
+		if h.saidUsage {
+			if status, msg, ok := uncountedReply(h.held.Bytes()); ok {
+				h.failure, h.failMsg = status, msg
+				return
+			}
 		}
 	}
 	if h.alive != nil && h.alive.sent && h.status < 400 && wholeEvents(h.alive.proto, h.held.Bytes()) == nil {
@@ -4738,6 +4755,65 @@ func textStatus(msg string) int {
 // no failure of the account that answered (#4855).
 func magpieSaid(msg string) bool {
 	return strings.Contains(msg, loopGuardSaid) || strings.Contains(msg, emptyReply) || strings.Contains(msg, reloopedError)
+}
+
+// countedNothing is what a 200 whose reply counted no token (its usage
+// was reported, and every count zero) says of itself, in the failure the
+// hold keeps (yetone/magpie#3967): nothing was generated, so whatever the
+// body carries beside the counts — today a billing notice, tomorrow a
+// quota page — is not the answer, and the next candidate is asked, the
+// seat reading as its words do (a billing notice as out of credit).
+// A reply that names no usage at all is taken as it came: the fields said
+// are what is read, as a Responses completed naming its output and usage
+// is (emptyCompleted).
+const countedNothing = "the reply counted no tokens; what it said was not generated"
+
+// uncountedReply tells whether a Chat completions reply named its usage
+// as counting nothing: the usage member said, every count it named zero.
+// The choices beside it are what make the shape Chat's, so another
+// protocol's usage (Anthropic's input_tokens, whose counts this read
+// would miss) is never taken for a zero. It fails as its words would
+// have with their own status (errorReply): a billing notice as the 402
+// it owes, and the seat rests as out of credit.
+func uncountedReply(body []byte) (status int, msg string, ok bool) {
+	b := bytes.TrimSpace(body)
+	if len(b) == 0 || b[0] != '{' {
+		return 0, "", false
+	}
+	var v struct {
+		Choices []json.RawMessage `json:"choices"`
+		Usage   *struct {
+			PromptTokens        int `json:"prompt_tokens"`
+			CompletionTokens    int `json:"completion_tokens"`
+			TotalTokens         int `json:"total_tokens"`
+			PromptTokensDetails *struct {
+				CachedTokens     int `json:"cached_tokens"`
+				CacheWriteTokens int `json:"cache_write_tokens"`
+			} `json:"prompt_tokens_details"`
+			CompletionTokensDetails *struct {
+				ReasoningTokens int `json:"reasoning_tokens"`
+			} `json:"completion_tokens_details"`
+			PromptCacheHitTokens     int `json:"prompt_cache_hit_tokens"`
+			CachedTokens             int `json:"cached_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(b, &v) != nil || len(v.Choices) == 0 || v.Usage == nil {
+		return 0, "", false
+	}
+	u := v.Usage
+	if u.PromptTokens+u.CompletionTokens+u.TotalTokens+
+		u.PromptCacheHitTokens+u.CachedTokens+u.CacheReadInputTokens+u.CacheCreationInputTokens != 0 {
+		return 0, "", false
+	}
+	if d := u.PromptTokensDetails; d != nil && d.CachedTokens+d.CacheWriteTokens != 0 {
+		return 0, "", false
+	}
+	if d := u.CompletionTokensDetails; d != nil && d.ReasoningTokens != 0 {
+		return 0, "", false
+	}
+	return streamStatus(string(wordsOf(b))), countedNothing, true
 }
 
 // streamStatus is the status an error in a stream stands for, as a vendor

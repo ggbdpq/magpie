@@ -4336,6 +4336,9 @@ func (u Usage) plus(v Usage, only bool) Usage {
 	if !only {
 		u.cacheCreationReported = u.cacheCreationReported || v.cacheCreationReported
 	}
+	// the usage member's own wire evidence ors whatever the split: said
+	// is said, at a zero too (usageReported, yetone/magpie#3967)
+	u.usageReported = u.usageReported || v.usageReported
 	return u
 }
 

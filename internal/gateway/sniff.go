@@ -185,7 +185,12 @@ func (s *usageSniffer) parse(b []byte) {
 				s.u.add(Usage{ResponseID: v.ID})
 			}
 			if v.Usage != nil {
-				s.u.add(v.Usage.usage())
+				// said, whether or not it counted anything (usageReported,
+				// #3967): a reply that reports zero counted nothing, which
+				// is not the same as never having said
+				u := v.Usage.usage()
+				u.usageReported = true
+				s.u.add(u)
 			}
 		}
 	case provider.Responses:

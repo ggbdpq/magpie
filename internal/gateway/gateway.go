@@ -3869,6 +3869,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			logged()
 			break
 		}
+		// whether the upstream said a usage this try, the sniffer's read
+		// of the wire (usageReported, #3967): what settle's held body
+		// carries is no evidence of its own, a translation's rendering
+		// carries a usage all zero whatever the upstream said
+		hw.saidUsage = call.Usage.usageReported
 		hw.settle()
 		if hw.handedOver {
 			// its refusal came after its reasoning went to the agent: the
@@ -4981,6 +4986,25 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				if named := failedNamed(hw.header, namedStatus([]byte(call.Error))); named >= 400 {
 					call.Status = named
 				}
+			}
+		} else if call.Status < 400 && call.Usage.usageReported && uncounted(call.Usage) && r.Context().Err() == nil {
+			// a 200 whose reply counted no token, its usage said: nothing
+			// was generated, and what the reply said beside the counts —
+			// a billing notice's words — is not the answer
+			// (yetone/magpie#3967). What the agent has stays as it is, a
+			// stream's text can't be taken back; but the conversation
+			// isn't kept here for the agent's retry, and the words it
+			// said fail it as their own status would, a vendor that said
+			// why resting (as #733's does). A reply that never reported a
+			// usage stays an answer (usageReported)
+			said := capture.body.text()
+			try.Fail = failureOf(c, call.Status, []byte(said))
+			if (hit == nil || !hit.Compact) && aff.Why != "strict" {
+				unanswered(stuck, c)
+			}
+			if lateRests(said) {
+				rest := s.restAfter(c, call.Status, hw.header, []byte(said))
+				try.Fail, try.Rest = rest.Why, &rest
 			}
 		} else if call.Status < 400 {
 			servedCandidate(c, call.Usage.Input+call.Usage.Output+call.Usage.CacheRead+call.Usage.CacheWrite)
@@ -8561,6 +8585,17 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		// over before the error (#2972, its review)
 		msg := cutVoidFailed(p.Name)
 		return writeError(w, from, 502, msg), msg
+	}
+	if col.res.Usage.usageReported && uncounted(col.res.Usage) {
+		// a reply that reported its usage and counted no token said
+		// nothing of its own: nothing was generated, so whatever its body
+		// carries — today a billing notice, tomorrow a quota page — is
+		// not the answer (yetone/magpie#3967). It fails as its words
+		// would have with their own status, for the next member to
+		// answer; a reply that never reported a usage stays an answer
+		// (usageReported)
+		msg := p.Name + ": " + countedNothing
+		return writeError(w, from, streamStatus(text(col.res.Parts)), msg), msg
 	}
 	if zen != nil {
 		zen.end(col.add)

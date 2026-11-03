@@ -1450,8 +1450,13 @@ func (d *chatDecoder) decode(data string, emit func(Event)) error {
 			emit(Event{Kind: KStop, Stop: stopFromChat(c.FinishReason)})
 		}
 	}
-	if ch.Usage != nil && (ch.Usage.PromptTokens > 0 || ch.Usage.CompletionTokens > 0 || ch.Usage.MagpieDeferred != nil || ch.Usage.Credit != nil) {
-		emit(Event{Kind: KUsage, Usage: ch.Usage.usage()})
+	if ch.Usage != nil {
+		// said, whether or not it counted anything: reported and all zero
+		// is a reply that counted no token (usageReported, #3967), not no
+		// usage at all, which the counts alone can't tell from a zero
+		u := ch.Usage.usage()
+		u.usageReported = true
+		emit(Event{Kind: KUsage, Usage: u})
 	}
 	return nil
 }

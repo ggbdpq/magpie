@@ -123,3 +123,18 @@ func TestModelFindsStillMasked(t *testing.T) {
 		}
 	}
 }
+
+// The model takes a query's parameter and its neighbours for one secret;
+// only the field's value is, and the parameters stay (#5074). A field no
+// rule names, so the model's span is the one at work.
+func TestModelQueryValueEndsAtAmpersand(t *testing.T) {
+	const text = "https://example.com/w?sess=AbCdEf123456&page=2"
+	f := &fakeModel{values: map[string]string{"AbCdEf123456&page=2": "secret"}}
+	out, n := Mask(text, Options{Secrets: true, Model: f.find})
+	if n != 1 || strings.Contains(out, "AbCdEf123456") || !strings.Contains(out, "{{SECRET_") {
+		t.Fatalf("the value not masked as a secret: %d %q", n, out)
+	}
+	if !strings.Contains(out, "&page=2") {
+		t.Errorf("the next parameter went with the value: %q", out)
+	}
+}

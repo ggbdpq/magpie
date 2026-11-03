@@ -71,6 +71,12 @@ func modelSpans(s string, o Options) []span {
 			if k := strings.LastIndex(s[a:b], `":"`); k >= 0 {
 				a += k + 3
 			}
+			// a query's value ends at the & that starts the next
+			// parameter (#5074): the model took sess=AbCdEf123456
+			// and page=2 for one value
+			if e := queryValueEnd(s, a, b); e < b {
+				b = e
+			}
 		}
 		edge := isSpace
 		if kind != "SECRET" {

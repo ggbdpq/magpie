@@ -55,6 +55,8 @@ import (
 
 // fieldAt is where a value the SECRET rules found can be a secret: not
 // code (notCode), and not a place in a file, a path or a name in code.
+// In a URL's query it is its field's value whatever words it is made of
+// (api_key=demo_key_ABC123456789 is no name in code, #5074).
 func fieldAt(s string, a, b int) bool {
 	if !notCode(s, a, b) {
 		return false
@@ -63,7 +65,57 @@ func fieldAt(s string, a, b int) bool {
 	if v[0] == '=' {
 		return false // Go's := with no space after it: secretKey:=base64Encode(raw)
 	}
-	return !fileField(s, a) && !lineRef(v) && !pathValue(v) && !namesASecret(v) && !skillName(s, a, b) && !versionValue(v) && !timestampValue(v)
+	if fileField(s, a) || lineRef(v) || pathValue(v) || versionValue(v) || timestampValue(v) {
+		return false
+	}
+	if inURLQuery(s, a) {
+		return true
+	}
+	return !namesASecret(v) && !skillName(s, a, b)
+}
+
+// inURLQuery says the value at s[a:] is a field's value in a URL's query:
+// the = before it ends a name, and walking back from it over the names
+// and the =, &, ., - and : between the fields, a ? or an & stands before
+// the first of them (api_key=demo_key&page=2, ?u=1&token=t0k3n). A value
+// whose = is prose's or a quoted one's walks into a space or a quote
+// first (password: ab&cd12345), and no query is behind it.
+func inURLQuery(s string, a int) bool {
+	if a == 0 || s[a-1] != '=' {
+		return false
+	}
+	i := a
+	for i > 0 && strings.IndexByte(alnum+"_.-=&:", s[i-1]) >= 0 {
+		i--
+	}
+	return i > 0 && i < a-1 && (s[i-1] == '?' || s[i-1] == '&')
+}
+
+// queryValueEnd is where the value of a query's field at s[a:b] ends: at
+// the & that starts the next parameter (#5074), so api_key's value is
+// demo_key_ABC123456789 and page, page_size and sort stay as written. An
+// & the value carries url-encoded is %26, no & at all; the last field's
+// value runs to b as it did.
+func queryValueEnd(s string, a, b int) int {
+	if !inURLQuery(s, a) {
+		return b
+	}
+	if e := strings.IndexByte(s[a:b], '&'); e >= 0 {
+		return a + e
+	}
+	return b
+}
+
+// queryValueAt is the value the SECRET rules found in a URL's query,
+// cut at its & (queryValueEnd): the rules' characters of a value have an
+// & among them, and the match ran on with the next parameter's name and
+// value (#5074). A value shorter than the rules ask of a secret is no
+// value of theirs, cut or not.
+func queryValueAt(s string, a, b int) (int, int, bool) {
+	if e := queryValueEnd(s, a, b); e < b {
+		b = e
+	}
+	return a, b, len(s[a:b]) >= 8 && secretValue(s[a:b])
 }
 
 // versionRangeRe is a release's version as a manifest or a lock file

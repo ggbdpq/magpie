@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -67,5 +70,39 @@ func TestRescanLooksAgain(t *testing.T) {
 	almaRead.Unlock()
 	if n != 0 {
 		t.Errorf("Alma's answers are kept: %d", n)
+	}
+}
+
+// The refresh asks where updates come from again, too: a version published
+// after magpie started stayed invisible to its own re-detect until a
+// restart, the newest kept for hours and nothing asking anew (#4980).
+func TestRescanAsksLatestAgain(t *testing.T) {
+	asks := 0
+	reg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asks++
+		_ = json.NewEncoder(w).Encode(map[string]string{"version": "1.5.0"})
+	}))
+	t.Cleanup(reg.Close)
+	oldReg := npmRegistry
+	npmRegistry = reg.URL + "/"
+	t.Cleanup(func() { npmRegistry = oldReg; latests = memo{} })
+	latests = memo{}
+
+	u := &updater{via: "npm", pkg: "earendil/test"}
+	if got := latestVersion(u); got != "1.5.0" {
+		t.Fatalf("latest %q", got)
+	}
+	if got := latestVersion(u); got != "1.5.0" {
+		t.Fatalf("latest %q the second time", got)
+	}
+	if asks != 1 {
+		t.Fatalf("npm asked %d times for one kept answer", asks)
+	}
+	Rescan()
+	if got := latestVersion(u); got != "1.5.0" {
+		t.Fatalf("latest %q after the refresh", got)
+	}
+	if asks != 2 {
+		t.Fatalf("after the refresh npm was asked %d times, not once more", asks)
 	}
 }

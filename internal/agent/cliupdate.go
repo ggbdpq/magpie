@@ -641,6 +641,18 @@ func (m *memo) forget(key string) {
 	m.mu.Unlock()
 }
 
+// forgetAll drops every kept answer whose ask isn't running: the Agents
+// page's re-detect asks them all again.
+func (m *memo) forgetAll() {
+	m.mu.Lock()
+	for k, e := range m.m {
+		if e.ready == nil {
+			delete(m.m, k)
+		}
+	}
+	m.mu.Unlock()
+}
+
 var versions, latests memo
 
 // installedVersion is what the CLI at bin says its version is, asked again

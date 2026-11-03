@@ -16,6 +16,10 @@ import (
 func Rescan() {
 	proc.Forget()
 
+	// where updates come from is asked again, too: a version published
+	// after magpie started showed no update until the memo ran out (#4980)
+	latests.forgetAll()
+
 	cursorLocalSeen.Lock()
 	cursorLocalSeen.at = time.Time{}
 	cursorLocalSeen.Unlock()

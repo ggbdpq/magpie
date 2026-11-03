@@ -350,3 +350,293 @@ func TestClaudeTUILateRowOfStreamed(t *testing.T) {
 		t.Fatalf("reply %q %q:\n%s", text, stop, raw)
 	}
 }
+
+// Two turns in a row whose call tells the client itself, each message
+// written once its call is answered: the second message is left out as
+// the first was. The first message left out, still taken as the one left
+// out, made the second look like a message written after a call it
+// didn't have: its call was given up on, and the second message told the
+// client whole, its call a second time, which the client ran again.
+func TestClaudeTUICallsBeforeTheirMessagesTwoTurns(t *testing.T) {
+	c := newTUICalls(t)
+	first := c.run.segment
+	c.call("toolu_a", `{"p":1}`)
+	if _, calls, _, _, raw := c.reply(first); len(calls) != 1 || calls[0] != `toolu_a{"p":1}` {
+		t.Fatalf("first reply %v:\n%s", calls, raw)
+	}
+	seg := c.answer("toolu_a")
+	c.write(
+		tuiRow("msg_late1", `{"type":"thinking","thinking":"first look","signature":"sig"}`, "tool_use", 40),
+		tuiRow("msg_late1", tuiCall("toolu_a", 1), "tool_use", 40),
+	)
+	c.call("toolu_b", `{"p":2}`)
+	if _, calls, _, _, raw := c.reply(seg); len(calls) != 1 || calls[0] != `toolu_b{"p":2}` || strings.Contains(raw, "first look") {
+		t.Fatalf("second reply %v:\n%s", calls, raw)
+	}
+	seg = c.answer("toolu_b")
+	c.write(
+		tuiRow("msg_late2", `{"type":"thinking","thinking":"second look","signature":"sig"}`, "tool_use", 30),
+		tuiRow("msg_late2", tuiCall("toolu_b", 2), "tool_use", 30),
+		tuiRow("msg_ans", `{"type":"text","text":"done"}`, "end_turn", 7),
+		tuiDone,
+	)
+	text, calls, stop, out, raw := c.reply(seg)
+	if len(calls) != 0 || strings.Contains(raw, "second look") {
+		t.Fatalf("third reply told toolu_b again %v:\n%s", calls, raw)
+	}
+	if text != "done" || stop != "end_turn" || out != 37 {
+		t.Fatalf("third reply %q %q %d, not done with the second message's 30 and the answer's 7:\n%s", text, stop, out, raw)
+	}
+}
+
+// The next turn's message written while its call waits on the client, so
+// no reply is open, with a call in it not made yet. The message left out
+// before it made this one look like one written after calls it didn't
+// have: told whole with no reply to hear it, it marked the call not made
+// yet as told, and when that call came the client never heard of it.
+func TestClaudeTUIMessageWrittenWhileItsCallWaits(t *testing.T) {
+	c := newTUICalls(t)
+	first := c.run.segment
+	c.call("toolu_a", `{"p":1}`)
+	if _, calls, _, _, raw := c.reply(first); len(calls) != 1 || calls[0] != `toolu_a{"p":1}` {
+		t.Fatalf("first reply %v:\n%s", calls, raw)
+	}
+	seg := c.answer("toolu_a")
+	c.write(tuiRow("msg_late1", tuiCall("toolu_a", 1), "tool_use", 40))
+	c.call("toolu_b", `{"p":2}`)
+	if _, calls, _, _, raw := c.reply(seg); len(calls) != 1 || calls[0] != `toolu_b{"p":2}` {
+		t.Fatalf("second reply %v:\n%s", calls, raw)
+	}
+	c.write(
+		tuiRow("msg_late2", tuiCall("toolu_b", 2), "tool_use", 30),
+		tuiRow("msg_late2", tuiCall("toolu_c", 3), "tool_use", 30),
+		`{}`, // read only once the rows before it are done with
+	)
+	seg = c.answer("toolu_b")
+	c.call("toolu_c", `{"p":3}`)
+	if _, calls, _, _, raw := c.reply(seg); len(calls) != 1 || calls[0] != `toolu_c{"p":3}` {
+		t.Fatalf("third reply %v:\n%s", calls, raw)
+	}
+	seg = c.answer("toolu_c")
+	c.write(tuiRow("msg_ans", `{"type":"text","text":"done"}`, "end_turn", 7), tuiDone)
+	if text, calls, stop, _, raw := c.reply(seg); text != "done" || len(calls) != 0 || stop != "end_turn" {
+		t.Fatalf("last reply %q %v %q:\n%s", text, calls, stop, raw)
+	}
+}
+
+// notInMessage is the log line of calls told by themselves given up on.
+const notInMessage = "were not in the message written after them"
+
+// toldOnce fails when a call is told the client in more than one reply.
+func toldOnce(t *testing.T, replies [][]string) {
+	t.Helper()
+	seen := map[string]int{}
+	for i, calls := range replies {
+		for _, c := range calls {
+			id, _, _ := strings.Cut(c, "{")
+			if j, ok := seen[id]; ok {
+				t.Fatalf("%s told in reply %d and again in reply %d: %v", id, j+1, i+1, replies)
+			}
+			seen[id] = i
+		}
+	}
+}
+
+// The shape seen in production: a message of three calls, each told by
+// itself, then the next turn's message of four, its first two told by
+// themselves before it is written and the other two made after it. Every
+// call is told once and none is given up on.
+func TestClaudeTUIProductionShape(t *testing.T) {
+	logs := keepLog(t)
+	c := newTUICalls(t)
+	seg := c.run.segment
+	var replies [][]string
+	one := func(id, args string) {
+		t.Helper()
+		c.call(id, args)
+		_, calls, _, _, raw := c.reply(seg)
+		if len(calls) != 1 || calls[0] != id+args {
+			t.Fatalf("reply for %s told %v:\n%s", id, calls, raw)
+		}
+		replies = append(replies, calls)
+		seg = c.answer(id)
+	}
+	one("toolu_a1", `{"p":1}`)
+	one("toolu_a2", `{"p":2}`)
+	one("toolu_a3", `{"p":3}`)
+	c.write(
+		tuiRow("msg_m1", `{"type":"thinking","thinking":"look one","signature":"sig"}`, "tool_use", 50),
+		tuiRow("msg_m1", tuiCall("toolu_a1", 1), "tool_use", 50),
+		tuiRow("msg_m1", tuiCall("toolu_a2", 2), "tool_use", 50),
+		tuiRow("msg_m1", tuiCall("toolu_a3", 3), "tool_use", 50),
+		`{}`,
+	)
+	one("toolu_b1", `{"p":4}`)
+	one("toolu_b2", `{"p":5}`)
+	c.write(
+		tuiRow("msg_m2", `{"type":"thinking","thinking":"look two","signature":"sig"}`, "tool_use", 60),
+		tuiRow("msg_m2", tuiCall("toolu_b1", 4), "tool_use", 60),
+		tuiRow("msg_m2", tuiCall("toolu_b2", 5), "tool_use", 60),
+		tuiRow("msg_m2", tuiCall("toolu_b3", 6), "tool_use", 60),
+		tuiRow("msg_m2", tuiCall("toolu_b4", 7), "tool_use", 60),
+		`{}`,
+	)
+	one("toolu_b3", `{"p":6}`)
+	one("toolu_b4", `{"p":7}`)
+	c.write(tuiRow("msg_ans", `{"type":"text","text":"done"}`, "end_turn", 7), tuiDone)
+	text, calls, stop, _, raw := c.reply(seg)
+	replies = append(replies, calls)
+	if text != "done" || len(calls) != 0 || stop != "end_turn" || strings.Contains(raw, "look") {
+		t.Fatalf("last reply %q %v %q:\n%s", text, calls, stop, raw)
+	}
+	toldOnce(t, replies)
+	if strings.Contains(logs.String(), notInMessage) {
+		t.Fatalf("a call was given up on:\n%s", logs.String())
+	}
+}
+
+// Four turns in a row, each call told by itself, its message written
+// sometimes once the call is answered and sometimes while it waits on the
+// client (no reply open); the third turn's message has a call not made
+// yet. Every call is told once, none is given up on, and the fourth
+// message's output is told with the answer.
+func TestClaudeTUIFourTurns(t *testing.T) {
+	logs := keepLog(t)
+	c := newTUICalls(t)
+	seg := c.run.segment
+	var replies [][]string
+	told := func(id string, p int) {
+		t.Helper()
+		args := `{"p":` + itoa(p) + `}`
+		c.call(id, args)
+		_, calls, _, _, raw := c.reply(seg)
+		if len(calls) != 1 || calls[0] != id+args {
+			t.Fatalf("reply for %s told %v:\n%s", id, calls, raw)
+		}
+		replies = append(replies, calls)
+	}
+	// 1: written once answered
+	told("toolu_t1", 1)
+	seg = c.answer("toolu_t1")
+	c.write(tuiRow("msg_t1", `{"type":"thinking","thinking":"think 1","signature":"s"}`, "tool_use", 11),
+		tuiRow("msg_t1", tuiCall("toolu_t1", 1), "tool_use", 11))
+	// 2: written while it waits
+	told("toolu_t2", 2)
+	c.write(tuiRow("msg_t2", tuiCall("toolu_t2", 2), "tool_use", 12), `{}`)
+	seg = c.answer("toolu_t2")
+	// 3: written while it waits, with a call not made yet
+	told("toolu_t3", 3)
+	c.write(tuiRow("msg_t3", tuiCall("toolu_t3", 3), "tool_use", 13),
+		tuiRow("msg_t3", tuiCall("toolu_t3b", 4), "tool_use", 13), `{}`)
+	seg = c.answer("toolu_t3")
+	told("toolu_t3b", 4)
+	seg = c.answer("toolu_t3b")
+	// 4: written once answered
+	told("toolu_t4", 5)
+	seg = c.answer("toolu_t4")
+	c.write(tuiRow("msg_t4", `{"type":"thinking","thinking":"think 4","signature":"s"}`, "tool_use", 14),
+		tuiRow("msg_t4", tuiCall("toolu_t4", 5), "tool_use", 14),
+		tuiRow("msg_ans", `{"type":"text","text":"done"}`, "end_turn", 7), tuiDone)
+	text, calls, stop, out, raw := c.reply(seg)
+	replies = append(replies, calls)
+	if text != "done" || len(calls) != 0 || stop != "end_turn" || strings.Contains(raw, "think") {
+		t.Fatalf("last reply %q %v %q:\n%s", text, calls, stop, raw)
+	}
+	if out != 21 {
+		t.Fatalf("output %d, not the fourth message's 14 and the answer's 7:\n%s", out, raw)
+	}
+	toldOnce(t, replies)
+	if strings.Contains(logs.String(), notInMessage) {
+		t.Fatalf("a call was given up on:\n%s", logs.String())
+	}
+}
+
+// A message written after a call told by itself that really hasn't it:
+// the call is given up on when the message after it comes, logged as that
+// one call alone, while a call told by itself since waits for the message
+// after it and isn't told again.
+func TestClaudeTUIMessageReallyWithoutItsCall(t *testing.T) {
+	logs := keepLog(t)
+	c := newTUICalls(t)
+	var replies [][]string
+	first := c.run.segment
+	c.call("toolu_a", `{"p":1}`)
+	_, calls, _, _, raw := c.reply(first)
+	if len(calls) != 1 || calls[0] != `toolu_a{"p":1}` {
+		t.Fatalf("first reply %v:\n%s", calls, raw)
+	}
+	replies = append(replies, calls)
+	seg := c.answer("toolu_a")
+	// written after toolu_a, without it
+	c.write(tuiRow("msg_m1", tuiCall("toolu_x", 2), "tool_use", 20), `{}`)
+	c.call("toolu_x", `{"p":2}`)
+	if _, calls, _, _, raw = c.reply(seg); len(calls) != 1 || calls[0] != `toolu_x{"p":2}` {
+		t.Fatalf("second reply %v:\n%s", calls, raw)
+	}
+	replies = append(replies, calls)
+	seg = c.answer("toolu_x")
+	c.call("toolu_b", `{"p":3}`)
+	if _, calls, _, _, raw = c.reply(seg); len(calls) != 1 || calls[0] != `toolu_b{"p":3}` {
+		t.Fatalf("third reply %v:\n%s", calls, raw)
+	}
+	replies = append(replies, calls)
+	seg = c.answer("toolu_b")
+	c.write(
+		tuiRow("msg_m2", `{"type":"thinking","thinking":"second look","signature":"sig"}`, "tool_use", 30),
+		tuiRow("msg_m2", tuiCall("toolu_b", 3), "tool_use", 30),
+		tuiRow("msg_ans", `{"type":"text","text":"done"}`, "end_turn", 7),
+		tuiDone,
+	)
+	text, calls, stop, _, raw := c.reply(seg)
+	replies = append(replies, calls)
+	if text != "done" || len(calls) != 0 || stop != "end_turn" || strings.Contains(raw, "second look") {
+		t.Fatalf("last reply %q %v %q:\n%s", text, calls, stop, raw)
+	}
+	toldOnce(t, replies)
+	got := strings.Count(logs.String(), notInMessage)
+	if got != 1 || !strings.Contains(logs.String(), "claude: 1 calls told by themselves "+notInMessage) {
+		t.Fatalf("want one warning for 1 call, got %d:\n%s", got, logs.String())
+	}
+}
+
+// The attempt that made toolu_b was asked again, and its message came with
+// a call of a new id: nothing is stuck, every call is told once, and
+// toolu_b is given up on, logged, once the message after that one comes.
+func TestClaudeTUIRetriedMessageWithNewCall(t *testing.T) {
+	logs := keepLog(t)
+	c := newTUICalls(t)
+	var replies [][]string
+	first := c.run.segment
+	c.call("toolu_a", `{"p":1}`)
+	_, calls, _, _, raw := c.reply(first)
+	if len(calls) != 1 || calls[0] != `toolu_a{"p":1}` {
+		t.Fatalf("first reply %v:\n%s", calls, raw)
+	}
+	replies = append(replies, calls)
+	seg := c.answer("toolu_a")
+	c.write(tuiRow("msg_late1", tuiCall("toolu_a", 1), "tool_use", 40), `{}`)
+	c.call("toolu_b", `{"p":2}`)
+	if _, calls, _, _, raw = c.reply(seg); len(calls) != 1 || calls[0] != `toolu_b{"p":2}` {
+		t.Fatalf("second reply %v:\n%s", calls, raw)
+	}
+	replies = append(replies, calls)
+	seg = c.answer("toolu_b")
+	c.write(tuiRow("msg_retry", tuiCall("toolu_c", 3), "tool_use", 20), `{}`)
+	c.call("toolu_c", `{"p":3}`)
+	_, calls, _, _, raw = c.reply(seg)
+	if len(calls) != 1 || !strings.HasPrefix(calls[0], "toolu_c") {
+		t.Fatalf("third reply %v:\n%s", calls, raw)
+	}
+	replies = append(replies, calls)
+	seg = c.answer("toolu_c")
+	c.write(tuiRow("msg_ans", `{"type":"text","text":"done"}`, "end_turn", 7), tuiDone)
+	text, calls, stop, _, raw := c.reply(seg)
+	replies = append(replies, calls)
+	if text != "done" || len(calls) != 0 || stop != "end_turn" {
+		t.Fatalf("last reply %q %v %q:\n%s", text, calls, stop, raw)
+	}
+	toldOnce(t, replies)
+	if !strings.Contains(logs.String(), notInMessage) {
+		t.Fatalf("no warning:\n%s", logs.String())
+	}
+}

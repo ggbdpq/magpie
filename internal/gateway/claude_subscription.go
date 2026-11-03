@@ -4313,6 +4313,7 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 	written := map[string]bool{} // calls in a message left out, not made yet
 	unheard := map[string]bool{} // calls held back: no reply to tell them in, or their input not written yet
 	lateID := ""                 // the message left out
+	owed := map[string]bool{}    // the calls awaited as it began, which it was to have
 	over := false                // the output has ended
 	if r.tui {
 		r.mu.Lock()
@@ -4623,13 +4624,29 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 				}
 			}
 			if whole.ID != lateID && whole.ID != unstreamed {
-				if lateID != "" && len(awaited) > 0 {
-					log.Printf("claude: %d calls told by themselves were not in the message written after them", len(awaited))
-					clear(awaited)
+				// Only the calls the message left out was to have are
+				// given up on: one told by itself since waits for this
+				// message, the first written after it. The message left
+				// out an earlier turn isn't this one's: taken for it, its
+				// calls were dropped from those awaited and this message
+				// told the client whole.
+				missing := 0
+				for id := range owed {
+					if awaited[id] {
+						delete(awaited, id)
+						missing++
+					}
 				}
+				if missing > 0 {
+					log.Printf("claude: %d calls told by themselves were not in the message written after them", missing)
+				}
+				clear(owed)
 				lateID = ""
 				if len(awaited) > 0 && !anyUnheard {
 					lateID = whole.ID
+					for id := range awaited {
+						owed[id] = true
+					}
 				}
 			}
 			if whole.ID == lateID && !anyUnheard {

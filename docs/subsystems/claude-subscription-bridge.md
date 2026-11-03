@@ -322,7 +322,13 @@ it), the call is a reply of its own: a message with that one `tool_use`
 calls too). The first message written after such a call is the one that
 made it. Its rows are left out (`lateID`), and its usage is billed with the
 next reply. A call in that message that wasn't made yet becomes its own
-reply when it is made (`written`). A reply told this way has no words or
+reply when it is made (`written`). Only the calls awaited as a left-out
+message began (`owed`) are given up on when another message comes
+without them; a call told by itself after that waits for the next
+message. Before, a message left out in an earlier turn made the next
+turn's late message look like one written after calls it didn't have:
+those calls were dropped and the message told whole. A reply told this
+way has no words or
 thinking: the model's text before its call is lost to the client.
 
 A reply that more than one message makes (a late message, Claude Code's

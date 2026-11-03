@@ -60,9 +60,9 @@ func zedAtWith(dir, bin string, processes []string) *Agent {
 	routed := func() bool { return zedRouted(path) }
 	return atomic(&Agent{
 		ID: "zed", Name: "Zed", Icon: "zed", Bin: bin, Dir: dir, Path: path, Spelled: prefixed,
-		UA: []string{"zed"},
+		UA: []string{"zed"}, binNot: zedCmdlineIsEditor,
 		Notice: func() string {
-			if usesMagpie(model()) && Running(processes...) {
+			if usesMagpie(model()) && Running(processes...) && zedEditorRunning(processes) {
 				return noticeZed.String()
 			}
 			return ""
@@ -156,6 +156,47 @@ func zedProcessNames() []string {
 		return []string{`(^|/)(zed|zeditor|zed-editor)( |$)`}
 	}
 	return out
+}
+
+// zedCmdlineIsEditor says whether a matched command line is the editor and
+// not zfs-zed, the ZFS Event Daemon, whose plain binary (/usr/sbin/zed,
+// /sbin/zed — sbin, not bin) matches Zed's own pgrep pattern (#5023). The
+// daemon lives in sbin directories alone; the editor runs from bin
+// directories and app bundles.
+func zedCmdlineIsEditor(cmdline string) bool {
+	cmd := cmdline
+	if i := strings.IndexByte(cmd, ' '); i >= 0 {
+		cmd = cmd[:i]
+	}
+	dir, name := filepath.Split(cmd)
+	if name != "zed" && name != "zeditor" && name != "zed-editor" {
+		return true
+	}
+	return !strings.HasSuffix(dir, "/sbin/") && !strings.HasSuffix(dir, "/usr/sbin/")
+}
+
+// zedEditorRunning is Running over the patterns with the daemon's matches
+// dropped: a machine with zfsutils installed ran /usr/sbin/zed -F, and the
+// restart notice said so while no editor was open (#5023). The reads go
+// through runningLately, as every pattern's reader does — a state poll
+// already paid the pgrep, and its kept answer tells the daemon from the
+// editor all the same.
+func zedEditorRunning(patterns []string) bool {
+	var ps []runningProc
+	for _, pat := range patterns {
+		ps = append(ps, runningLately(pat)...)
+	}
+	return editorAmongZedMatches(ps)
+}
+
+// editorAmongZedMatches says whether any match is the editor, not zfs-zed.
+func editorAmongZedMatches(ps []runningProc) bool {
+	for _, p := range ps {
+		if zedCmdlineIsEditor(p.cmd) {
+			return true
+		}
+	}
+	return false
 }
 
 // zedLevels are the reasoning_effort values magpie writes for Zed, weakest

@@ -21,6 +21,7 @@ import (
 	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // Claude Code reads its endpoint from the `env` block of settings.json.
@@ -2606,11 +2607,19 @@ func claudeIn(at place) *Agent {
 			}
 			return wiringOff("Claude Code", path, getEnv, "ANTHROPIC_AUTH_TOKEN", at.gwKey())
 		},
-		// every prompt typed into Claude Code goes into history.jsonl, and
-		// so does every one magpie's bridge gives it in magpie's own work
-		// folder, which went through magpie (ifccod7391564 on X)
+		// every prompt typed into Claude Code goes into history.jsonl —
+		// the user's, those of the runs magpie started itself (the
+		// subscription bridge's, a warm-up's), which are not use and none
+		// of whose requests reach the gateway as this agent's (#5100), and
+		// every one magpie's bridge gives it in magpie's own work folder
+		// (ifccod7391564 on X)
 		LastUsed: func() time.Time {
-			return lastJSONLTime(filepath.Join(filepath.Dir(path), "history.jsonl"), "timestamp", "display", inMagpieWork)
+			return lastJSONLTime(filepath.Join(filepath.Dir(path), "history.jsonl"), "timestamp", "display",
+				inMagpieWork,
+				func(m map[string]json.RawMessage) bool {
+					var sid string
+					return json.Unmarshal(m["sessionId"], &sid) == nil && usage.IsOwnSession(sid)
+				})
 		},
 		// a session takes a new CLAUDE_CODE_EFFORT_LEVEL on its next
 		// request, but settings.json's effort and ultracode, and the env's

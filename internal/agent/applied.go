@@ -1004,9 +1004,10 @@ func (a *Agent) reconnect(now map[string]string) (bool, error) {
 
 // lastJSONLTime reads the newest Unix timestamp (seconds or milliseconds)
 // under key in the last lines of a prompt log, passing over the lines whose
-// text (under textKey) is a slash command: those an agent answers itself,
-// and those skip, when given, says magpie's own. Zero if there is none.
-func lastJSONLTime(path, key, textKey string, skip func(map[string]json.RawMessage) bool) time.Time {
+// text (under textKey) is a slash command: those an agent answers itself —
+// and those a skip says, when given, are magpie's own: the lines of runs
+// magpie started itself are not the user's (#5100). Zero if there is none.
+func lastJSONLTime(path, key, textKey string, skip ...func(map[string]json.RawMessage) bool) time.Time {
 	f, err := os.Open(path)
 	if err != nil {
 		return time.Time{}
@@ -1028,7 +1029,14 @@ func lastJSONLTime(path, key, textKey string, skip func(map[string]json.RawMessa
 		if json.Unmarshal(m[textKey], &text) == nil && strings.HasPrefix(strings.TrimSpace(text), "/") {
 			continue
 		}
-		if skip != nil && skip(m) {
+		out := false
+		for _, s := range skip {
+			if s != nil && s(m) {
+				out = true
+				break
+			}
+		}
+		if out {
 			continue
 		}
 		n, err := strconv.ParseInt(string(m[key]), 10, 64)

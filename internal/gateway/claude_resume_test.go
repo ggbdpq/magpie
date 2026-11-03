@@ -14,6 +14,7 @@ import (
 
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/testenv"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // resumeHarness runs Claude subscription requests through a script
@@ -368,6 +369,24 @@ func containsStr(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// A conversation's run is magpie's own: the session its init names is kept,
+// so the lines it writes to the user's history.jsonl are never taken for
+// the user's use (#5100).
+func TestClaudeBridgeSessionIsMagpiesOwn(t *testing.T) {
+	h := newResumeHarness(t)
+	h.ask("rules A", "a1")
+	var sid string
+	for pid := range h.runs() {
+		sid = "s" + pid
+	}
+	if sid == "" {
+		t.Fatal("no run")
+	}
+	if !usage.IsOwnSession(sid) {
+		t.Fatalf("the bridge run's session %s is not kept as magpie's own", sid)
+	}
 }
 
 // A client Claude Code's billing line changes every turn (cch,

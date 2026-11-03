@@ -4503,6 +4503,9 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 			return
 		}
 		if envelope.Type == "system" && envelope.Subtype == "init" && envelope.SessionID != "" {
+			// the session is the bridge's own: the lines its run writes to
+			// the user's history.jsonl are not the user's use (#5100)
+			ownClaudeSession(envelope.SessionID)
 			r.mu.Lock()
 			r.sessionID = envelope.SessionID
 			r.mu.Unlock()

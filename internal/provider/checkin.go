@@ -131,7 +131,11 @@ func (c checkiner) checkinNow(ctx context.Context, soon bool) []WorkBuddyCheckin
 		// global proxy was refused there (#2777)
 		r := a.do(ViaLogin(ctx, a.provider, a.User))
 		r.Day, r.At = day, now
-		if r.Offline && seen && prev.Day == day && prev.Offline {
+		// tries in a row are only so while the last try's backoff was
+		// still running, its own retry on the dot included: a DarkWake's
+		// failure hours later (#5020) is the day's first again, and the
+		// look on waking for good asks at once
+		if r.Offline && seen && prev.Day == day && prev.Offline && now.Sub(prev.At) <= prev.retryAfter() {
 			r.Tries = prev.Tries + 1
 		}
 		switch {

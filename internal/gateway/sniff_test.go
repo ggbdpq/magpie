@@ -33,7 +33,9 @@ func TestSniffChatStreamSplitAcrossWrites(t *testing.T) {
 	s.write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}],\"usage\":null}\n\n" + line[:30]))
 	s.write([]byte(line[30:]))
 	got := s.usage()
-	want := Usage{Input: 40, Output: 20, CacheRead: 60, Reasoning: 5}
+	// the reply said its usage on the wire (usageReported, #3967), counts
+	// beside the point
+	want := Usage{Input: 40, Output: 20, CacheRead: 60, Reasoning: 5, usageReported: true}
 	if got != want {
 		t.Fatalf("got %+v want %+v", got, want)
 	}

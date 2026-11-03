@@ -215,10 +215,24 @@ func stampNowFiles() [3]rootStamp {
 // for what each row of a page looks up: shared by them, so read only.
 func Held[T any](key string, build func() T) T { return heldOf(key, build) }
 
+// heldCall is a build in flight: callers that missed together wait for
+// the one building, then look for what it kept.
+type heldCall struct {
+	done chan struct{}
+}
+
+// flight is the builds in flight, one each: a write drops what is held,
+// and every request then missing listed again, one after another, each
+// taking logins.json's lock when the one before it let go (#5104).
+var flight = map[string]*heldCall{}
+
 // heldOf is what build gives, built once while a request holds it.
+// Callers that miss together build once: the first builds, the rest wait
+// for it, and take what it kept, or build again where a change dropped it
+// while it was built.
 func heldOf[T any](key string, build func() T) T {
 	held.Lock()
-	if held.holds == 0 {
+	if held.holds == 0 && flight[key] == nil {
 		held.Unlock()
 		return build()
 	}
@@ -227,17 +241,39 @@ func heldOf[T any](key string, build func() T) T {
 		held.Unlock()
 		return h.v.(T)
 	}
-	gen := held.gen
-	held.Unlock()
-	v := build()
-	held.Lock()
-	if held.holds > 0 && held.gen == gen {
-		if held.built == nil {
-			held.built = map[string]heldValue{}
+	if c := flight[key]; c != nil {
+		held.Unlock()
+		<-c.done
+		held.Lock()
+		if h, ok := held.built[key]; ok && time.Since(h.at) < heldFor {
+			held.Unlock()
+			return h.v.(T)
 		}
-		held.built[key] = heldValue{v, time.Now()}
+		held.Unlock()
+		return build()
 	}
+	gen := held.gen
+	c := &heldCall{done: make(chan struct{})}
+	flight[key] = c
 	held.Unlock()
+	var v T
+	func() {
+		defer func() {
+			held.Lock()
+			delete(flight, key)
+			held.Unlock()
+			close(c.done)
+		}()
+		v = build()
+		held.Lock()
+		if held.holds > 0 && held.gen == gen {
+			if held.built == nil {
+				held.built = map[string]heldValue{}
+			}
+			held.built[key] = heldValue{v, time.Now()}
+		}
+		held.Unlock()
+	}()
 	return v
 }
 

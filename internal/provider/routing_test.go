@@ -212,6 +212,77 @@ func TestAllowancesStaleMidRead(t *testing.T) {
 	}
 }
 
+// A snapshot read over a minute ago goes by a reading in hand that is
+// newer than its own, at once, not only once the read it asked for comes
+// back: after an idle, the first request of a conversation went out on a
+// stale 29% while a 45% sat in the login cache, drew both accounts into
+// one pace band, and the turn's affinity kept the account that band chose
+// to the end of a 104-request tool turn (#5029).
+func TestAllowancesGoByANewerReadingInHand(t *testing.T) {
+	signIn(t)
+	t.Cleanup(ForgetAccounts) // the look a test's Logins made was this home's
+	ForgetAccounts()
+	week := time.Now().Add(72 * time.Hour)
+	release := make(chan struct{})
+	var once sync.Once
+	var readings atomic.Int32
+	LoginUsageVia(func(_ context.Context, agent string) map[string]SubscriptionQuota {
+		if readings.Add(1) == 1 {
+			<-release // the read the stale snapshot asked for stays out
+		}
+		return map[string]SubscriptionQuota{"me@example.com": {Windows: []QuotaWindow{{Span: 7 * 24 * time.Hour, Used: 45, ResetsAt: &week}}}}
+	})
+	reset := func() {
+		loginUsageCache.Lock()
+		delete(loginUsageCache.m, "codex/me@example.com")
+		loginUsageCache.Unlock()
+		usedCache.Lock()
+		usedCache.m, usedCache.at, usedCache.loading = map[string]map[string]Allowance{}, map[string]time.Time{}, map[string]chan struct{}{}
+		delete(usedCache.read, "codex/me@example.com")
+		usedCache.stale = nil
+		usedCache.Unlock()
+	}
+	reset()
+	t.Cleanup(func() {
+		once.Do(func() { close(release) })
+		// every reading this started lands before the stand-in goes
+		for {
+			usedCache.Lock()
+			done := usedCache.loading["codex"]
+			usedCache.Unlock()
+			if done == nil {
+				break
+			}
+			<-done
+		}
+		LoginUsageVia(nil)
+		reset()
+	})
+	// in hand: a reading made a minute and a half ago, at 45%; the
+	// snapshot's own: two minutes ago, at 29%
+	fresh := SubscriptionQuota{Windows: []QuotaWindow{{Span: 7 * 24 * time.Hour, Used: 45, ResetsAt: &week}}}
+	loginUsageCache.Lock()
+	if loginUsageCache.m == nil {
+		loginUsageCache.m = map[string]loginUsageEntry{}
+	}
+	loginUsageCache.m["codex/me@example.com"] = loginUsageEntry{at: time.Now().Add(-90 * time.Second), q: fresh, read: fresh}
+	loginUsageCache.Unlock()
+	usedCache.Lock()
+	usedCache.m["codex"] = map[string]Allowance{"me@example.com": {{Used: 29, Resets: week, Span: 7 * 24 * time.Hour}}}
+	usedCache.at["codex"] = time.Now().Add(-2 * time.Minute)
+	if usedCache.read == nil {
+		usedCache.read = map[string]readState{}
+	}
+	usedCache.read["codex/me@example.com"] = readState{at: time.Now().Add(-2 * time.Minute)}
+	usedCache.Unlock()
+	// known, so it answers at once — by what is in hand, not the stale
+	// snapshot; the read it asked for is still out
+	if u, _ := Allowances("codex")["me@example.com"].For("gpt-5.5", time.Now()); u != 45 {
+		t.Fatalf("went by the stale snapshot: %v%%", u)
+	}
+	once.Do(func() { close(release) })
+}
+
 // Copilot's allowances renew on the day GitHub says, and its code
 // completions don't stop an account from answering.
 func TestCopilotUsageResets(t *testing.T) {

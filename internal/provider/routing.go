@@ -1026,12 +1026,71 @@ func readAllowances(agent string) map[string]Allowance {
 	}
 	c.Lock()
 	m, known := c.m[agent]
+	at := c.at[agent]
 	c.Unlock()
 	if !known {
 		// the first reading is still out: what each account said last
 		return lastAllowances(agent)
 	}
+	if at.IsZero() || time.Since(at) <= time.Minute {
+		// zero: made stale (StaleAllowance), or an account was let go
+		// (renewedNow) — read again at once, and what is in hand counts for
+		// nothing till that read is back
+		return m
+	}
+	// read over a minute ago: a reading in hand the login cache kept —
+	// the Usage page's, a background look's — can be newer than what the
+	// snapshot holds, and the request goes out on it now rather than wait
+	// for the read it just asked for: after an idle, the first request of
+	// a conversation went out on a stale share, drew the pace bands with
+	// it, and the turn's affinity kept the account that choice made to the
+	// end of a long tool turn (#5029)
+	if in := inHandAllowances(agent, m); len(in) > 0 {
+		merged := make(map[string]Allowance, len(m)+len(in))
+		for u, a := range m {
+			merged[u] = a
+		}
+		for u, a := range in {
+			merged[u] = a
+		}
+		return merged
+	}
 	return m
+}
+
+// inHandAllowances is what agent's accounts' readings in hand say, the
+// ones newer than what the snapshot m was read from: the login cache keeps
+// every reading with its time, and the snapshot's own reading times are
+// in c.read. No one is asked; a read out now isn't waited for.
+func inHandAllowances(agent string, m map[string]Allowance) map[string]Allowance {
+	logins, ok := usageLogins(agent)
+	if !ok {
+		return nil
+	}
+	c := &usedCache
+	c.Lock()
+	olds := make(map[string]time.Time, len(m))
+	for u := range m {
+		if st, ok := c.read[agent+"/"+strings.ToLower(u)]; ok {
+			olds[u] = st.at
+		}
+	}
+	c.Unlock()
+	now := time.Now()
+	out := map[string]Allowance{}
+	for _, l := range logins {
+		e, ok := loginReadingKnown(l)
+		if !ok || e.q.Error != "" || len(e.q.Windows) == 0 {
+			continue
+		}
+		if was, ok := olds[l.User]; ok && !e.at.After(was) {
+			continue // the snapshot's own reading of the account is as new
+		}
+		if a, ok := routedAllowance(agent, l.User, e.q, now); ok {
+			out[l.User] = a
+		}
+	}
+	return out
 }
 
 // UsageRead is when user's allowance under agent was last read well, and

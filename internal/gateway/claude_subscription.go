@@ -561,6 +561,17 @@ func clientWorkDir(req *Request) string {
 		// to the caller's tools (#4449)
 		return ""
 	}
+	if !canEnter(dir) {
+		// a folder here that magpie may not enter (a container's /root,
+		// 0700 root:root, while magpie runs as a nonroot user) is not
+		// worked in: os.Stat only says it is one here, and a run there
+		// failed to start, its chdir reported as a permission denied on
+		// the Claude Code binary itself, which the binary was not. The
+		// run works in magpie's folder, told the caller's (envElsewhere)
+		// (#4314)
+		log.Printf("claude: %s is a folder magpie may not enter, working in its own instead", dir)
+		return ""
+	}
 	return dir
 }
 

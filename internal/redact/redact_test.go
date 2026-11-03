@@ -43,6 +43,19 @@ func TestMask(t *testing.T) {
 		{in: "id 11010519491231002X card 4111 1111 1111 1111", o: Options{Secrets: true, Personal: true}, gone: []string{"11010519491231002X", "4111 1111 1111 1111"}, count: 2},
 		{in: "order 4111111111111112", o: Options{Secrets: true, Personal: true}, kept: []string{"4111111111111112"}}, // fails Luhn
 		{in: "Project Nightjar ships", o: Options{Secrets: true, Words: []string{"Nightjar"}}, gone: []string{"Nightjar"}, count: 1},
+		// the value of a field in a URL's query ends at the & that starts
+		// the next parameter (#5074): api_key's value went out with page,
+		// page_size and sort in one placeholder
+		{in: "https://example.com/search?api_key=demo_key_ABC123456789&page=2&page_size=20&sort=desc", gone: []string{"demo_key_ABC123456789"}, kept: []string{"&page=2&page_size=20&sort=desc"}, count: 1},
+		{in: "https://api.acme.cn/v1/items?access_token=Tok3nValue99x&page=3", gone: []string{"Tok3nValue99x"}, kept: []string{"&page=3"}, count: 1},
+		{in: "GET https://x.cn/api?u=1&token=T0k3nVal98765&sort=asc HTTP/1.1", gone: []string{"T0k3nVal98765"}, kept: []string{"?u=1&", "&sort=asc HTTP/1.1"}, count: 1},
+		// an & of a value the query carries url-encoded is %26, no cut
+		{in: "https://x.cn/s?api_key=abc%26defgh12&page=1", gone: []string{"abc%26defgh12"}, kept: []string{"&page=1"}, count: 1},
+		// an & of a quoted value, or of one in prose, is the value's own
+		{in: `password = "ab&cd12345"`, gone: []string{"ab&cd12345"}, count: 1},
+		{in: "password: ab&cd12345", gone: []string{"ab&cd12345"}, count: 1},
+		// a name in code after a colon is no value, query or not (#4444)
+		{in: "secretKey: details.2,", kept: []string{"details.2,"}},
 	}
 	for _, c := range cases {
 		if !c.o.Personal && c.o.Words == nil {

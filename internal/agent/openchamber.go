@@ -209,7 +209,10 @@ func openChamber(home, cfg string) *Agent {
 		ListOnly: true,
 		Sync: func() error {
 			var err error
-			if _, ok := edit.GetJSON(ocPath, "provider."+magpieID); !ok && usesMagpie(s.model(), s.small()) {
+			// where the OpenCode config keeps magpie's provider under
+			// providers, its own form's spelling, the v1 key stays out
+			// there too (#5064)
+			if _, ok := edit.GetJSON(ocPath, "provider."+magpieID); !ok && usesMagpie(s.model(), s.small()) && !openCodeNativeOn(ocPath) {
 				err = edit.SetJSON(ocPath, edit.KV{Path: "provider." + magpieID, Value: provider()})
 			} else {
 				err = syncJSONInOrder(ocPath, "provider."+magpieID, provider)

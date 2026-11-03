@@ -12,6 +12,7 @@ import (
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -91,7 +92,9 @@ func openChamberSaved(t *testing.T, path string) {
 
 // providersCurrent checks that magpie's provider under providers in the
 // OpenCode config at path says what the one under provider says, with what
-// openChamberSaved left of the user's kept.
+// openChamberSaved left of the user's kept. Where the file keeps no block
+// under provider — an OpenCode 2 config magpie keeps to providers alone
+// (#5064) — what magpie writes there is the measure.
 func providersCurrent(t *testing.T, path string) {
 	t.Helper()
 	raw, ok := edit.GetJSON(path, openCodeNativeKey)
@@ -111,10 +114,22 @@ func providersCurrent(t *testing.T, path string) {
 	if err := json.Unmarshal([]byte(raw), &got); err != nil {
 		t.Fatal(err)
 	}
+	raw1, ok := edit.GetJSON(path, "provider."+magpieID)
+	if !ok {
+		b, err := json.Marshal(magpieProviderJSONAt("opencode", "opencode", gateway.URL()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw1 = string(b)
+	}
 	var v1 struct {
+		Options struct {
+			BaseURL string `json:"baseURL"`
+			APIKey  string `json:"apiKey"`
+		} `json:"options"`
 		Models map[string]json.RawMessage `json:"models"`
 	}
-	if raw1, _ := edit.GetJSON(path, "provider."+magpieID); json.Unmarshal([]byte(raw1), &v1) != nil {
+	if json.Unmarshal([]byte(raw1), &v1) != nil {
 		t.Fatalf("provider: %s", raw1)
 	}
 	// think/old, gone from the catalog, goes; think/new is there
@@ -123,11 +138,10 @@ func providersCurrent(t *testing.T, path string) {
 		t.Fatalf("models %v, provider's %v: %s", ids, want, raw)
 	}
 	// in the order magpie lists them under provider (#4575)
-	if order, v1order := jsonKeyOrder(t, raw, "models"), jsonKeyOrder(t, raw1Of(path), "models"); !slices.Equal(order, v1order) {
+	if order, v1order := jsonKeyOrder(t, raw, "models"), jsonKeyOrder(t, raw1, "models"); !slices.Equal(order, v1order) {
 		t.Fatalf("models in the order %v, provider's %v", order, v1order)
 	}
-	base, _ := edit.GetJSON(path, "provider."+magpieID+".options.baseURL")
-	key, _ := edit.GetJSON(path, "provider."+magpieID+".options.apiKey")
+	base, key := v1.Options.BaseURL, v1.Options.APIKey
 	if base == "" || got.Settings["baseURL"] != base || got.Settings["apiKey"] != key || got.Package != "aisdk:@ai-sdk/openai-compatible" {
 		t.Fatalf("settings %v, package %q; provider's %s %s", got.Settings, got.Package, base, key)
 	}
@@ -135,8 +149,14 @@ func providersCurrent(t *testing.T, path string) {
 		t.Fatalf("the user's setting or header is gone: %s", raw)
 	}
 	deep := got.Models["think/deep"]
-	if name, _ := edit.GetJSON(path, "provider."+magpieID+".models.think/deep.name"); deep.Name != name {
-		t.Fatalf("deep's name %q, provider's %q", deep.Name, name)
+	var deep1 struct {
+		Name string `json:"name"`
+	}
+	if json.Unmarshal(v1.Models["think/deep"], &deep1) != nil {
+		t.Fatalf("provider's think/deep: %s", v1.Models["think/deep"])
+	}
+	if deep.Name != deep1.Name {
+		t.Fatalf("deep's name %q, provider's %q", deep.Name, deep1.Name)
 	}
 	if in, _ := deep.Capabilities["input"].([]any); !slices.Contains(in, any("image")) {
 		t.Fatalf("deep's capabilities %v", deep.Capabilities)
@@ -205,6 +225,49 @@ func TestOpenCodeProvidersKeptCurrent(t *testing.T) {
 	}
 }
 
+// #5064: every restart's sync put the v1 provider.magpie back into an
+// OpenCode 2 config that keeps magpie's provider under providers —
+// OpenChamber's form having taken the v1 one out — and a model picked put
+// it back too. OpenCode 2 reads providers and warns on the one under
+// provider, "retained native value over legacy value", so the user's
+// deletions never stuck. Where the file keeps magpie's provider under
+// providers, the v1 key stays out: the copy there is what a sync and a
+// pick bring current. A config without providers.magpie still gets the v1
+// one, what OpenCode 1 and 2 both read (#3883).
+func TestOpenCode2sConfigPutsNoV1ProviderBack(t *testing.T) {
+	home, _ := codexHome(t, "", "")
+	thinkCatalog(t)
+	oc := opencode(home, filepath.Join(home, ".config"))
+	if err := oc.Apply("model", "magpie/think/deep"); err != nil {
+		t.Fatal(err)
+	}
+	openChamberSaved(t, oc.Path)
+	if err := oc.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := edit.GetJSON(oc.Path, "provider."+magpieID); ok {
+		t.Fatalf("the v1 provider.magpie put back: %s", v)
+	}
+	providersCurrent(t, oc.Path)
+	// and a model picked doesn't put it back either
+	openChamberSaved(t, oc.Path)
+	if err := oc.Apply("model", "magpie/think/new"); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := edit.GetJSON(oc.Path, "provider."+magpieID); ok {
+		t.Fatalf("a pick put the v1 provider.magpie back: %s", v)
+	}
+	providersCurrent(t, oc.Path)
+	// a config without providers.magpie still gets the v1 one
+	writeFile(t, oc.Path, `{"model":"magpie/think/deep"}`)
+	if err := oc.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := edit.GetJSON(oc.Path, "provider."+magpieID); !ok {
+		t.Fatalf("the v1 provider.magpie no longer written where providers keeps none of magpie's: %s", readFile(oc.Path))
+	}
+}
+
 // OpenChamber, magpie's agent for the OpenCode it runs, writes magpie's
 // provider into the same config: its sync, model and step off reach the
 // block under providers as well.
@@ -222,6 +285,10 @@ func TestOpenChamberProvidersKeptCurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	providersCurrent(t, path)
+	// its sync keeps the v1 key out where providers keeps magpie's (#5064)
+	if v, ok := edit.GetJSON(path, "provider."+magpieID); ok {
+		t.Fatalf("the v1 provider.magpie put back: %s", v)
+	}
 	openChamberSaved(t, path)
 	if err := ch.Apply("model", "magpie/think/new"); err != nil {
 		t.Fatal(err)
@@ -263,11 +330,6 @@ func TestOpenCodeCheckReadsProviders(t *testing.T) {
 	if off := oc.Check(); off != "" {
 		t.Fatalf("after a sync: %s", off)
 	}
-}
-
-func raw1Of(path string) string {
-	raw, _ := edit.GetJSON(path, "provider."+magpieID)
-	return raw
 }
 
 // jsonKeyOrder is the order of the keys of the object under key in the

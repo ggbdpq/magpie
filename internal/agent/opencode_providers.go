@@ -213,6 +213,16 @@ func syncOpenCodeNative(path string, block func() any) error {
 	return syncJSONInOrder(path, openCodeNativeKey, openCodeNativeKept(path, block))
 }
 
+// openCodeNativeOn is whether the OpenCode config at path keeps magpie's
+// provider under providers, OpenCode 2's spelling: there the v1
+// provider.magpie stays out, what OpenCode 2 reads is the copy under
+// providers, and putting the v1 one back had every restart re-add what the
+// user had taken out, OpenCode 2 warning on it (#5064).
+func openCodeNativeOn(path string) bool {
+	_, ok := edit.GetJSON(path, openCodeNativeKey)
+	return ok
+}
+
 // openCodeWiringOff is wiringOff for magpie's provider in the OpenCode
 // config at path: under provider, and under providers where the file keeps
 // it there, which OpenCode 2 reads instead.

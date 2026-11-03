@@ -21,6 +21,7 @@ import (
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // Claude Code reads its endpoint from the `env` block of settings.json.
@@ -2424,9 +2425,17 @@ func claudeIn(at place) *Agent {
 			}
 			return wiringOff("Claude Code", path, getEnv, "ANTHROPIC_AUTH_TOKEN", at.gwKey())
 		},
-		// every prompt typed into Claude Code goes into history.jsonl
+		// every prompt typed into Claude Code goes into history.jsonl —
+		// the user's, and those of the runs magpie started itself (the
+		// subscription bridge's, a warm-up's) as well: the latter are not
+		// use, and none of their requests reach the gateway as this
+		// agent's (#5100)
 		LastUsed: func() time.Time {
-			return lastJSONLTime(filepath.Join(filepath.Dir(path), "history.jsonl"), "timestamp", "display")
+			return lastJSONLTime(filepath.Join(filepath.Dir(path), "history.jsonl"), "timestamp", "display",
+				func(m map[string]json.RawMessage) bool {
+					var sid string
+					return json.Unmarshal(m["sessionId"], &sid) == nil && usage.IsOwnSession(sid)
+				})
 		},
 		// a session takes a new CLAUDE_CODE_EFFORT_LEVEL on its next
 		// request, but settings.json's effort and ultracode, and the env's

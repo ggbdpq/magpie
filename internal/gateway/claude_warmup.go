@@ -24,6 +24,7 @@ import (
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/redact"
+	"github.com/yetone/magpie/internal/usage"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -62,7 +63,12 @@ func askClaude(ctx context.Context, configDir, model string) error {
 		return err
 	}
 	defer os.RemoveAll(tmp)
-	cmd := binary.command(ctx, claudeWarmArgs(model)...)
+	// the run's session is magpie's own, told before it starts: its "hi"
+	// lands in the user's history.jsonl, and drift must not take it for the
+	// user's use (#5100)
+	sid := newUUID()
+	usage.OwnSession(sid)
+	cmd := binary.command(ctx, append(claudeWarmArgs(model), "--session-id", sid)...)
 	cmd.Dir = tmp
 	cmd.Stdin = strings.NewReader("hi")
 	env, err := binary.proxied(ctx, cleanClaudeEnv(os.Environ()))
@@ -164,6 +170,9 @@ func (w *resultLines) Write(p []byte) (int, error) {
 		if json.Unmarshal(w.buf[:i], &r) == nil {
 			if r.SessionID != "" {
 				w.sid = r.SessionID
+				// the session is magpie's own: the lines its run writes to
+				// the user's history.jsonl are not the user's use (#5100)
+				usage.OwnSession(r.SessionID)
 			}
 			if r.Type == "result" {
 				w.res = &r
@@ -552,3 +561,9 @@ func claudeBypassEnv(tui bool, configDir string) []string {
 	}
 	return []string{claudetui.BypassEnv + "=1"}
 }
+
+// ownClaudeSession keeps the session id of a Claude Code run magpie started
+// itself (the bridge's, a warm-up's): its lines in the user's history.jsonl
+// are not the user's use (#5100). A wrapper, as the bridge's read of its
+// runs' stream-json has a usage of its own in scope.
+func ownClaudeSession(sid string) { usage.OwnSession(sid) }

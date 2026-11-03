@@ -14,6 +14,7 @@ import (
 
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/testenv"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // fakeWarmClaude is a claude that writes what it was run with to log and
@@ -67,6 +68,44 @@ func TestWarmClaudeAsksClaudeCodeOnce(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(log); !strings.Contains(string(b), "dir:/the/users/own\n") {
 		t.Errorf("another config directory given for Claude Code's own account:\n%s", b)
+	}
+}
+
+// A warm-up's session is magpie's own, told before the run starts and kept:
+// its "hi" lands in the user's history.jsonl, and drift must not take it
+// for the user's use (#5100).
+func TestWarmClaudeSaysItsOwnSession(t *testing.T) {
+	log := fakeWarmClaude(t, `{"type":"result","is_error":false,"result":"Hi!"}`, 0)
+	if err := warmClaude(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(log)
+	got := string(b)
+	i := strings.Index(got, "[--session-id][")
+	if i < 0 {
+		t.Fatalf("no session of its own told: %s", got)
+	}
+	sid := got[i+len("[--session-id]["):]
+	if j := strings.Index(sid, "]"); j >= 0 {
+		sid = sid[:j]
+	}
+	if !usage.IsOwnSession(sid) {
+		t.Errorf("the run's session %s is not kept as magpie's own", sid)
+	}
+}
+
+// The helper's init tells which session a one-off interactive run (a
+// warm-up, a /usage read) is: that session is magpie's own (#5100).
+func TestClaudeHelperSessionIsMagpiesOwn(t *testing.T) {
+	out := &resultLines{done: func() {}}
+	if _, err := out.Write([]byte(`{"type":"system","subtype":"init","session_id":"helper-sid"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if out.sid != "helper-sid" {
+		t.Fatalf("sid %q", out.sid)
+	}
+	if !usage.IsOwnSession("helper-sid") {
+		t.Errorf("the helper's session is not kept as magpie's own")
 	}
 }
 

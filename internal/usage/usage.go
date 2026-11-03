@@ -1153,3 +1153,38 @@ func LastSeen(agent string) time.Time {
 	}
 	return last
 }
+
+// ownClaude are the session ids of the Claude Code runs magpie started
+// itself: the subscription bridge's sessions, a warm-up's, a /usage read's.
+// Their prompts land in the user's history.jsonl beside the user's own, and
+// none of their requests reach the gateway as agent claude's (the bridge's
+// go as claude-desktop's, a warm-up's straight to Anthropic), so drift would
+// take them for the user using Claude Code behind magpie's back (#5100). An
+// entry is kept a week: a run tells its session each time it starts, and no
+// run lives longer than that.
+var ownClaude sync.Map // session id → time.Time
+
+// OwnSession notes the session id of a Claude Code run magpie started
+// itself.
+func OwnSession(sid string) {
+	if sid == "" {
+		return
+	}
+	ownClaude.Store(sid, time.Now())
+	ownClaude.Range(func(k, v any) bool {
+		if time.Since(v.(time.Time)) > 7*24*time.Hour {
+			ownClaude.Delete(k)
+		}
+		return true
+	})
+}
+
+// IsOwnSession says whether the Claude Code session was one magpie started
+// itself (OwnSession).
+func IsOwnSession(sid string) bool {
+	if sid == "" {
+		return false
+	}
+	_, ok := ownClaude.Load(sid)
+	return ok
+}

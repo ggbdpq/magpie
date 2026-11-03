@@ -649,9 +649,10 @@ func TestStreamCutPrefillRefusedEndsAsBefore(t *testing.T) {
 	}
 }
 
-// The tries are each billed, so the reply's usage — the client's and the
-// ledger's — sums them: the cut try's prompt with the continuation's.
-func TestStreamCutUsageSumsTries(t *testing.T) {
+// The tries are each billed: the one that answered is the reply's usage —
+// what the client reads as its prompt (#5115) — and the cut try's is the
+// reply's Deferred, which the ledger bills beside it.
+func TestStreamCutUsageBillsTriesTellsOwnPrompt(t *testing.T) {
 	f := &cutAnthropic{
 		cuts:  map[int][]string{0: {anthStart("m", 7), anthText("hel")}},
 		whole: []string{anthStart("m", 11), anthText("lo"), anthStop(4)},
@@ -661,8 +662,12 @@ func TestStreamCutUsageSumsTries(t *testing.T) {
 	if u == nil {
 		t.Fatalf("no usage in the stream: %s", body)
 	}
-	if u["prompt_tokens"] != 18.0 || u["completion_tokens"] != 4.0 {
-		t.Fatalf("usage = %v, want the tries summed: prompt 7+11=18, completion 4", u)
+	if u["prompt_tokens"] != 11.0 || u["completion_tokens"] != 4.0 {
+		t.Fatalf("usage = %v, want the try that answered: prompt 11, completion 4", u)
+	}
+	// the ledger bills both tries: the cut one with the continuation
+	if r := lastUsage(t); r.Input+r.CacheRead+r.CacheWrite != 18 {
+		t.Fatalf("ledger prompt %d, want both tries billed (7+11)", r.Input+r.CacheRead+r.CacheWrite)
 	}
 }
 

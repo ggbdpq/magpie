@@ -390,6 +390,22 @@ func (c *continuation) unecho(s string) string {
 	return s
 }
 
+// deferTries bills the prompts of a reply's retried tries with the reply,
+// as its Deferred — what the ledger prices as a tier beside the request's
+// own (routeUsage), and the client is never told as the reply's prompt
+// (#5115): a client reading prompt_tokens back as how full its context is
+// (WorkBuddy's) read a reply asked four times four times its size, and
+// compacted a session that had room.
+func deferTries(u *Usage, retried Usage) {
+	if retried.Input+retried.CacheRead == 0 {
+		return
+	}
+	if u.Deferred == nil {
+		u.Deferred = &Usage{}
+	}
+	*u.Deferred = u.Deferred.plus(retried, false)
+}
+
 // streamTranslated relays a translated reply's events to the client as
 // they come. A reply the upstream's stream cut off mid-way is asked of
 // the same conversation again, going on from what the client has, up to
@@ -413,7 +429,24 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 	empties := 0 // the times such a reply was asked again here
 	said, stop := false, ""
 	var kept []Event       // the reply's end, while nothing is said in it
-	var before, this Usage // what the tries before this one billed, and this try
+	var before, this Usage // what the tries before this one hold with the client, and this try
+	// retried is the prompts of the tries that said nothing or were cut:
+	// the conversation asked again, billed with the reply and never told
+	// as its prompt (#5115)
+	var retried Usage
+	defer func() { deferTries(u, retried) }()
+	// gaveUp folds the try that ended away: the prompt it asked again —
+	// its input and its cache reads — into retried, what the client holds
+	// of it (its output and its cache writes, billed where they landed)
+	// into before, and clears the reply's own input for the next try, so
+	// the reply's own counts are the try that answered's: one that
+	// reports none leaves none of a previous one's behind
+	gaveUp := func() {
+		retried = retried.plus(Usage{Input: this.Input, CacheRead: this.CacheRead}, false)
+		before, this = before.plus(Usage{Output: this.Output, Reasoning: this.Reasoning,
+			CacheWrite: this.CacheWrite, CacheWrite1h: this.CacheWrite1h}, false), Usage{}
+		u.Input, u.CacheRead = 0, 0
+	}
 	// spoke: the reply has said something, a text or a call; relooped: this
 	// try's reasoning was found stuck in a loop before it had, and it is
 	// let go to ask again (loopReasks)
@@ -458,15 +491,21 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 			failed, failedCode, failedStatus = ev.Text, ev.Code, ev.Status
 			errSent = true
 		case KStart:
-			// the tries are each billed, so their usages are summed into
-			// the reply's — the client's and the ledger's (a cut try's is
-			// only what it said before the cut)
+			// the try that answered is the reply's usage — the client's
+			// and the ledger's; the tries before it asked the same
+			// conversation again, which is billed as the reply's Deferred
+			// (gaveUp), never told as its prompt (#5115). What they hold
+			// with the client — their output, and their cache writes,
+			// billed where they landed — stays in the reply's own counts
 			this = ev.Usage
 			ev.Usage = ev.Usage.plus(before, false)
 			u.add(ev.Usage)
 			u.add(Usage{Served: ev.Model}) // the model the vendor says answered
 		case KUsage:
 			this.add(ev.Usage)
+			// before is what the tries before this one hold with the
+			// client: their output and their cache writes; the prompts
+			// they asked again went to the reply's Deferred (gaveUp)
 			ev.Usage = ev.Usage.carryUpdate(this, before)
 			u.add(ev.Usage)
 		case KStop:
@@ -633,7 +672,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 			// it, as an empty reply's does (#667); a loop on that try too
 			// ends the reply with the loop's error.
 			relooped = false
-			before, this = before.plus(this, false), Usage{}
+			gaveUp()
 			kept, stop = nil, ""
 			enc.keepalive()
 			select {
@@ -655,7 +694,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 					// the error stops its run (#667, Pi). What reasoning
 					// the client has stays, the next try's follows it.
 					empties++
-					before, this = before.plus(this, false), Usage{}
+					gaveUp()
 					kept, stop = nil, ""
 					enc.keepalive()
 					select {
@@ -691,7 +730,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 			}
 			break
 		}
-		before, this = before.plus(this, false), Usage{}
+		gaveUp()
 		enc.keepalive() // the client waits while the same conversation is asked again
 		select {
 		case <-time.After(retryPause << again):

@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // A Gemini reply that says nothing — a STOP with no parts, only reasoning,
@@ -72,6 +74,100 @@ func TestGeminiEmptyReplyIsAnError(t *testing.T) {
 		if code != 200 || strings.Contains(body, "an empty reply") || !strings.Contains(body, `"finish_reason"`) {
 			t.Errorf("%s: %d %s", what, code, body)
 		}
+	}
+}
+
+// A reply asked again for saying nothing bills every try, but the prompt
+// it leaves the client is the one ask that answered: WorkBuddy reads
+// prompt_tokens back as how full the conversation is, and a reply asked
+// four times read four times its size and compacted a session that had
+// room (#5115). The tries before the one that answered are the reply's
+// Deferred — the ledger bills them (promptCounted reads the ask that
+// answered), and what they streamed the client stays in its completion.
+func TestGeminiEmptyRetryTellsThePromptThatAnswered(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
+	calls := 0
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls == 1 {
+			io.WriteString(w, `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Let me see.","thought":true}]}}]}`+"\n\n"+
+				`data: {"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":7,"thoughtsTokenCount":5}}`+"\n\n")
+			return
+		}
+		io.WriteString(w, `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":200,"candidatesTokenCount":9,"thoughtsTokenCount":3}}`+"\n\n")
+	}))
+	t.Cleanup(up.Close)
+	saveGem(t, up.URL, "gemini-3.8-flash")
+
+	code, body := post(t, "/v1/chat/completions", `{"model":"gem/gemini-3.8-flash","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 || !strings.Contains(body, "hello") || strings.Contains(body, "an empty reply") {
+		t.Fatalf("the empty reply wasn't asked past: %d %s", code, body)
+	}
+	if calls != 2 {
+		t.Fatalf("asked %d times, want 2", calls)
+	}
+	u := chatUsageOf(body)
+	if u == nil {
+		t.Fatalf("no usage in the stream: %s", body)
+	}
+	if u["prompt_tokens"] != 200.0 {
+		t.Fatalf("prompt_tokens = %v, want the ask that answered (200), not 100+200", u["prompt_tokens"])
+	}
+	if u["completion_tokens"] != 24.0 {
+		t.Fatalf("completion_tokens = %v, want what the client was streamed, both tries' output (7+5, 9+3)", u["completion_tokens"])
+	}
+	// the ledger bills both tries, the retry with the reply
+	if r := lastUsage(t); r.Input+r.CacheRead+r.CacheWrite != 300 || r.Output != 24 {
+		t.Fatalf("ledger in %d+%d+%d out %d, want both tries billed (300 in, 24 out)", r.Input, r.CacheRead, r.CacheWrite, r.Output)
+	}
+}
+
+// A try that counted its prompt and one that said nothing without counting
+// anything: the ledger bills the one that counted, once — the try that
+// reported nothing leaves none of the other's prompt behind as its own.
+func TestGeminiEmptyRetryCountsOnlyWhatWasCounted(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
+	calls := 0
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls == 1 {
+			io.WriteString(w, `data: {"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100}}`+"\n\n")
+			return
+		}
+		io.WriteString(w, `data: {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":0}}`+"\n\n")
+	}))
+	t.Cleanup(up.Close)
+	saveGem(t, up.URL, "gemini-3.8-flash")
+
+	code, body := post(t, "/v1/chat/completions", `{"model":"gem/gemini-3.8-flash","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 || !strings.Contains(body, "an empty reply") {
+		t.Fatalf("a model that never answers isn't told as the error: %d %s", code, body)
+	}
+	// the request's tries each get a record; only the one that counted
+	// has a prompt, and it is billed once — not twice, as its own and
+	// again as a previous try's
+	var in int
+	for _, r := range usage.Load(time.Time{}) {
+		in += r.Input + r.CacheRead + r.CacheWrite
+	}
+	if in != 100 {
+		t.Fatalf("ledger in %d, want the one try that counted (100), not twice that", in)
 	}
 }
 

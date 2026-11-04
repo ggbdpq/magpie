@@ -454,6 +454,17 @@ type Provider struct {
 	// goes by the last reading, read again each minute. See
 	// gateway.carefulDoubt.
 	CapCareful bool `json:"capCareful,omitempty"`
+	// KeepThroughRest says a transient rest — a rate limit lifted in
+	// seconds, a failure that says nothing of why — is no reason to move
+	// a request off the key or account that its conversation answered:
+	// what the vendor cached of it is worth more than the wait, and a
+	// conversation moved pays its whole prompt again on the next account
+	// (wssz527, #4030: two Kimi Code accounts, a cache read at a rounding
+	// error and an uncached prompt at a large multiple). A rest out of
+	// quota or credit, a restricted account, and one asked to verify
+	// itself still move it, as they do without the setting. Off, the
+	// default. See gateway.restLast.
+	KeepThroughRest bool `json:"keepThroughRest,omitempty"`
 	// AccountNames is, for a subscription, the name the user gave each
 	// account they named (#1515: a team's seats told apart by who holds
 	// them, not by a masked email), by the account's name in lower case.
@@ -934,6 +945,7 @@ func accountSettings(a, pk Provider) Provider {
 	a.Proxy, a.AccountProxies, a.AccountModels, a.AccountModelsAll = pk.Proxy, pk.AccountProxies, pk.AccountModels, pk.AccountModelsAll
 	a.AccountCaps, a.AccountWindowCaps = pk.AccountCaps, pk.AccountWindowCaps
 	a.CapStop, a.CapCareful = pk.CapStop, pk.CapCareful
+	a.KeepThroughRest = pk.KeepThroughRest
 	a.AccountNames = pk.AccountNames
 	a.MaxConcurrency, a.PinUpstream = pk.MaxConcurrency, pk.PinUpstream
 	a.MaxAccounts = pk.MaxAccounts

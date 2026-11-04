@@ -274,6 +274,12 @@ type Provider struct {
 	// upstreams, and a rest of half an hour held every request back until
 	// magpie restarted). Off by default: such a refusal rests it as ever.
 	LimitRestOff bool `json:"limitRestOff,omitempty"`
+	// BodyLimit is the most bytes one request to the provider may take,
+	// measured as it goes out, after every plugin, route and translation
+	// has had its say (#4282). A body over it is refused before the
+	// provider is asked anything: not cut, not sent again. 0 sends
+	// requests of any size, as it does by default.
+	BodyLimit int `json:"bodyLimit,omitempty"`
 
 	// PriceRate is what the provider charges against the official price
 	// (ITea312, #819): a relay that bills 0.8× or 1.5× of it. It scales the
@@ -1977,6 +1983,7 @@ func normalize(p Provider) Provider {
 	p.AccountWeights = normalAccountWeights(p.AccountWeights)
 	p.QueueLimit, p.QueueWait = min(max(p.QueueLimit, 0), MaxQueueLimit), min(max(p.QueueWait, 0), MaxQueueWait)
 	p.MaxRPM = min(max(p.MaxRPM, 0), MaxRPMLimit)
+	p.BodyLimit = min(max(p.BodyLimit, 0), MaxBodyLimit)
 	p.QuotaRest = min(max(p.QuotaRest, 0), MaxQuotaRest)
 	if p.RestCap != RestCapOff {
 		p.RestCap = min(max(p.RestCap, 0), MaxQuotaRest)

@@ -4785,7 +4785,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				break
 			}
 		}
-		if !last && !hw.passing && !hw.refused && (hw.code() == http.StatusRequestEntityTooLarge || overflowed(hw.code(), hw.errBody())) {
+		if !last && !hw.passing && !hw.refused && !bodyLimitSaid(hw.errBody()) && (hw.code() == http.StatusRequestEntityTooLarge || overflowed(hw.code(), hw.errBody())) {
 			// too long for this member's model, and as long on every
 			// account of it, but another member — another model, or this
 			// one at another vendor — may hold it (#700: the overflow went
@@ -4793,7 +4793,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// window, where the next member would have answered). Only
 			// those not known to be too small are left to ask; none, and
 			// the agent is told, to compact. A byte cap (413) also belongs
-			// to this member: another vendor may take the same body. It
+			// to this member: another vendor may take the same body — but
+			// the 413 said here for the provider's own body limit isn't
+			// handed over (body_limit.go): the limit is the user's own
+			// word for this provider, and the body never went out. It
 			// doesn't say the request exceeds another model's window, so
 			// no token estimate filters those members. Nobody rests.
 			tokens := 0
@@ -5967,9 +5970,11 @@ func (s *Server) forward(ctx context.Context, p provider.Provider, to provider.P
 		// once, never again in another shape
 		return res, err
 	}
-	if err == nil && res.StatusCode >= 400 {
+	if !refusedForBodyLimit(res) && err == nil && res.StatusCode >= 400 {
 		// a body over the provider's byte cap: asked again with its
-		// oldest images left out, or said as a 413 (body_cap.go)
+		// oldest images left out, or said as a 413 (body_cap.go) — but
+		// the 413 said here for the provider's own body limit isn't
+		// fitted and isn't asked again (body_limit.go)
 		res, err = s.refitOverCap(ctx, p, to, path, body, in, res)
 	}
 	if err == nil && mantleRoutes(p, to) {
@@ -6152,6 +6157,13 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 			return nil, errors.New("a request to Claude on Vertex AI names no model")
 		}
 		path, body = at, b
+	}
+	if n := p.BodyLimit; n > 0 && len(body) > n {
+		// the provider's own body limit (body_limit.go): the last word on
+		// the body as it goes out, after every plugin, route, translation
+		// and fitting has had its say. Refused here, the provider asked
+		// nothing, and nothing is sent again for it.
+		return bodyLimitRefusal(p, len(body), n), nil
 	}
 	base := p.Base(to)
 	zenFree := p.IsOpenCode() && p.OpenCodeFree(gjson.GetBytes(body, "model").String())

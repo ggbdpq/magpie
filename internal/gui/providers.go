@@ -2343,6 +2343,11 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				if in.RestCap == 0 && old != nil {
 					in.RestCap = old.RestCap
 				}
+				// and the most bytes one request to it may take, set
+				// with `magpie provider body-limit` (#4282)
+				if in.BodyLimit == 0 && old != nil {
+					in.BodyLimit = old.BodyLimit
+				}
 				// and Codex's requests as sent, set with `magpie provider
 				// set <id> codex=as-sent` (#1758)
 				if !in.CodexAsSent && old != nil {

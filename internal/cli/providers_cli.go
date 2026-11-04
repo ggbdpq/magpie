@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -146,6 +147,10 @@ const providerUsage = `usage:
                                           off: one that fails without saying why (a relay's 5xx) doesn't
                                           rest at all, while out of quota, its key refused or rate limited
                                           still rests it
+  magpie provider body-limit <id> [28mib|512kb|2048|off]
+                                          the most bytes one request to it may take, as it goes out, after plugins
+                                          and translation; a body over it is refused here and the provider asked
+                                          nothing (off: no limit)
   magpie provider listed <id> yes|no      no: its models serve only through routing groups, not in the list
   magpie provider this-device <id> yes|no
                                           yes: kept on this computer; sync neither sends it out nor lets
@@ -704,6 +709,8 @@ func providerCmd(args []string) error {
 		return quotaRestCmd(rest)
 	case "rest-cap":
 		return restCapCmd(rest)
+	case "body-limit":
+		return bodyLimitCmd(rest)
 	case "listed":
 		// no: the provider's models leave the list agents see and serve
 		// only through the routing groups they are in
@@ -2319,6 +2326,78 @@ func restCapMinutes(s string) (int, error) {
 		return 0, fmt.Errorf("the shortest rest cap is 1m, which rests a minute every time, not longer; off doesn't rest after an unknown failure at all")
 	}
 	return restMinutes(s)
+}
+
+// bodyLimitCmd reads and sets the most bytes one request to a provider
+// may take (#4282): `magpie provider body-limit <id>` says it, `<id>
+// 28mib` sets it, `<id> off` takes it away.
+func bodyLimitCmd(rest []string) error {
+	if len(rest) < 1 || len(rest) > 2 {
+		return fmt.Errorf("magpie provider body-limit <id> [28mib|512kb|2048|off]")
+	}
+	p, err := provider.Find(rest[0])
+	if err != nil {
+		return err
+	}
+	if len(rest) > 1 {
+		n, err := bodyLimitBytes(rest[1])
+		if err != nil {
+			return err
+		}
+		if err := provider.SetBodyLimit(p.ID, n); err != nil {
+			return err
+		}
+		if p, err = provider.Find(p.ID); err != nil {
+			return err
+		}
+	}
+	if p.BodyLimit > 0 {
+		fmt.Printf("%s · one request to it takes at most %s, as it goes out; a body over it is refused here, the provider asked nothing (`magpie provider body-limit %s off` takes it away)\n", p.Name, sizeWords(p.BodyLimit), p.ID)
+	} else {
+		fmt.Printf("%s · requests of any size go to it (magpie's own)\n", p.Name)
+	}
+	return nil
+}
+
+// bodyLimitSize reads a size as bodyLimitCmd takes it: a number of
+// bytes, or the unit named — 2048, 512kb, 28mib. A kb is a KiB, as a
+// vendor counts a stated "32 MB … (33554432 bytes)".
+var bodyLimitSize = regexp.MustCompile(`^(\d+(?:\.\d+)?)\s*(b|bytes|kb|kib|mb|mib|gb|gib)?$`)
+
+// bodyLimitBytes is the bytes bodyLimitSize read.
+func bodyLimitBytes(s string) (int, error) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch s {
+	case "off", "default", "none", "-", "0":
+		return 0, nil
+	}
+	m := bodyLimitSize.FindStringSubmatch(s)
+	if m == nil {
+		return 0, fmt.Errorf("the body limit is a number of bytes or a size (28mib, 512kb), or off, not %q", s)
+	}
+	f, err := strconv.ParseFloat(m[1], 64)
+	if err != nil || f < 0 {
+		return 0, fmt.Errorf("the body limit is a size, not %q", s)
+	}
+	unit := map[string]float64{"": 1, "b": 1, "bytes": 1, "kb": 1 << 10, "kib": 1 << 10, "mb": 1 << 20, "mib": 1 << 20, "gb": 1 << 30, "gib": 1 << 30}[m[2]]
+	if n := f * unit; n > float64(provider.MaxBodyLimit) {
+		return 0, fmt.Errorf("the most a body limit may be is %s (%d bytes), not %q", sizeWords(provider.MaxBodyLimit), provider.MaxBodyLimit, s)
+	} else {
+		return int(n), nil
+	}
+}
+
+// sizeWords says a number of bytes as a size: 1.0 MB, 28.0 MiB.
+func sizeWords(n int) string {
+	switch {
+	case n >= 1<<30 && n%(1<<30) == 0:
+		return fmt.Sprintf("%d GiB", n>>30)
+	case n >= 1<<20 && n%(1<<20) == 0:
+		return fmt.Sprintf("%d MiB", n>>20)
+	case n >= 1<<10 && n%(1<<10) == 0:
+		return fmt.Sprintf("%d KiB", n>>10)
+	}
+	return fmt.Sprintf("%d bytes", n)
 }
 
 // restMinutes reads a rest as quotaRestCmd takes it: default (0), a

@@ -86,3 +86,17 @@ func TestSniffSingleNewlineEvents(t *testing.T) {
 		t.Errorf("usage %+v", got)
 	}
 }
+
+// The passthrough sniffer's per-event cost, one Chat chunk: the baseline
+// #4893's profile measured at 0.42 CPU-s over 30s of real traffic. The
+// allocations and ns here are the numbers any consolidation proposal has
+// to beat without changing what each protocol's scanner sees.
+func BenchmarkUsageSnifferChatChunk(b *testing.B) {
+	chunk := []byte(`{"id":"chatcmpl-1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}],"provider":"DeepInfra"}`)
+	sn := newSniffer(provider.Chat, "text/event-stream")
+	b.SetBytes(int64(len(chunk)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sn.write(append(append([]byte("data: "), chunk...), '\n', '\n'))
+	}
+}

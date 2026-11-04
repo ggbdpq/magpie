@@ -36,12 +36,25 @@ var upstreamTLS *tls.Config
 // it goes through a transport of its own that waits as long as Settings'
 // Image generation timeout gives it (drawWithin), up to 60 minutes.
 func upstreamTransport() http.RoundTripper {
-	return drawsApart{
-		any:     codexSocket{replayable{freshAfterRegion(netproxy.Dispatch(vendorTransport(upstreamHeaderWait)))}},
-		draws:   replayable{freshAfterRegion(netproxy.Dispatch(vendorTransport(0)))},
-		uploads: codexSocket{replayable{freshAfterRegion(netproxy.Dispatch(uploadTransport(upstreamHeaderWait)))}},
-		slow:    new(atomic.Int64),
+	return netproxy.ClassicalRetry{
+		RoundTripper: drawsApart{
+			any:     codexSocket{replayable{freshAfterRegion(netproxy.Dispatch(vendorTransport(upstreamHeaderWait)))}},
+			draws:   replayable{freshAfterRegion(netproxy.Dispatch(vendorTransport(0)))},
+			uploads: codexSocket{replayable{freshAfterRegion(netproxy.Dispatch(uploadTransport(upstreamHeaderWait)))}},
+			slow:    new(atomic.Int64),
+		},
+		Alt: netproxy.Dispatch(classicalVendor()),
 	}
+}
+
+// classicalVendor is a transport to the vendors without the hybrid
+// post-quantum key share: what the upstream transports' ClassicalRetry
+// sends a host through once its handshake has timed out on the share
+// (netproxy, #4077).
+func classicalVendor() *http.Transport {
+	t := vendorTransport(upstreamHeaderWait)
+	t.TLSClientConfig = netproxy.ClassicalTLS(t.TLSClientConfig)
+	return t
 }
 
 // upstreamHeaderWait is how long a vendor is given to begin answering a
@@ -66,10 +79,13 @@ var slowFor = 30 * time.Minute
 var uploadStall = time.Minute
 
 // vendorTransport is a transport to the vendors that gives one wait to
-// begin answering, none for 0: the request's context then bounds it.
-// A silent HTTP/2 connection is pinged and dropped (#2843), by a health
-// check that doesn't ping a vendor still thinking into ending the
-// connection (netproxy.CalmHTTP2).
+// begin answering, none for 0: the request's context then bounds it. The
+// handshake itself gets upstreamTLSHandshakeWait, so one that gets no
+// answer — the large post-quantum ClientHello dropped by the path
+// (netproxy.ClassicalRetry) — is given up on and sent again, not waited
+// out for the whole header wait. A silent HTTP/2 connection is pinged
+// and dropped (#2843), by a health check that doesn't ping a vendor
+// still thinking into ending the connection (netproxy.CalmHTTP2).
 func vendorTransport(wait time.Duration) *http.Transport {
 	t := plainVendorTransport(wait)
 	netproxy.CalmHTTP2(t)
@@ -80,12 +96,17 @@ func plainVendorTransport(wait time.Duration) *http.Transport {
 	return &http.Transport{
 		Proxy:                 netproxy.Func,
 		ResponseHeaderTimeout: wait,
+		TLSHandshakeTimeout:   upstreamTLSHandshakeWait,
 		MaxIdleConnsPerHost:   8,
 		IdleConnTimeout:       90 * time.Second,
 		ForceAttemptHTTP2:     true,
 		TLSClientConfig:       upstreamTLS,
 	}
 }
+
+// upstreamTLSHandshakeWait is how long a vendor's TLS handshake may take
+// before the connection is given up on.
+var upstreamTLSHandshakeWait = 30 * time.Second
 
 // uploadTransport is vendorTransport for a request whose body may still be
 // under way when the connection has had no frame for a while: an HTTP/2

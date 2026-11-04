@@ -37,7 +37,10 @@ func Install() {
 		}
 		// a request magpie sends a provider on its own (a Test, a model
 		// list) is written into the request log as it goes (probelog)
-		http.DefaultClient.Transport = probelog.Transport(Dispatch(t))
+		http.DefaultClient.Transport = probelog.Transport(ClassicalRetry{
+			RoundTripper: Dispatch(t),
+			Alt:          Dispatch(classicalDefault()),
+		})
 	}
 }
 

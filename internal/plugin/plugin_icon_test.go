@@ -37,6 +37,11 @@ func TestPluginOwnIconAndKeyHint(t *testing.T) {
 	if lime.Icon != "https://ownicon.example/icon.png" {
 		t.Errorf("lime's icon = %q, want package.json's", lime.Icon)
 	}
+	// a built-in icon's name said for a provider comes through as it is
+	// (#5103): the page draws it from its bundle
+	if by["orange"].Icon != "deepseek-color" {
+		t.Errorf("orange's icon = %q, want the built-in name as it is", by["orange"].Icon)
+	}
 	// how many requests each account takes at once (Discord, Lemon): the
 	// auth hook's, else package.json's when the hook's isn't a whole number
 	if lemon.MaxConcurrency != 3 || lime.MaxConcurrency != 5 {

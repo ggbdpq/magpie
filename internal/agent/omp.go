@@ -783,8 +783,76 @@ func ompGeminiMode(id string) string {
 // ProviderConfigSchema). Each stays; the address, API, auth, key and model
 // list are magpie's, an auth or key it no longer writes gone with it, so a
 // loopback's auth: none never sits beside the key a WSL omp needs (#2030).
+// remoteCompaction is written where e's write calls for it (ompRemoteCompaction):
+// a block the user wrote, one with enabled: false included, is never touched.
 func ompKept(path string, e ompProviderEntry) any {
-	return yamlKept(path, "providers."+magpieID, e, "baseUrl", "api", "auth", "apiKey", "models")
+	v := yamlKept(path, "providers."+magpieID, e, "baseUrl", "api", "auth", "apiKey", "models")
+	if rc, ok := ompRemoteCompaction(path, e); ok {
+		if m, ok := v.(map[string]any); ok {
+			m["remoteCompaction"] = rc
+			return m
+		}
+	}
+	return v
+}
+
+// ompRemoteCompaction is the remoteCompaction block magpie writes under its
+// provider in omp's models.yml, and whether to write it (#5065): enabled,
+// with v2StreamingEnabled for the loopback omp asks V2 of. omp 18.15 asks a
+// provider for its own compaction only with the block, so without it a
+// compaction_trigger is answered magpie's summary, which omp's V2 check
+// takes for a successful seal and never falls back from. It is written when
+// every model this write lists as openai-responses — the only ones whose
+// compact call goes to the Responses API omp points at magpie — compacts
+// natively (provider.Provider.CompactsOn: the provider's Compaction row
+// on, its wire carrying the trigger, the model asked on Responses there),
+// a routing group by its every member. That is asked of the write's own
+// list, not of the catalog at sync time: nativeCompactionFor also needs a
+// key or account the request would go over now (plannedCarrier), which a
+// file written ahead of none has. No model listed as openai-responses (one
+// can't compact natively included), no block: with it omp would send
+// triggers codexCompact answers "magpie1:" to, the very thing the block is
+// to keep out of. A block the user wrote is theirs, and stays (ompKept);
+// the test at hand is skipped when there is one.
+func ompRemoteCompaction(path string, e ompProviderEntry) (any, bool) {
+	if _, ok := edit.GetYAMLText(path, "providers."+magpieID+".remoteCompaction"); ok {
+		return nil, false
+	}
+	if !ompModelsCompacts(e) {
+		return nil, false
+	}
+	return map[string]any{"enabled": true, "v2StreamingEnabled": true}, true
+}
+
+// ompModelsCompacts says whether every model of e listed as
+// openai-responses compacts natively; false when none is listed so. A
+// routing group's every member is asked, as any of them may answer.
+func ompModelsCompacts(e ompProviderEntry) bool {
+	any := false
+	for _, m := range e.Models {
+		if m.API != "openai-responses" {
+			continue
+		}
+		if provider.IsGroupRef(m.ID) {
+			_, ms, ok := provider.FindGroup(m.ID)
+			if !ok || len(ms) == 0 {
+				return false
+			}
+			for _, mm := range ms {
+				if !mm.Provider.CompactsOn(mm.Model) {
+					return false
+				}
+			}
+			any = true
+			continue
+		}
+		p, model, ok := provider.Resolve(m.ID)
+		if !ok || !p.CompactsOn(model) {
+			return false
+		}
+		any = true
+	}
+	return any
 }
 
 // ompOwnOptions lists the models of the providers the user added to omp's

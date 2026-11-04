@@ -495,6 +495,17 @@ func carrierError(model string) string {
 	return fmt.Sprintf("Codex asked %s for its own compaction (native compaction), and none of the keys or accounts that serve %s now can be asked it on the Responses API. magpie doesn't turn it into a summary of its own unasked. Turn native compaction off for the provider to have magpie summarise the conversation instead.", model, model)
 }
 
+// ompTriggerError is what omp is told when the compaction_trigger it sent
+// can't be carried (#5065): its provider is not set to compact natively.
+// The "magpie1:" compaction item codexCompact would write instead is no
+// answer to omp — its V2 check takes one for a successful seal and never
+// falls back to its own summarization, so the conversation would go on
+// from magpie's summary unasked. An error has omp show the compaction as
+// failed, its turn unharmed.
+func ompTriggerError(model string) string {
+	return fmt.Sprintf("omp asked %s for its own compaction (remote compaction), and the provider serving %s is not set to compact natively, so the trigger can't be carried. magpie doesn't answer one of its own summaries in its place: omp's V2 check would take it for a successful seal and never fall back. Turn native compaction on for the provider (its Compaction row), or turn remoteCompaction off for it in omp's models.yml to have magpie summarise again.", model, model)
+}
+
 // compactionWatch reads, on the way past, the compaction a native
 // compaction request's reply seals, for wroteCheckpoint.
 type compactionWatch struct {

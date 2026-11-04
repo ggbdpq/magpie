@@ -2018,9 +2018,19 @@ func (s *Server) handle(from provider.Protocol) http.HandlerFunc {
 			// which magpie points here, #1301): the summary is magpie's to
 			// make, as on CodexPath, and magpie's summaries go back as text;
 			// a provider set to compact natively is asked Codex's own (#1099)
+			// omp, with remoteCompaction enabled (#5065), sends the same
+			// trigger — and its V2 check takes a "magpie1:" compaction item
+			// for a successful seal, never falling back to its local
+			// summarization. So when its trigger can't be carried, the error
+			// goes back as the compaction's, and omp shows it; Codex keeps
+			// the summary path, which it does fall back from.
 			if bytes.Contains(body, []byte(`"compaction`)) {
 				var compact bool
 				if body, compact = codexInputAs(body, true, s.nativeCompactionFor(modelOf(body))); compact {
+					if agentOf(r) == "omp" {
+						writeError(w, from, http.StatusBadRequest, ompTriggerError(modelOf(body)))
+						return
+					}
 					s.codexCompact(w, r, body)
 					return
 				}

@@ -104,7 +104,22 @@ func (p Provider) Test(ctx context.Context) []Result {
 		}
 		url, body := tiny(q, proto, UpstreamName(p, model))
 		ctx, b := q.tested(p.loggedAs(ctx, q), url, body)
-		out = append(out, probe(ctx, q, proto, url, b, model, testWait))
+		r := probe(ctx, q, proto, url, b, model, testWait)
+		// the vendor's word that this model is served elsewhere is not
+		// the endpoint's whole answer: the list may serve another model
+		// here — try the next one before the endpoint stays red (#3844)
+		tried := []string{model}
+		for !r.OK && r.otherAPI && len(tried) < 3 {
+			next := p.testModel(q, proto, tried...)
+			if next == "" {
+				break
+			}
+			tried = append(tried, next)
+			url, body := tiny(q, proto, UpstreamName(p, next))
+			ctx, b := q.tested(p.loggedAs(ctx, q), url, body)
+			r = probe(ctx, q, proto, url, b, next, testWait)
+		}
+		out = append(out, r)
 	}
 	if len(out) == 0 && p.zenPublic() {
 		out = append(out, Result{Protocol: Chat, Error: zenPublicNone})
@@ -667,13 +682,15 @@ const zenPublicNone = "no free model of OpenCode Zen is listed for this API: the
 // testModel is the model a probe of proto's endpoint asks for: the first
 // exposed one q's key sees, else the first it sees at all — preferring a
 // Claude model on the Anthropic endpoint, and one that chats to one that
-// draws on an images API. On OpenCode's gateway a model models.dev names
+// draws on an images API. A model in except is passed over (the next one
+// on the list is asked when the vendor said the first is served
+// elsewhere, #3844). On OpenCode's gateway a model models.dev names
 // no API for is served on chat alone, so no other endpoint is tried with
 // it; and with Zen's public key only a free model is tried, on an API it
 // is served on, or none (z'x on Discord: Test asked public for
 // claude-fable-5 on Messages, gemini-3-flash on Gemini and big-pickle on
 // Responses, and every one failed, though big-pickle answers on chat).
-func (p Provider) testModel(q Provider, proto Protocol) string {
+func (p Provider) testModel(q Provider, proto Protocol, except ...string) string {
 	k := q.first()
 	// a model the key's vendor lists it, and the user lets it serve
 	// (AccountModels, #474), as routing has it
@@ -708,6 +725,9 @@ func (p Provider) testModel(q Provider, proto Protocol) string {
 				if public && !p.OpenCodeFree(m.ID) {
 					continue
 				}
+				if slices.Contains(except, m.ID) {
+					continue
+				}
 				if !p.DecidesModel(m.ID) && !off(p.ID, m.ID) && want(m.ID) && sees(m.ID) {
 					return m.ID
 				}
@@ -720,7 +740,7 @@ func (p Provider) testModel(q Provider, proto Protocol) string {
 		// sends it (heatonz on Discord: a provider serving only those)
 		// or one its preset names (Voyage AI, which lists none)
 		for _, m := range append(catalog.LiveServing(p.ID, ""), p.PlanRetrieval("")...) {
-			if retrievalOf(m.ID) != "" && !off(p.ID, m.ID) && sees(m.ID) {
+			if retrievalOf(m.ID) != "" && !slices.Contains(except, m.ID) && !off(p.ID, m.ID) && sees(m.ID) {
 				return m.ID
 			}
 		}

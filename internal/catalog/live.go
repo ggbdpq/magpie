@@ -796,13 +796,16 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 	if err != nil {
 		return nil, false, "", err
 	}
-	if auth.learned != nil && auth.only == "" && key != "" && BothAuthRefused(res.StatusCode, b) {
-		// refused for sending both: each alone, the one taken kept
+	if auth.learned != nil && auth.only == "" && key != "" && (BothAuthRefused(res.StatusCode, b) || AuthKeyRefused(res.StatusCode, b)) {
+		// refused for sending both — outright, or read as an invalid key
+		// with no word about the headers (#5021): each alone, the one that
+		// answered kept; a header the vendor doesn't take can come as 404,
+		// so only a real answer is learned
 		for _, only := range OneAuthOrder {
 			if res, b, err = ask(only); err != nil {
 				return nil, false, "", err
 			}
-			if res.StatusCode != http.StatusUnauthorized && res.StatusCode != http.StatusForbidden {
+			if res.StatusCode >= 200 && res.StatusCode < 300 {
 				auth.learned(only)
 				break
 			}

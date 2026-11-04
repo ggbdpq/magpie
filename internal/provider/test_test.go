@@ -411,3 +411,70 @@ func TestTestModelsAsAClientMovesAsTheGatewayDoes(t *testing.T) {
 		t.Errorf("as Claude Code: results %+v, asked %q", rs, got)
 	}
 }
+
+// #3844: a relay whose first model is served on another API kept its chat
+// endpoint red, though the same endpoint serves its other models fine.
+// The endpoint test now tries the next model on its list before the
+// endpoint stays red, and the vendor's word about the first stays the
+// answer when no other model serves there.
+func TestTestTriesTheNextModelOnTheEndpoint(t *testing.T) {
+	oneHome(t)
+	said := "模型 gpt-5.6-sol 不支持 /v1/chat/completions 接口，请改用 /v1/responses（OpenAI Responses API）。"
+	var mu sync.Mutex
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet { // the model list
+			_, _ = rw.Write([]byte(`{}`))
+			return
+		}
+		var in struct{ Model string }
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		mu.Lock()
+		asked = append(asked, in.Model+" "+r.URL.Path)
+		mu.Unlock()
+		if r.URL.Path == "/v1/chat/completions" && in.Model == "gpt-5.6-sol" {
+			rw.WriteHeader(http.StatusBadRequest)
+			_, _ = rw.Write([]byte(`{"error":{"message":"` + said + `","type":"invalid_request_error"}}`))
+			return
+		}
+		_, _ = rw.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	p := Provider{ID: "relay", Name: "Relay", Chat: srv.URL + "/v1", Responses: srv.URL + "/v1",
+		Key: "sk-x", Models: []string{"gpt-5.6-sol", "glm-4.6"}}
+	took := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := asked
+		asked = nil
+		return out
+	}
+	rs := p.Test(context.Background())
+	var chat Result
+	for _, r := range rs {
+		if r.Protocol == Chat {
+			chat = r
+		}
+	}
+	if !chat.OK {
+		t.Fatalf("chat stayed red: %+v (asked %v)", chat, took())
+	}
+	want := []string{"gpt-5.6-sol /v1/chat/completions", "glm-4.6 /v1/chat/completions", "gpt-5.6-sol /v1/responses"}
+	if got := took(); !slices.Equal(got, want) {
+		t.Fatalf("asked %v, want %v", got, want)
+	}
+
+	// a model the vendor refuses by name on its own is its answer: the
+	// endpoint stays red rather than walking the whole list (#3766's word)
+	lone := Provider{ID: "lone", Name: "Lone", Chat: srv.URL + "/v1", Key: "sk-x",
+		Models: []string{"gpt-5.6-sol"}}
+	rs = lone.Test(context.Background())
+	for _, r := range rs {
+		if r.Protocol == Chat && r.OK {
+			t.Fatalf("chat green on a model the vendor turns away: %+v", r)
+		}
+	}
+	if got := took(); len(got) != 1 {
+		t.Fatalf("asked %v, want the one model once", got)
+	}
+}

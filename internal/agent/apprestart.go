@@ -403,7 +403,7 @@ func (a *Agent) RestartApp(ctx context.Context) error {
 		return restartErr(noticeRestartCurrent, a)
 	}
 	if c.bundle != "" {
-		return reopenBundle(ctx, a, c.bundle, c.exe)
+		return reopenBundle(ctx, a, c.bundle, r.mac)
 	}
 	return a.restartWin(ctx, r, c)
 }
@@ -500,17 +500,32 @@ func waitGone(ctx context.Context, r restartable, limit time.Duration) bool {
 	}
 }
 
-// reopenBundle quits the app at bundle, as ⌘Q does, waits for every
-// process under it to end, but for a script run on its executable exe,
-// which may outlive it by design (runsScript), and opens it again
-// (codex_app.go's way).
-func reopenBundle(ctx context.Context, a *Agent, bundle, exe string) error {
+// reopenBundle quits the app at bundle, as ⌘Q does, waits for the app's
+// own process to end and opens it again (codex_app.go's way). The app's
+// own process is the one findRestartable counts, Contents/MacOS/<exe>:
+// WorkBuddy AI leaves a detached sidecar under Contents/ behind when its
+// GUI quits — it holds the IPC sockets for a next start — and waiting for
+// every process under the bundle ran out the whole wait on it every time,
+// so the app was quit and never opened again (#3700). When the plist
+// can't be read the wait stays on the whole bundle, but a script run on
+// the app's own executable, which may outlive it by design, still ends
+// nothing (runsScript).
+func reopenBundle(ctx context.Context, a *Agent, bundle string, mac desktopApp) error {
 	if err := appQuit(ctx, bundle); err != nil {
 		return restartErr(noticeRestartAsk, a)
 	}
 	pat := regexp.QuoteMeta(bundle + "/Contents/")
+	// the executable, the plist's short name for the ask and its full
+	// path for the skip: a script run on it names it in full, so the
+	// prefix has to peel (runsScript)
+	exe := bundleExecutable(bundle, mac.id)
+	full := ""
+	if exe != "" {
+		pat = "^" + regexp.QuoteMeta(filepath.Join(bundle, "Contents", "MacOS", exe)) + "( |$)"
+		full = filepath.Join(bundle, "Contents", "MacOS", exe)
+	}
 	end := time.Now().Add(appQuitWait)
-	for len(appProcs(running(pat), exe)) > 0 {
+	for len(appProcs(running(pat), full)) > 0 {
 		if time.Now().After(end) {
 			return restartErr(noticeRestartStillOpen, a)
 		}

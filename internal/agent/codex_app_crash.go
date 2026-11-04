@@ -192,7 +192,7 @@ func codexAppRelaunch(ctx context.Context) error {
 		if err != nil {
 			a = &Agent{ID: "codex", Name: "Codex"}
 		}
-		return reopenBundle(ctx, a, c.bundle, c.exe)
+		return reopenBundle(ctx, a, c.bundle, desktopApps["codex"])
 	}
 	return errors.New("magpie reopens the Codex app on macOS and Windows only")
 }

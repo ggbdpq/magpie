@@ -223,6 +223,12 @@ type Group struct {
 	// Rules with an intent need one; a small, fast model without reasoning
 	// does.
 	Classifier string `json:"classifier,omitempty"`
+	// IntentSure is how confident a decision model (Jev, from TypeSafe's
+	// decision API) must be of an intent of this group's for it to count:
+	// from 0, its likeliest intent taken however unsure it is ("none of
+	// these" never counting), to 1, certain. nil asks 0.4, as groups have
+	// always asked (#5101).
+	IntentSure *float64 `json:"intentSure,omitempty"`
 	// Effort "auto" has the classifier — Jev, from TypeSafe's decision API,
 	// or any model, asked in words — judge how hard each turn is to think
 	// about as it begins, and the turn asks its model for that much
@@ -1626,6 +1632,9 @@ func SaveGroup(g Group) error {
 		if _, _, ok := Resolve(g.Classifier); !ok {
 			return fmt.Errorf("magpie knows no model %q to classify with", g.Classifier)
 		}
+	}
+	if g.IntentSure != nil && (*g.IntentSure < 0 || *g.IntentSure > 1) {
+		return fmt.Errorf("a group's intent sure is from 0 to 1, not %g", *g.IntentSure)
 	}
 	g.Auto, g.Hidden = false, false
 	g.Members = own // what the patterns match is found again as it is read

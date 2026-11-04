@@ -1409,6 +1409,12 @@ type aUsage struct {
 	// Kiro caches but tells only credits, never tokens (zeewell on X).
 	// It is read, never told: anthropic() leaves it false.
 	CacheUnknown bool `json:"magpie_cache_unknown,omitempty"`
+	// Credit is what the reply said the request cost in its plan's
+	// credits, as cUsage's: Kiro's plugin sums the meteringEvents Kiro
+	// costs a request with into its last message_delta's usage
+	// (yetone/magpie#4328). It is read, never told: anthropic() leaves it
+	// out.
+	Credit *float64 `json:"credit,omitempty"`
 	// OutputTokensDetails says how many of the output tokens were
 	// thinking, as Copilot counts them on a message_delta: the reasoning
 	// count the other protocols' usage carries (completion_tokens_details,
@@ -1429,6 +1435,9 @@ type aOutputDetails struct {
 
 func (u aUsage) usage() Usage {
 	out := Usage{Input: u.InputTokens, Output: u.OutputTokens, CacheRead: u.CacheReadInputTokens, CacheWrite: u.CacheCreationInputTokens, cacheUnknown: u.CacheUnknown}
+	if c := u.Credit; c != nil && *c >= 0 {
+		out.Credits = c
+	}
 	if c := u.CacheCreation; c != nil {
 		out.cacheCreationReported = true
 		out.cacheCreationHasCounts = c.Ephemeral5m+c.Ephemeral1h > 0

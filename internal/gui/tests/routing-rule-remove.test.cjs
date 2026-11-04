@@ -86,9 +86,32 @@ async function reach(page, loc) {
   return loc.boundingBox();
 }
 
+// the app puts a scroll the code or the browser made back where it was
+// (the click guard), a frame or more after it happened, and until it does,
+// the page can still be moving under a box just read or a menu just
+// opened; wait until some frames have gone by without a scroll of any kind
+async function keptStill(page) {
+  await page.waitForFunction(() => new Promise((done) => {
+    let quiet = 0;
+    const went = () => { quiet = 0; };
+    addEventListener("scroll", went, true);
+    const tick = () => {
+      if (quiet >= 4) { removeEventListener("scroll", went, true); return done(true); }
+      quiet++;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }));
+}
+
 async function press(page, loc) {
-  const b = await reach(page, loc);
-  await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+  await reach(page, loc);
+  await keptStill(page);
+  // a box read here is a promise the page can break: the guard of what an
+  // earlier click brought in scrolls the view a frame after the box was
+  // read, and a click at those coordinates lands on what moved under it;
+  // the locator checks the hit where the click lands, and again if it must
+  await loc.click();
 }
 
 async function openEditor(page, w) {
@@ -126,7 +149,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         page.setDefaultTimeout(5000);
         page.setDefaultNavigationTimeout(60000);
         const errors = [], posts = [];
-        page.on("pageerror", (e) => errors.push(e.message));
+        // the size watch's own "ResizeObserver loop" notice is no error of
+        // the app's (the hold of what a click brought in is kept by one)
+        page.on("pageerror", (e) => { if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message); });
         await page.route("**/*", serve(lang, posts));
         await page.goto("http://magpie.test/?view=groups");
 
@@ -137,6 +162,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(await seen(page, row.locator(".rt-rmore")), { opacity: "1", visibility: "visible", inside: true, top: true }, "the rule's ⋯ is there without hovering");
         await press(page, row.locator(".rt-rmore"));
         await page.locator(".row-menu .rm-item", { hasText: w.remove }).click();
+        // the redraw can land a frame after the click: wait for the rule to
+        // be gone, then the count says so
+        await row.waitFor({ state: "detached" });
         assert.equal(await ed.locator(".rt-rule").count(), 0);
         await press(page, ed.locator("button.primary", { hasText: w.save }));
         await page.waitForFunction(() => !document.querySelector(".rt-gedit"));
@@ -151,11 +179,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await row.locator(".rt-model").focus({ preventScroll: true });
         for (let i = 0; i < 6 && !(await row.locator(".rt-rmore").evaluate((b) => b === document.activeElement)); i++) await page.keyboard.press(TAB);
         assert(await row.locator(".rt-rmore").evaluate((b) => b === document.activeElement), "Tab reaches the rule's ⋯");
+        // the tabs brought what they focused into sight, and the put-back
+        // can take a menu opened before it is done with it
+        await keptStill(page);
         await page.keyboard.press("Enter");
         await page.locator(".row-menu").waitFor();
         await page.keyboard.press("ArrowUp");
         assert.equal((await page.evaluate(() => document.activeElement.textContent)).trim(), w.remove);
         await page.keyboard.press("Enter");
+        // as above, the rule leaves a frame after Remove does
+        await row.waitFor({ state: "detached" });
         assert.equal(await ed.locator(".rt-rule").count(), 0);
         await press(page, ed.locator("button.primary", { hasText: w.save }));
         await page.waitForFunction(() => !document.querySelector(".rt-gedit"));
@@ -184,6 +217,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), "no sideways scroll");
         // its condition on again, the line goes and Save saves it
         await press(page, row.locator('.rt-c[data-k="images"] .rt-cond'));
+        // the line hides in the toggle's redraw, which can land a frame
+        // after the click
+        await row.locator(".rt-rneed").waitFor({ state: "hidden" });
         assert(await row.locator(".rt-rneed").isHidden(), "said no more once it has a condition");
         await press(page, ed.locator("button.primary", { hasText: w.save }));
         await page.waitForFunction(() => !document.querySelector(".rt-gedit"));

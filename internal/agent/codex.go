@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -279,19 +278,12 @@ func codexIn(at place) *Agent {
 	if at.spell == nil && at.base == nil {
 		at.base = func() string { return codexKeptGateway(path) }
 	}
-	// the catalog as the config names it: relative to config.toml on
-	// Windows, where a C:\ path is no file to the same Codex reading it
-	// from WSL (#816); Codex reads a relative one from its home
-	catalogRef := at.native(catalogPath)
-	if at.spell == nil && runtime.GOOS == "windows" {
-		catalogRef = filepath.Base(catalogPath)
-	}
 	// ownCatalog: the config names magpie's catalog, by any spelling
 	ownCatalog := func(c string) bool {
 		if c == "" {
 			return false
 		}
-		if c == catalogRef || c == at.native(catalogPath) {
+		if c == at.native(catalogPath) {
 			return true
 		}
 		if at.spell != nil {
@@ -303,6 +295,16 @@ func codexIn(at place) *Agent {
 			c = filepath.Join(dir, c)
 		}
 		return filepath.Clean(c) == filepath.Clean(catalogPath)
+	}
+	// A new reference is absolute in the reader's own path syntax. A
+	// second CODEX_HOME can share config.toml (OpenResearch does) without
+	// having either catalog beside it. Keep an existing relative reference:
+	// the Windows app's WSL agent may need it (#816).
+	catalogRef := func() string {
+		if c := get("model_catalog_json"); at.spell == nil && ownCatalog(c) && !filepath.IsAbs(c) {
+			return c
+		}
+		return at.native(catalogPath)
 	}
 	// ownList is magpie's model list for Codex as written to catalogPath:
 	// what the user added by hand to the list there (a key magpie doesn't
@@ -440,14 +442,11 @@ func codexIn(at place) *Agent {
 	// backend's list as the backend sent them (CodexDesktopList).
 	deskPath := filepath.Join(dir, "magpie-desktop-models.json")
 	deskRef := at.native(deskPath)
-	if at.spell == nil && runtime.GOOS == "windows" {
-		deskRef = filepath.Base(deskPath)
-	}
 	deskCatalog := func(c string) bool {
 		if c == "" {
 			return false
 		}
-		if c == deskRef || c == at.native(deskPath) {
+		if c == deskRef || at.spell == nil && filepath.FromSlash(c) == deskPath {
 			return true
 		}
 		return at.spell == nil && !filepath.IsAbs(c) && filepath.Clean(filepath.Join(dir, c)) == filepath.Clean(deskPath)
@@ -1880,7 +1879,7 @@ func codexIn(at place) *Agent {
 			// which refuses it (#259). A base URL of the user's own stays.
 			kv := []edit.KV{
 				{Path: "model_provider", Value: magpieID},
-				{Path: "model_catalog_json", Value: catalogRef},
+				{Path: "model_catalog_json", Value: catalogRef()},
 				{Path: "model", Value: v},
 			}
 			if u := get("openai_base_url"); u == "" || viaBase() {
@@ -2003,7 +2002,13 @@ func codexIn(at place) *Agent {
 			if err := putProvider(); err != nil {
 				return false, err
 			}
-			if err := edit.DelTOMLTop(path, "model_provider", "model_catalog_json"); err != nil {
+			// Keep the app's catalog if already named, including a
+			// relative spelling its WSL reader needs; settle refreshes it.
+			keys := []string{"model_provider"}
+			if !deskCatalog(get("model_catalog_json")) {
+				keys = append(keys, "model_catalog_json")
+			}
+			if err := edit.DelTOMLTop(path, keys...); err != nil {
 				return false, err
 			}
 			if err := edit.SetTOMLTop(path, edit.KV{Path: "openai_base_url", Value: at.codexURL()}); err != nil {

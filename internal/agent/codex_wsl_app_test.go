@@ -2,7 +2,6 @@ package agent
 
 import (
 	"os"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -27,10 +26,6 @@ func TestCodexWSLAppAddressKept(t *testing.T) {
 	if err := cx.Fields[0].Set("fake/m1"); err != nil {
 		t.Fatal(err)
 	}
-	// on Windows magpie names the catalog as the app's WSL agent can read it
-	if c, _ := edit.GetTOMLTop(cx.Path, "model_catalog_json"); runtime.GOOS == "windows" && c != "magpie-models.json" {
-		t.Fatalf("catalog named %q", c)
-	}
 	if c := cx.Check(); c != "" {
 		t.Fatal(c)
 	}
@@ -53,6 +48,9 @@ func TestCodexWSLAppAddressKept(t *testing.T) {
 	keep := func(when string) {
 		t.Helper()
 		cfg := read()
+		if c, _ := edit.GetTOMLTop(cx.Path, "model_catalog_json"); c != "magpie-models.json" {
+			t.Fatalf("%s: the relative catalog was not kept: %q", when, c)
+		}
 		if !strings.Contains(cfg, `openai_base_url = "`+wsl+gateway.CodexPath+`"`) || !strings.Contains(cfg, `base_url = "`+wsl+`/v1"`) ||
 			strings.Contains(cfg, "127.0.0.1:"+gateway.Port()) {
 			t.Fatalf("%s: the address was not kept\n%s", when, cfg)

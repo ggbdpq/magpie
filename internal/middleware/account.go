@@ -79,6 +79,7 @@ func (r *Run) Account(a gwmw.Account) (skip bool, by string) {
 				Skip bool `json:"skip"`
 			}
 			if json.Unmarshal(out, &said) == nil && said.Skip {
+				m.changed.Add(1)
 				return true, m.name
 			}
 		}

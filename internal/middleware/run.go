@@ -155,10 +155,12 @@ func (r *Run) Request(body []byte) ([]byte, *Reject) {
 			continue
 		}
 		if r.rejected != nil {
+			m.changed.Add(1)
 			return body, r.rejected
 		}
 		if out != nil {
 			body = out
+			m.changed.Add(1)
 		}
 	}
 	return body, nil
@@ -200,6 +202,7 @@ func (r *Run) Tried(body []byte, to gwmw.To) []byte {
 			m.fail("onProvider", err)
 		case out != nil:
 			body = out
+			m.changed.Add(1)
 		}
 	}
 	return body
@@ -384,6 +387,7 @@ func (rw *writer) finish() {
 				m.fail("onResponse", err)
 			case out != nil:
 				body = out
+				m.changed.Add(1)
 			}
 		}
 		rw.w.Write(body)
@@ -411,11 +415,13 @@ func (rw *writer) event(ev []byte) error {
 		out, err := rw.run.apply(i, m.onEv, eventLimit, data, nil)
 		switch {
 		case errors.Is(err, errDropped):
+			m.changed.Add(1)
 			return nil
 		case err != nil:
 			m.fail("onEvent", err)
 		case out != nil:
 			data, changed = out, true
+			m.changed.Add(1)
 		}
 	}
 	if !changed {

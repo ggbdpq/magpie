@@ -1654,7 +1654,12 @@
     const parts = [];
     if (m.hooks.length) {
       let s = t("Gateway middleware: {hooks}", { hooks: m.hooks.join(t(", ")) });
-      if (m.calls) s += " · " + t("{n} calls, {us} µs each", { n: m.calls.toLocaleString(lang), us: m.avgMicros < 10 ? m.avgMicros.toFixed(1) : Math.round(m.avgMicros).toLocaleString(lang) });
+      // changed differs from calls when some calls passed their input
+      // through unchanged, or failed: said, so the row tells the calls a
+      // hook acted on from the ones it only saw (#4271)
+      const us = m.avgMicros < 10 ? m.avgMicros.toFixed(1) : Math.round(m.avgMicros).toLocaleString(lang);
+      if (m.calls && m.changed !== m.calls) s += " · " + t("{n} calls, {changed} changed, {us} µs each", { n: m.calls.toLocaleString(lang), changed: (m.changed || 0).toLocaleString(lang), us });
+      else if (m.calls) s += " · " + t("{n} calls, {us} µs each", { n: m.calls.toLocaleString(lang), us });
       parts.push(s);
     }
     if (m.strategies?.length) parts.push(t("Routings: {routings}", { routings: m.strategies.join(t(", ")) }) + (m.orders ? " · " + t("asked {n} times", { n: m.orders.toLocaleString(lang) }) : ""));

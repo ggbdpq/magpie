@@ -217,6 +217,96 @@ func TestListLearnsOneAuth(t *testing.T) {
 	}
 }
 
+// #5021's vendor, the reporter's retest: a header the vendor doesn't take
+// at all is not refused 401/403 — x-api-key alone gets a 404 saying the
+// apiKey header is missing. That is not a header that worked: it is not
+// learned, and Authorization alone is asked before the answer goes back.
+func TestRetryOneAuth404NotLearned(t *testing.T) {
+	azureHome(t)
+	var mu sync.Mutex
+	var asked [][2]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		x, a := r.Header.Get("x-api-key"), r.Header.Get("Authorization")
+		mu.Lock()
+		asked = append(asked, [2]string{x, a})
+		mu.Unlock()
+		if x != "" && a != "" {
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"message":"invalid api-key","type":"authentication_error"}`))
+			return
+		}
+		if x != "" {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"success":false,"code":"AUTH_KEY_MISSING","msg":"请求头缺失 apiKey 参数"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"hi"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	if err := Save(Provider{ID: "relay", Name: "Relay", Anthropic: srv.URL, Key: "k", Models: []string{"claude-haiku-4-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := Find("relay")
+	rs := p.TestModels(context.Background(), []string{"claude-haiku-4-5"})
+	if len(rs) != 1 || !rs[0].OK {
+		t.Fatalf("test: %+v", rs)
+	}
+	mu.Lock()
+	got := append([][2]string(nil), asked...)
+	mu.Unlock()
+	if len(got) != 3 || got[1] != [2]string{"k", ""} || got[2] != [2]string{"", "Bearer k"} {
+		t.Errorf("asked %v", got)
+	}
+	if q, _ := Find("relay"); q.AuthHeader != AuthBearer {
+		t.Fatalf("kept %q", q.AuthHeader)
+	}
+}
+
+// The model list learns the same way: a 404 to x-api-key alone is a header
+// the vendor doesn't take, not one that worked — the list goes on to
+// Authorization alone and that is what is kept.
+func TestList404NotLearned(t *testing.T) {
+	azureHome(t)
+	var mu sync.Mutex
+	var asked [][2]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		x, a := r.Header.Get("x-api-key"), r.Header.Get("Authorization")
+		mu.Lock()
+		asked = append(asked, [2]string{x, a})
+		mu.Unlock()
+		if x != "" && a != "" {
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"message":"invalid api-key","type":"authentication_error"}`))
+			return
+		}
+		if x != "" {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"success":false,"code":"AUTH_KEY_MISSING","msg":"请求头缺失 apiKey 参数"}`))
+			return
+		}
+		w.Write([]byte(`{"data":[{"id":"claude-haiku-4-5"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	if err := Save(Provider{ID: "relay", Name: "Relay", Anthropic: srv.URL, Key: "k"}); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := Find("relay")
+	ms, err := p.Fetch(context.Background())
+	if err != nil || len(ms) == 0 {
+		t.Fatalf("list: %v %v", ms, err)
+	}
+	mu.Lock()
+	got := append([][2]string(nil), asked...)
+	mu.Unlock()
+	if len(got) != 3 || got[1] != [2]string{"k", ""} || got[2] != [2]string{"", "Bearer k"} {
+		t.Errorf("asked %v", got)
+	}
+	if q, _ := Find("relay"); q.AuthHeader != AuthBearer {
+		t.Errorf("kept %q", q.AuthHeader)
+	}
+}
+
 // Another 401 is handed on as it came, asked once; so is a 401 to a request
 // whose Authorization is the user's own header.
 func TestRetryOneAuthOnlyOnThatRefusal(t *testing.T) {

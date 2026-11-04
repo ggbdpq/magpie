@@ -43,6 +43,7 @@ func TestPlanQuotaSource(t *testing.T) {
 		{Provider{Anthropic: "https://api.minimax.io/anthropic"}, "https://api.minimax.io/v1/token_plan/remains", true, false},
 		// MiniMax China's host since mmx-cli 8746d48f
 		{Provider{Chat: "https://api.minimax.cn/v1", Anthropic: "https://api.minimax.cn/anthropic"}, "https://api.minimax.cn/v1/token_plan/remains", true, false},
+		{Provider{Chat: "https://api.mistral.ai/v1", Anthropic: "https://api.mistral.ai"}, "https://api.mistral.ai/v1/billing/budget", true, false},
 		{Provider{Chat: "https://api.deepseek.com"}, "", false, false},
 		{Provider{Chat: "https://ollama.com/v1", Anthropic: "https://ollama.com"}, "https://ollama.com/api/balance", true, false},
 		{Provider{Chat: "http://localhost:11434/v1"}, "", false, false}, // a local Ollama

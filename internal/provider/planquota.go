@@ -2,7 +2,8 @@ package provider
 
 // A plan bought with an API key — Zhipu's GLM Coding Plan (and Z.ai's),
 // Kimi Code, OpenCode Go, a Command Code plan, MiniMax's Coding (Token)
-// Plan, Ollama Cloud's included allowance, StepFun's Step Plan, Volcengine Ark's Coding and Agent Plans and
+// Plan, Ollama Cloud's included allowance, Mistral's included API and
+// Vibe Code budgets, StepFun's Step Plan, Volcengine Ark's Coding and Agent Plans and
 // Tencent Cloud's Token Plan 企业版 — has windows of allowance like a
 // subscription's, which the vendor tells to the key (StepFun only to a
 // sign-in, stepfun_plan.go; Volcengine and Tencent Cloud only to the
@@ -27,7 +28,11 @@ import (
 type planQuotaSource struct {
 	url    string
 	bearer bool // Zhipu takes the bare key as the Authorization
-	read   func(body []byte) (plan string, ws []QuotaWindow, err error)
+	// xkey, when set, sends the key in x-api-key alone: Mistral's
+	// billing queries take it there, not in Authorization (its OpenAPI
+	// spec's DashboardContextAuth)
+	xkey bool
+	read func(body []byte) (plan string, ws []QuotaWindow, err error)
 	// sure is set when the provider is a plan and not just the vendor: a
 	// pay-as-you-go GLM key has no windows to tell, and saying so on a card
 	// would only be noise
@@ -41,33 +46,37 @@ func planQuotaSourceOf(p Provider) (planQuotaSource, bool) {
 			// Go at Zen's gateway or at the inference API, the URL
 			// models.dev and Go's docs give since October 2026: the same
 			// key, told its windows at the same usage query
-			return planQuotaSource{"https://opencode.ai/zen/go/v1/usage", true, readOpenCodeGo, true}, true
+			return planQuotaSource{"https://opencode.ai/zen/go/v1/usage", true, false, readOpenCodeGo, true}, true
 		}
 		switch hostOf(base) {
 		case "open.bigmodel.cn":
-			return planQuotaSource{"https://open.bigmodel.cn/api/monitor/usage/quota/limit", false, readZhipuPlan, coding}, true
+			return planQuotaSource{"https://open.bigmodel.cn/api/monitor/usage/quota/limit", false, false, readZhipuPlan, coding}, true
 		case "api.z.ai":
-			return planQuotaSource{"https://api.z.ai/api/monitor/usage/quota/limit", false, readZhipuPlan, coding}, true
+			return planQuotaSource{"https://api.z.ai/api/monitor/usage/quota/limit", false, false, readZhipuPlan, coding}, true
 		case "api.kimi.com", "api.kimi.ai":
 			if strings.Contains(base, "/coding") {
-				return planQuotaSource{strings.TrimSuffix(kimiCodeBase(base), "/") + "/usages", true, readKimiCode, true}, true
+				return planQuotaSource{strings.TrimSuffix(kimiCodeBase(base), "/") + "/usages", true, false, readKimiCode, true}, true
 			}
 		case "api.commandcode.ai":
 			// a plan's key, from Studio or its sign-in, works on the keyed
 			// preset too, and is told the plan's 5-hour and weekly windows;
 			// a pay-as-you-go key has none, and no card
-			return planQuotaSource{"https://api.commandcode.ai/alpha/billing/credits", true, readCommandCodePlan, false}, true
+			return planQuotaSource{"https://api.commandcode.ai/alpha/billing/credits", true, false, readCommandCodePlan, false}, true
+		case "api.mistral.ai":
+			// a plan key's month's included budgets (#5087); an org with
+			// no plan tells none, and gets no card
+			return planQuotaSource{mistralBudgetURL, false, true, readMistralBudget, false}, true
 		case "api.minimaxi.com", "api.minimax.cn", "api.minimax.io":
 			// a Coding Plan key (sk-cp-…) is told its windows; a
 			// pay-as-you-go key isn't, and gets no card (#387).
 			// api.minimax.cn is MiniMax China's host since mmx-cli
 			// 8746d48f (2026-09-28), beside api.minimaxi.com, and
 			// answers the same query
-			return planQuotaSource{"https://" + hostOf(base) + "/v1/token_plan/remains", true, readMiniMaxPlan, false}, true
+			return planQuotaSource{"https://" + hostOf(base) + "/v1/token_plan/remains", true, false, readMiniMaxPlan, false}, true
 		case "ollama.com":
 			// Ollama Cloud's included allowance (#1888); a key with none
 			// gets no card
-			return planQuotaSource{ollamaBalanceURL, true, readOllamaPlan, false}, true
+			return planQuotaSource{ollamaBalanceURL, true, false, readOllamaPlan, false}, true
 		}
 	}
 	return planQuotaSource{}, false
@@ -595,7 +604,11 @@ func planBody(ctx context.Context, src planQuotaSource, key string) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	if src.bearer {
+	if src.xkey {
+		// the dashboard's queries take the key in x-api-key, not in
+		// Authorization (Mistral's billing ones do)
+		req.Header.Set("x-api-key", key)
+	} else if src.bearer {
 		req.Header.Set("Authorization", "Bearer "+key)
 	} else {
 		req.Header.Set("Authorization", key)
@@ -698,6 +711,10 @@ func vendorSaid(b []byte, status string) string {
 func planKeyWindows(ctx context.Context, p Provider, src planQuotaSource, key string) (plan string, ws []QuotaWindow, team bool, err error) {
 	if hostOf(src.url) == "api.commandcode.ai" {
 		plan, ws, err = cmdKeyWindows(ctx, src, key)
+		return plan, ws, false, err
+	}
+	if hostOf(src.url) == "api.mistral.ai" {
+		plan, ws, err = mistralKeyWindows(ctx, src, key)
 		return plan, ws, false, err
 	}
 	plan, ws, err = planWindows(ctx, src, key)

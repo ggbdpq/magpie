@@ -162,7 +162,13 @@ type Provider struct {
 	// offered on its Anthropic or Responses API by itself, as a custom
 	// provider's Searches does (#825): its config hook set searches on it
 	// (#2027), for a plugin in front of Claude's or Codex's API.
-	Searches  bool    `json:"searches,omitempty"`
+	Searches bool `json:"searches,omitempty"`
+	// CodexClient says the provider's upstream only admits the official
+	// Codex client (#4197): its config hook set codexClient on it, and
+	// Codex's identity headers go on to it as Codex sent them, as they do
+	// to a provider without an account.
+	CodexClient bool `json:"codexClient,omitempty"`
+
 	SignedIn  bool    `json:"signedIn"`
 	AuthType  string  `json:"authType"`
 	AccountID string  `json:"accountId"`

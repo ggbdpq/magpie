@@ -157,6 +157,10 @@ export const FakePlugin = async ({ client }) => ({
     // $FAKE_SEARCHES: the provider's upstream searches by itself (#2027),
     // as a plugin in front of Claude's API says
     if (process.env.FAKE_SEARCHES) cfg.provider[ID].searches = true
+    // $FAKE_CODEX_CLIENT: the provider's upstream only admits the official
+    // Codex client (#4197), as a Responses relay in front of OpenAI's API
+    // says; its codexClient flag is magpie's own field
+    if (process.env.FAKE_CODEX_CLIENT) cfg.provider[ID].codexClient = true
     // $FAKE_DECIDE: the provider serves a decision API too (#1514), asked
     // at its base /systemone through the loader's fetch: fake-clef is a
     // decision model it marks, jev-9 one magpie knows by its name.

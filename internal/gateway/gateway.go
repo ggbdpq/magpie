@@ -5675,13 +5675,16 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 			req.Header.Del("anthropic-beta")
 		}
 	}
-	if p.Account == nil && (to == provider.Responses || to == provider.Chat) && fromCodex(in) {
+	if (p.Account == nil || p.CodexClient) && (to == provider.Responses || to == provider.Chat) && fromCodex(in) {
 		// a relay that serves only Codex (Discord: "This account only
 		// allows Codex official clients") knows it by its User-Agent,
 		// originator and x-codex- headers, which go on as Codex sent them,
 		// as they do when Codex talks to the relay itself; its key to
 		// magpie never does. A test asked as Codex asks with them
-		// (provider.TestAs)
+		// (provider.TestAs). A plugin's provider says its upstream is one
+		// such relay (Provider.CodexClient, #4197): its own key still
+		// signs the request, Codex's sign-in and attestation never go on,
+		// and a plugin that says nothing keeps magpie's own shape
 		seen := http.Header{}
 		lite := liteKept(p, to, true, modelOf(body))
 		for k, vs := range in {

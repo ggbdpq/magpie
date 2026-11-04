@@ -324,6 +324,16 @@ type Provider struct {
 	// by its file id (gateway's deepseek_files.go, #5407).
 	ImageFilesOff bool `json:"imageFilesOff,omitempty"`
 
+	// CodexClient has a request Codex sends go to a plugin's provider with
+	// Codex's identity headers on, as they do to one without an account
+	// (#4197): a plugin whose upstream only admits the official Codex
+	// client says so (its config hook set codexClient on it, as searches
+	// is). The headers stay codexClientHeader's allowlist; the plugin's
+	// own key still signs the request, and Codex's ChatGPT sign-in and
+	// attestation never go on. Off, the default, a plugin's request keeps
+	// the shape its pinning tests say (Cursor's, Grok's).
+	CodexClient bool `json:"codexClient,omitempty"`
+
 	// PromptAsWritten, on Antigravity's subscription, has the system prompt
 	// go to Google exactly as the agent wrote it. By default the few lines
 	// Google answers with a 429 "Resource has been exhausted" whatever

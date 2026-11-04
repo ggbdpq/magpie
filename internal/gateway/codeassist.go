@@ -495,10 +495,20 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 		// this user turn before it, and so does this.
 		contents = append([]map[string]any{{"role": "user", "parts": []map[string]any{{"text": "[Continuing from previous AI thoughts...]"}}}}, contents...)
 	}
-	if n := len(contents); n > 0 && contents[n-1]["role"] == "model" {
+	// an Antigravity Claude keeps a tool's images in its response turn
+	// (the tool_result turn Anthropic reads them as) and answers it; the
+	// mixed-turn refusal is the Gemini-API readers' (Vertex AI, Gemini's
+	// own, Code Assist for a Gemini model).
+	n := len(contents)
+	mixedLast := !ag && n > 0 && endsWithToolImages(contents[n-1])
+	if n > 0 && (contents[n-1]["role"] == "model" || mixedLast) {
 		// nor one that ends with it: "Requests ending with a model turn
 		// are not supported" on Vertex AI, Code Assist and Antigravity
-		// alike (yycsyu: Codex compacting on gemini-3.8-flash). A user
+		// alike (yycsyu: Codex compacting on gemini-3.8-flash) — and
+		// Google answers a request whose last turn mixes a
+		// functionResponse with an image the same words, its own text
+		// for "this isn't a turn it can answer" (#1533's mixed-turn
+		// refusal, #4069: Codex's view_image as the last item). A user
 		// turn goes after it, as Gemini CLI keeps its history ending
 		contents = append(contents, map[string]any{"role": "user", "parts": []map[string]any{{"text": modelLastAsk(r)}}})
 	}
@@ -1738,6 +1748,25 @@ func stopFromGemini(s string) string {
 }
 
 // hasResponse says whether a Gemini turn's parts hold a tool's response.
+// endsWithToolImages says whether the turn is one Google answers with its
+// "ending with a model turn" words however the request ends: a turn
+// mixing a functionResponse with an image (#1533's refusal), or one that
+// is an image alone — what a tool's picture becomes once the mixed turn
+// is split (#4069: Codex's view_image as the last item).
+func endsWithToolImages(turn map[string]any) bool {
+	ps, _ := turn["parts"].([]map[string]any)
+	resp, image := false, false
+	for _, p := range ps {
+		if p["functionResponse"] != nil {
+			resp = true
+		}
+		if p["inlineData"] != nil {
+			image = true
+		}
+	}
+	return resp && image || image && !resp
+}
+
 func hasResponse(parts []map[string]any) bool {
 	for _, p := range parts {
 		if p["functionResponse"] != nil {

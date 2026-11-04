@@ -255,3 +255,41 @@ func TestGeminiToolResponseTurnHoldsNoText(t *testing.T) {
 		}
 	}
 }
+
+// An image a tool returned, as the request's last item: Google answers
+// the mixed last turn (a functionResponse with an inlineData beside it)
+// with its "ending with a model turn" words — #1533's mixed-turn refusal
+// wearing that message — so Codex's view_image died five tries in a row
+// and the turn with it (#4069). A user turn goes after it, as for a model
+// turn; a text tool result needs none (its turn is one Google answers).
+func TestGeminiToolImageLastTurnGetsAUserTurn(t *testing.T) {
+	r := &Request{
+		System: "test",
+		Messages: []Message{
+			{Role: "user", Parts: []Part{{Kind: Text, Text: "look at it"}}},
+			{Role: "assistant", Parts: []Part{{Kind: ToolCall, CallID: "call_1", Name: "view_image", Text: `{"path":"x.png"}`}}},
+			{Role: "user", Parts: []Part{
+				{Kind: ToolResult, CallID: "call_1", Text: "image result"},
+				{Kind: Image, MediaType: "image/png", Data: "pngbytes"},
+			}},
+		},
+	}
+	b, err := buildVertex(r, "gemini-4-argon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var q map[string]any
+	json.Unmarshal(b, &q)
+	cs := q["contents"].([]any)
+	last := cs[len(cs)-1].(map[string]any)
+	if last["role"] != "user" {
+		t.Fatalf("last turn %v", last["role"])
+	}
+	for _, p := range last["parts"].([]any) {
+		part := p.(map[string]any)
+		if txt, _ := part["text"].(string); txt != "" {
+			return // the guard's own ask, nothing of the tool's turn
+		}
+	}
+	t.Fatalf("the tool-image turn is still the last: %s", cs[len(cs)-1])
+}

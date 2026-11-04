@@ -33,7 +33,7 @@ func holdReads(t *testing.T, p Proxy, at time.Time, wait time.Duration) (*atomic
 	}
 	readWait = wait
 	sysCache.Lock()
-	sysCache.at, sysCache.p, sysCache.failed = at, p, false
+	sysCache.at, sysCache.p, sysCache.failed = at, p, 0
 	sysCache.Unlock()
 	t.Cleanup(func() {
 		// the read still under way ends before the next test reads
@@ -41,7 +41,7 @@ func holdReads(t *testing.T, p Proxy, at time.Time, wait time.Duration) (*atomic
 		readEnds(t, underWay())
 		readSystem, readWait = oldRead, oldWait
 		sysCache.Lock()
-		sysCache.at, sysCache.p, sysCache.failed = time.Time{}, Proxy{}, false
+		sysCache.at, sysCache.p, sysCache.failed = time.Time{}, Proxy{}, 0
 		sysCache.Unlock()
 	})
 	return &reads, answers
@@ -167,7 +167,7 @@ func TestFailedSystemProxyReadKeepsTheProxy(t *testing.T) {
 }
 
 // The tool that reads the system's proxy (scutil on macOS) is ended at
-// toolWait, and its read fails; what a tool that answers prints is parsed.
+// ToolWait, and its read fails; what a tool that answers prints is parsed.
 func TestSystemProxyToolThatHangsIsEnded(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("no echo or sleep program on Windows")
@@ -177,9 +177,9 @@ func TestSystemProxyToolThatHangsIsEnded(t *testing.T) {
 		t.Fatalf("a tool that answered read as %+v, %v", p, ok)
 	}
 
-	old := toolWait
-	toolWait = 100 * time.Millisecond
-	t.Cleanup(func() { toolWait = old })
+	old := ToolWait
+	ToolWait = 100 * time.Millisecond
+	t.Cleanup(func() { ToolWait = old })
 	start := time.Now()
 	if p, ok := readTool(parse, "sleep", "30"); ok || p.URL != "" {
 		t.Fatalf("a tool that never answered read as %+v, %v", p, ok)

@@ -504,7 +504,7 @@ var sysCache struct {
 	sync.Mutex
 	at     time.Time // when the last read ended; zero: nothing read yet
 	p      Proxy
-	failed bool // the last read failed, so p is from one before it
+	failed int // reads that failed in a row; the next is put off by backoff
 	// reading is closed when the read under way, begun at since, ends;
 	// nil while none is
 	reading chan struct{}
@@ -525,15 +525,43 @@ var (
 	readSystem = system
 )
 
+// failKeep: a read of the system's proxy that failed, or was ended at
+// ToolWait, is not tried again for a while — twice noneKeep after the
+// first, twice that after the next, and so on up to failKeep (#4169).
+// Each read is a fork(), and fork() is what killed the process there:
+// libmalloc's atfork parent handler found its own lock unlocked (the
+// stack ends at _os_unfair_lock_unowned_abort) and the process sat
+// spinning in its abort path for 57 minutes. A machine whose reads fail
+// — no proxy set, scutil gone — forked scutil every 2 seconds while
+// requests flowed; twice a minute, for nothing any of them said.
+var failKeep = time.Minute
+
+// nextKeep is the wait after a read that failed, the n-th in a row: the
+// none window doubled each time, capped at failKeep.
+func nextKeep(n int) time.Duration {
+	keep := noneKeep
+	for i := 0; i < n-1 && keep < failKeep; i++ {
+		keep *= 2
+	}
+	if keep > failKeep {
+		keep = failKeep
+	}
+	return keep
+}
+
 // System reads the system proxy, at most every 15 seconds while one is
 // set and every 2 while none is. One read runs at a time, outside the
 // lock. A read that fails keeps what was read before, and the one after
-// it holds nobody.
+// it holds nobody; the reads after failed ones are put off longer each
+// time (failKeep).
 func System() Proxy {
 	sysCache.Lock()
 	keep := systemKeep
 	if sysCache.p.URL == "" {
 		keep = noneKeep
+	}
+	if sysCache.failed > 0 {
+		keep = nextKeep(sysCache.failed)
 	}
 	if !sysCache.at.IsZero() && time.Since(sysCache.at) <= keep {
 		p := sysCache.p
@@ -545,7 +573,7 @@ func System() Proxy {
 		go refreshSystem(sysCache.reading)
 	}
 	var wait time.Duration
-	if sysCache.at.IsZero() || !sysCache.failed {
+	if sysCache.at.IsZero() || sysCache.failed == 0 {
 		wait = time.Until(sysCache.since.Add(readWait))
 	}
 	done := sysCache.reading
@@ -564,14 +592,21 @@ func System() Proxy {
 }
 
 // refreshSystem reads the system proxy into sysCache, then closes done.
-// A read that fails keeps what was read before, if anything was.
+// A read that fails keeps what was read before, if anything was, and the
+// reads after it are put off longer each time (failKeep); one that
+// answers resets that.
 func refreshSystem(done chan struct{}) {
 	p, ok := readSystem()
 	sysCache.Lock()
 	if ok || sysCache.at.IsZero() {
 		sysCache.p = p
 	}
-	sysCache.at, sysCache.failed, sysCache.reading = time.Now(), !ok, nil
+	sysCache.at, sysCache.reading = time.Now(), nil
+	if ok {
+		sysCache.failed = 0
+	} else {
+		sysCache.failed++
+	}
 	sysCache.Unlock()
 	close(done)
 }

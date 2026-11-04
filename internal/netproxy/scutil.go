@@ -9,15 +9,15 @@ import (
 	"github.com/yetone/magpie/internal/proc"
 )
 
-// toolWait is how long a tool that reads the system's proxy gets. scutil
+// ToolWait is how long a tool that reads the system's proxy gets. scutil
 // answers in milliseconds; one that never did held every request that
 // asked for the system's proxy (#3421).
-var toolWait = 10 * time.Second
+var ToolWait = 10 * time.Second
 
 // readTool runs a tool that prints the system's proxy and parses what it
-// prints. A run that fails, or is ended at toolWait, is a failed read.
+// prints. A run that fails, or is ended at ToolWait, is a failed read.
 func readTool(parse func(string) Proxy, name string, args ...string) (Proxy, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), toolWait)
+	ctx, cancel := context.WithTimeout(context.Background(), ToolWait)
 	defer cancel()
 	out, err := proc.CommandContext(ctx, name, args...).Output()
 	if err != nil {

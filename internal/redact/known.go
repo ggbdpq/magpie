@@ -218,6 +218,15 @@ func knownSpans(s string, o Options) []span {
 				// secret (dniray, v0.1.1965)
 				continue
 			}
+			if k.kind == "PERSON" && zhWordNotName(s, i, i+len(k.v)) {
+				// a word the reader reads as one where it stands goes as
+				// written, as modelSpans leaves it: the model took 白名单
+				// for a name once, and it went as its placeholder in every
+				// request after (tianyk, #4087). Where a role before it or
+				// a title after it says a person is meant, it is masked
+				// again still.
+				continue
+			}
 			best = &known[s[i:i+minKnown]][j]
 		}
 		if best != nil {

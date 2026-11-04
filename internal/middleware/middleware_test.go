@@ -220,6 +220,11 @@ export function onProvider(body, ctx) {
 	if st.Failures != 2 || !slices.Contains(st.Hooks, "onProvider") || !strings.Contains(st.Last, "null") {
 		t.Fatalf("state %+v", st)
 	}
+	// ag, k and reject returned a body; throw and null failed, and aren't
+	// changes
+	if st.Changed != 3 {
+		t.Fatalf("changed %+v", st)
+	}
 	var none *Run
 	if body := none.Tried([]byte(in), gwmw.To{}); string(body) != in {
 		t.Fatalf("a nil Run changed %s", body)
@@ -525,5 +530,93 @@ export function onEvent(ev, ctx) { ev.n = ctx.state.n; return ev; }`))
 	}
 	if held > int64(len(body)) {
 		t.Fatalf("8 streaming requests hold %d MB, their body is %d MB", held>>20, len(body)>>20)
+	}
+}
+
+// The Plugins row counts every call; Changed counts the calls that
+// changed something (#4271): a hook that returned a body, dropped an
+// event or turned a request away. A call whose hook passed its input
+// through unchanged (undefined) is a call, not a change, and so is one
+// that failed.
+func TestChangedCounts(t *testing.T) {
+	e := file(t, `
+export function onRequest(body, ctx) {
+  if (body.kind === "change") { body.c = 1; return body; }
+  if (body.kind === "reject") { ctx.reject(429, "no"); return; }
+  if (body.kind === "throw") throw new Error("bad");
+}
+export function onProvider(body) { body.p = 1; return body; }
+export function onAccount(account) {
+  if (account.provider === "skip") return {skip: true};
+}
+export function onEvent(ev) {
+  if (ev.type === "drop") return null;
+  if (ev.type === "pass") return;
+  ev.e = 1;
+  return ev;
+}
+export function onResponse(body) { body.r = 1; return body; }`)
+	use(t, e)
+	r := Begin(info())
+	defer r.End()
+
+	// undefined passes a request through unchanged: a call, no change
+	r.Request([]byte(`{}`))
+	if st := States()[e.Spec]; st.Calls != 1 || st.Changed != 0 || st.Failures != 0 {
+		t.Fatalf("after a pass-through: %+v", st)
+	}
+	// a returned body is a change
+	r.Request([]byte(`{"kind":"change"}`))
+	if st := States()[e.Spec]; st.Calls != 2 || st.Changed != 1 {
+		t.Fatalf("after a change: %+v", st)
+	}
+	// a turned-away request (ctx.reject) is a change, not a failure
+	if _, rej := r.Request([]byte(`{"kind":"reject"}`)); rej == nil {
+		t.Fatal("not rejected")
+	}
+	if st := States()[e.Spec]; st.Calls != 3 || st.Changed != 2 || st.Failures != 0 {
+		t.Fatalf("after a reject: %+v", st)
+	}
+	// a failed call is a failure, not a change
+	r.Request([]byte(`{"kind":"throw"}`))
+	if st := States()[e.Spec]; st.Calls != 4 || st.Changed != 2 || st.Failures != 1 {
+		t.Fatalf("after a throw: %+v", st)
+	}
+	// onProvider returning a body is a change
+	r.Tried([]byte(`{}`), gwmw.To{ID: "p1"})
+	if st := States()[e.Spec]; st.Calls != 5 || st.Changed != 3 {
+		t.Fatalf("after a try: %+v", st)
+	}
+	// onAccount returning {skip: true} is a change; returning nothing isn't
+	if skip, _ := r.Account(gwmw.Account{ID: "skip", Agent: "codex", Name: "n", Model: "m", User: "u@example.com", Plan: "p"}); !skip {
+		t.Fatal("not skipped")
+	}
+	if st := States()[e.Spec]; st.Calls != 6 || st.Changed != 4 {
+		t.Fatalf("after a skip: %+v", st)
+	}
+	r.Account(gwmw.Account{ID: "plain", Agent: "codex", Name: "n", Model: "m", User: "u@example.com", Plan: "p"})
+	if st := States()[e.Spec]; st.Calls != 7 || st.Changed != 4 {
+		t.Fatalf("after a passed account: %+v", st)
+	}
+	// onEvent returning a body, and returning null to drop an event, are
+	// changes; undefined isn't
+	rec := httptest.NewRecorder()
+	w, done := r.Wrap(rec)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(200)
+	w.Write([]byte("data: {\"type\":\"pass\"}\n\ndata: {\"type\":\"drop\"}\n\ndata: {\"type\":\"touch\"}\n\n"))
+	done()
+	if st := States()[e.Spec]; st.Calls != 10 || st.Changed != 6 {
+		t.Fatalf("after a stream: %+v", st)
+	}
+	// onResponse returning a body is a change
+	rec = httptest.NewRecorder()
+	w, done = r.Wrap(rec)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write([]byte(`{"a":1}`))
+	done()
+	if st := States()[e.Spec]; st.Calls != 11 || st.Changed != 7 || st.Failures != 1 {
+		t.Fatalf("after a whole reply: %+v", st)
 	}
 }

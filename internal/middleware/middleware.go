@@ -68,9 +68,13 @@ type mw struct {
 	pt     *points
 
 	calls, nanos, failures atomic.Int64
-	orders, rows, dropped  atomic.Int64 // strategy calls, onUsage calls, rows dropped
-	lastErr                atomic.Pointer[string]
-	logged                 atomic.Int64 // lines logged this minute, and the minute
+	// changed is the calls whose hook changed something: it returned a
+	// body, dropped an event, turned a request away or passed an account
+	// over (#4271)
+	changed               atomic.Int64
+	orders, rows, dropped atomic.Int64 // strategy calls, onUsage calls, rows dropped
+	lastErr               atomic.Pointer[string]
+	logged                atomic.Int64 // lines logged this minute, and the minute
 }
 
 // set is the middleware in force, in plugins.json's order.
@@ -430,8 +434,11 @@ type State struct {
 	Error    string   `json:"error,omitempty"` // why it didn't load
 	Calls    int64    `json:"calls"`
 	AvgMicro float64  `json:"avgMicros"`
-	Failures int64    `json:"failures"`
-	Last     string   `json:"lastError,omitempty"`
+	// Changed is the calls whose hook changed something, and is shown
+	// beside Calls when it differs from it (#4271)
+	Changed  int64  `json:"changed"`
+	Failures int64  `json:"failures"`
+	Last     string `json:"lastError,omitempty"`
 	// Strategies are the routings it serves ("<plugin>/<name>"), Orders
 	// how many times they were asked; Usage says it has onUsage, Rows how
 	// many rows it was given and Dropped how many it missed, the queue
@@ -451,7 +458,7 @@ func States() map[string]State {
 		out[spec] = State{Hooks: []string{}, Error: e}
 	}
 	for _, m := range s.list {
-		st := State{Hooks: []string{}, Calls: m.calls.Load(), Failures: m.failures.Load()}
+		st := State{Hooks: []string{}, Calls: m.calls.Load(), Changed: m.changed.Load(), Failures: m.failures.Load()}
 		for _, h := range []struct {
 			ok   bool
 			name string

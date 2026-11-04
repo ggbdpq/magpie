@@ -1,11 +1,12 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // Gateway middleware plugins on the Installed tab: a plugin that is only
-// middleware says what it runs (its hooks, calls, µs each, failures with
-// the last error in the tip) where a subscription plugin says what it
-// signs in to, and never "Signs in to nothing magpie can use"; one that
-// didn't load says why in red; one switched off says Off alone; a plugin
-// that is both keeps its sign-in line and gains the middleware line.
-// English and Chinese; the API is faked here.
+// middleware says what it runs (its hooks, calls, how many changed
+// something when not all did, µs each, failures with the last error in
+// the tip) where a subscription plugin says what it signs in to, and
+// never "Signs in to nothing magpie can use"; one that didn't load says
+// why in red; one switched off says Off alone; a plugin that is both
+// keeps its sign-in line and gains the middleware line. English and
+// Chinese; the API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -16,7 +17,7 @@ const assets = path.resolve(__dirname, "../assets");
 
 const ALIAS = "/Users/x/mw/alias.middleware.js", BROKEN = "/Users/x/mw/broken.middleware.js", OFF = "/Users/x/mw/off.middleware.js", BOTH = "/Users/x/mw/both";
 const state = { bun: true, bunVersion: "1.3.0", plugins: [
-  { spec: ALIAS, providers: [], moved: [], isMiddleware: true, middlewareOnly: true, optionsExample: { mapping: { fast: "deepseek-chat" } }, middleware: { hooks: ["onRequest", "onEvent"], events: ["content_block_delta"], calls: 12345, avgMicros: 0.93, failures: 2, lastError: "onEvent: TypeError: x is undefined" } },
+  { spec: ALIAS, providers: [], moved: [], isMiddleware: true, middlewareOnly: true, optionsExample: { mapping: { fast: "deepseek-chat" } }, middleware: { hooks: ["onRequest", "onEvent"], events: ["content_block_delta"], calls: 12345, changed: 12340, avgMicros: 0.93, failures: 2, lastError: "onEvent: TypeError: x is undefined" } },
   { spec: BROKEN, providers: [], moved: [], isMiddleware: true, middlewareOnly: true, middleware: { hooks: [], error: "exports none of onRequest, onEvent and onResponse", calls: 0, avgMicros: 0, failures: 0 } },
   { spec: OFF, off: true, providers: [], moved: [], isMiddleware: true, middlewareOnly: true },
   { spec: BOTH, providers: ["Acme"], moved: [], isMiddleware: true, middleware: { hooks: ["onResponse"], calls: 0, avgMicros: 0, failures: 0 } },
@@ -41,8 +42,8 @@ function server(lang, pluginState = state) {
 }
 
 const L = {
-  en: { installed: "Installed", chip: "Middleware", provider: "Provider", line: "Gateway middleware: onRequest, onEvent · 12,345 calls, 0.9 µs each", failed: "2 failed", last: /Last: onEvent: TypeError: x is undefined/, events: /onEvent sees only content_block_delta events/, broken: /^Middleware didn't load: exports none/, off: "Off", nothing: "Signs in to nothing", both: "Signs in to Acme", bothLine: "Gateway middleware: onResponse" },
-  zh: { installed: "已安装", chip: "中间件", provider: "供应商", line: "网关中间件：onRequest、onEvent · 调用 12,345 次，平均每次 0.9 µs", failed: "2 次失败", last: /最近一次：onEvent: TypeError: x is undefined/, events: /onEvent 只处理 content_block_delta 事件/, broken: /^中间件没有加载：exports none/, off: "关闭", nothing: "不能登录", both: "Acme", bothLine: "网关中间件：onResponse" },
+  en: { installed: "Installed", chip: "Middleware", provider: "Provider", line: "Gateway middleware: onRequest, onEvent · 12,345 calls, 12,340 changed, 0.9 µs each", failed: "2 failed", last: /Last: onEvent: TypeError: x is undefined/, events: /onEvent sees only content_block_delta events/, broken: /^Middleware didn't load: exports none/, off: "Off", nothing: "Signs in to nothing", both: "Signs in to Acme", bothLine: "Gateway middleware: onResponse" },
+  zh: { installed: "已安装", chip: "中间件", provider: "供应商", line: "网关中间件：onRequest、onEvent · 调用 12,345 次，12,340 次起效，平均每次 0.9 µs", failed: "2 次失败", last: /最近一次：onEvent: TypeError: x is undefined/, events: /onEvent 只处理 content_block_delta 事件/, broken: /^中间件没有加载：exports none/, off: "关闭", nothing: "不能登录", both: "Acme", bothLine: "网关中间件：onResponse" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {

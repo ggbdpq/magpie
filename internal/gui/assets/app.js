@@ -11993,20 +11993,35 @@ function renderModels(p) {
     for (const b of servesOpts) { b.classList.toggle("on", b.dataset.serves === now); b.setAttribute("aria-pressed", b.dataset.serves === now); }
     if (serves.isConnected) slide(serves, "serves");
   };
-  // every model at once (those the filter shows, when there is one), or none
+  // every model at once, or none: with a filter, both act on the models it
+  // shows only, and leave the others as they are
   const bulk = el("div", "mbulk");
+  const shownBy = (f, id) => {
+    if (!f) return true;
+    const m = p.models.find((x) => x.id === id) || { id };
+    return m.id.toLowerCase().includes(f) || (m.name || "").toLowerCase().includes(f) || (m.default || "").toLowerCase().includes(f);
+  };
   const allOn = el("button", "text action", t("Select all"));
   allOn.title = t("Pick every model listed that this provider can serve (those the filter shows)");
   allOn.onclick = () => {
     const f = (q?.value || "").trim().toLowerCase();
-    const ids = p.models.filter((m) => !noAPI(m)).filter((m) => !f || m.id.toLowerCase().includes(f) || (m.name || "").toLowerCase().includes(f) || (m.default || "").toLowerCase().includes(f)).map((m) => m.id);
+    const ids = p.models.filter((m) => !noAPI(m) && shownBy(f, m.id)).map((m) => m.id);
     draft.chosen = [...draft.chosen, ...ids.filter((id) => !draft.chosen.includes(id))];
     draft.none = true;
     draw();
   };
   const allOff = el("button", "text action", t("Select none"));
-  allOff.title = t("Unpick every model");
-  allOff.onclick = () => { draft.chosen = []; draft.none = true; draft.picking = false; draw(); };
+  allOff.title = t("Unpick every model (those the filter shows)");
+  allOff.onclick = () => {
+    const f = (q?.value || "").trim().toLowerCase();
+    // nothing picked yet: what the vendor's list serves (dashed) is what
+    // the filter unpicks from, as Select all picks beside it
+    const from = draft.chosen.length || !f || draft.picking || draft.none || decideOnly(p) ? draft.chosen : dashed();
+    draft.chosen = from.filter((id) => !shownBy(f, id));
+    draft.none = true;
+    if (!draft.chosen.length) draft.picking = false;
+    draw();
+  };
   bulk.append(allOn, allOff);
   // just the free ones, offered when the list has free and paid
   const isFree = (m) => m.free || m.zero || namedFree(m.id, m.name);
@@ -12015,7 +12030,7 @@ function renderModels(p) {
     freeOn.title = t("Pick only the free models (those the filter shows), unpicking the others");
     freeOn.onclick = () => {
       const f = (q?.value || "").trim().toLowerCase();
-      draft.chosen = p.models.filter((m) => isFree(m) && !noAPI(m) && (!f || m.id.toLowerCase().includes(f) || (m.name || "").toLowerCase().includes(f) || (m.default || "").toLowerCase().includes(f))).map((m) => m.id);
+      draft.chosen = p.models.filter((m) => isFree(m) && !noAPI(m) && shownBy(f, m.id)).map((m) => m.id);
       draft.none = true;
       draw();
     };

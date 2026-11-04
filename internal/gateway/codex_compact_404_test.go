@@ -1,7 +1,9 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/base64"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -153,5 +155,70 @@ func TestCodexCompactUpstreamFailedAccountStays(t *testing.T) {
 		if code == 200 || strings.Contains(string(f.got), "This is the conversation so far") {
 			t.Errorf("%d: %d %s (calls %d)", status, code, body, f.calls)
 		}
+	}
+}
+
+// #3106 (LionGaokk): the turn a network drop interrupted left an assistant
+// message with neither content nor tool_calls in the conversation. Every
+// ordinary turn is answered — #2599's silentAssistant leaves the turn out
+// of what a Chat upstream is sent — but compaction is the one request that
+// carries the whole conversation, so the one that still holds the turn,
+// and the relay turned its summary request away for it, "AUBO: Invalid
+// assistant message: content or tool_calls must be set", on every model of
+// that upstream, while a laxer one answered the very same request. That
+// refusal is none of the asks-again-as-text cases, so codexCompact handed
+// the 400 back to Codex as it came and the compaction aborted,
+// reconnecting. Asked as text, the conversation has no assistant turns to
+// refuse.
+const compact3106Refusal = `{"error":{"message":"AUBO: Invalid assistant message: content or tool_calls must be set","type":"invalid_request_error"}}`
+
+func TestCodexCompactMessagesRefusedAsksAgainAsText(t *testing.T) {
+	f := &fake{t: t, reply: wholeSummary(provider.Chat)}
+	f.refuse = func(body []byte) (int, string) {
+		if strings.Contains(string(body), "This is the conversation so far") {
+			return 0, ""
+		}
+		return 400, compact3106Refusal
+	}
+	setup(t, provider.Chat, f)
+	code, body := codexPost(t, compact404Request)
+	if code != 200 {
+		t.Fatalf("%d %s", code, body)
+	}
+	if got := compactedText(t, body); got != "SUMMARY" {
+		t.Errorf("summary %q", got)
+	}
+	if f.calls != 2 || strings.Contains(string(f.got), `"role":"assistant"`) {
+		t.Errorf("asked %d times, the last with assistant turns in it: %s", f.calls, f.got)
+	}
+}
+
+// A refusal of the messages' shape is the messages, not the ask: only a
+// 400 saying so asks again as text. A 500 saying it is the upstream's
+// failure and a 400 saying anything else is another refusal — either goes
+// back to Codex as it came, the next candidate asked.
+func TestMessagesRefusedOnlyMatchesBadRequestShapeErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{"the reported error", http.StatusBadRequest, compact3106Refusal, true},
+		{"bare words", http.StatusBadRequest, `{"error":{"message":"Invalid assistant message"}}`, true},
+		{"tool order", http.StatusBadRequest, `{"error":{"message":"Invalid request: an assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'"}}`, true},
+		{"tool answer first", http.StatusBadRequest, `{"error":{"message":"messages with role 'tool' must be a response to a preceding message with 'tool_calls'"}}`, true},
+		{"another 400", http.StatusBadRequest, relayApex400, false},
+		{"nothing said", http.StatusBadRequest, ``, false},
+		{"at 500", http.StatusInternalServerError, compact3106Refusal, false},
+		{"at 401", http.StatusUnauthorized, compact3106Refusal, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &recorder{status: tc.status}
+			rec.body = *bytes.NewBufferString(tc.body)
+			if got := refusesMessages(rec); got != tc.want {
+				t.Errorf("refusesMessages(%d, %q) = %v", tc.status, tc.body, got)
+			}
+		})
 	}
 }

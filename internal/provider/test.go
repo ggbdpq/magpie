@@ -468,7 +468,10 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 
 // keySeeing is p with the key a test of model on proto goes with: one made
 // for that API, else one made for any, that sees the model. A provider
-// without keys is left as it is.
+// without keys is left as it is. One whose keys are all made for a
+// protocol it has no URL for is asked whole, on the URLs it has, as the
+// gateway asks it (#1702, #4056), whatever its keys' lists say of the
+// model.
 func (p Provider) keySeeing(proto Protocol, model string) (Provider, bool) {
 	keys := p.KeysOn()
 	if len(keys) == 0 {
@@ -482,7 +485,12 @@ func (p Provider) keySeeing(proto Protocol, model string) (Provider, bool) {
 			}
 		}
 	}
-	return p, false
+	for _, k := range keys {
+		if q := p.WithKey(k); len(q.Speaks()) > 0 {
+			return p, false
+		}
+	}
+	return p, true
 }
 
 // testOn is model's test on proto's endpoint with p's key, asked for by
@@ -498,6 +506,12 @@ func (p Provider) testOn(ctx context.Context, client string, proto Protocol, mod
 
 // keyFor is p using the first key on that works with proto: one made for
 // it, else one made for any. A provider without keys is left as it is.
+// One whose keys are all made for a protocol it has no URL for is left as
+// it is too: the gateway asks it whole, on the URLs it has (#1702), so
+// the endpoint is asked with the key as it is, and what the vendor
+// answered is said, not "no key is on" (#4056: a relay's key picked up
+// for Anthropic alone, its URL typed in the OpenAI field only, was said
+// to be missing while requests were answered with it).
 func (p Provider) keyFor(proto Protocol) (Provider, bool) {
 	keys := p.KeysOn()
 	if len(keys) == 0 {
@@ -510,7 +524,12 @@ func (p Provider) keyFor(proto Protocol) (Provider, bool) {
 			}
 		}
 	}
-	return p, false
+	for _, k := range keys {
+		if q := p.WithKey(k); len(q.Speaks()) > 0 {
+			return p, false
+		}
+	}
+	return p, true
 }
 
 // zenPublic is whether p is OpenCode Zen asked with the key OpenCode

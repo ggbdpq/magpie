@@ -2867,6 +2867,7 @@ func (h *holdWriter) scan() {
 				return
 			}
 			h.thinking = true
+			h.leadThinking()
 			continue
 		case eventError, eventRefusalError:
 			h.failure, h.failMsg = status, msg
@@ -2974,6 +2975,9 @@ type keptAlive struct {
 	// Only opted-in Claude cache reporting can defer initial keepalives.
 	// Selection releases it before process startup; expiry keeps the stream alive.
 	cacheReportUntil time.Time
+	// lead, whether the thinking's own opening frames went out (#4166):
+	// once a stream, never twice.
+	lead bool
 }
 
 // agentQuietMost is the longest a streaming Responses agent goes with no
@@ -3013,6 +3017,37 @@ func (a *keptAlive) tooQuiet(d time.Duration) bool {
 // idle timeout for a reasoning model, 240s, ended the turn first (#751). A
 // comment is no event in any protocol, so another account may still answer
 // after it, its stream going on in the same response (pass).
+// leadThinking tells the agent's stream that the try is thinking before
+// any of the thinking is given: the reply's own message_start (the model
+// the agent asked, as streamError names it) and an empty thinking block's
+// start, none of the try's words (#4166). An agent's "thinking with …
+// effort" line comes from those two frames; the thinking itself stays
+// held for a refusal after it (#248), and the next member's reply, when
+// one is asked for, follows these frames whole — a frame that says
+// nothing of the try's answer doesn't give the agent half of one reply
+// and half of another. Anthropic's stream only: Chat's first chunk and
+// Responses' response.created go out with the keepalives already, and a
+// Gemini stream takes no comment and no extra frames.
+func (h *holdWriter) leadThinking() {
+	a := h.alive
+	if a == nil || a.proto != provider.Anthropic || !h.stream || a.lead {
+		return
+	}
+	a.lead = true
+	if !a.sent {
+		h.keepAlive() // the 200 and the headers go first
+	}
+	sw := newSSEWriter(h.w)
+	sw.begun = true
+	model := a.model
+	ev := Event{Model: model}
+	e := &anthropicEncoder{w: sw, model: model}
+	e.start(ev)
+	e.openBlock(Thinking, map[string]any{"thinking": "", "signature": ""})
+	h.flush()
+	a.at = time.Now()
+}
+
 func (h *holdWriter) keepAlive() {
 	a := h.alive
 	// a Gemini stream has none, as geminiEncoder.keepalive: agy fails on

@@ -83,13 +83,7 @@ func probeable(c candidate, r Rest, header http.Header, now time.Time) bool {
 		// refused the same till then (azure_suspended.go)
 		return r.By == "suspended" && probeBefore(now.Add(restProbeSteps[0]), r.Until)
 	}
-	if retryAfter(header, now) > 0 || r.Why != failOther {
-		return false
-	}
-	if r.By != "backoff" {
-		return false
-	}
-	if r.Status < 500 && r.Status != http.StatusRequestTimeout && r.Status != 0 {
+	if retryAfter(header, now) > 0 || !outageRest(r) {
 		return false
 	}
 	return probeBefore(now.Add(restProbeSteps[0]), r.Until)

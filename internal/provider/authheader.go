@@ -37,8 +37,8 @@ func (p Provider) BothAuth() bool {
 // both x-api-key and Authorization — said outright (catalog.BothAuthRefused,
 // a 401) or read as an invalid key with no word about the headers
 // (catalog.AuthKeyRefused, a 403, #5021) — the answer to req asked again
-// with each alone, x-api-key first, and remembers for p the one it took
-// (LearnAuthHeader). do sends a request as req was sent.
+// with each alone, x-api-key first, and remembers for p the one that
+// answered (LearnAuthHeader). do sends a request as req was sent.
 func RetryOneAuth(p Provider, req *http.Request, res *http.Response, do func(*http.Request) (*http.Response, error)) (*http.Response, error) {
 	if res == nil || res.StatusCode != http.StatusUnauthorized && res.StatusCode != http.StatusForbidden || p.AuthHeader != AuthBoth || !p.BothAuth() || req.GetBody == nil {
 		return res, nil
@@ -67,10 +67,11 @@ func RetryOneAuth(p Provider, req *http.Request, res *http.Response, do func(*ht
 		if res, err = do(again); err != nil {
 			return nil, err
 		}
-		if res.StatusCode != http.StatusUnauthorized && res.StatusCode != http.StatusForbidden {
-			LearnAuthHeader(p.ID, only)
-			return res, nil
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			continue // not an answer: a header the vendor doesn't take can come as 404 (#5021's retest), an outage as 5xx — none of these is one that worked
 		}
+		LearnAuthHeader(p.ID, only)
+		return res, nil
 	}
 	return res, nil
 }

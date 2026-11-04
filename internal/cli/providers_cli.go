@@ -35,7 +35,7 @@ const providerUsage = `usage:
   magpie provider <id>                    show one provider and its models
   magpie provider add <preset> <key>      add a preset vendor   e.g. magpie provider add deepseek sk-…
                                           again, it adds another (deepseek-2); k=v pairs too: id, name, header.X-Foo
-  magpie provider add <name> k=v…         add a custom vendor   k: url, anthropic, responses, gemini, decide, key, models, catalog, icon, header.X-Foo, balance, balance.path, balance.method, balance.token, models.url, list, search, user-agent,
+  magpie provider add <name> k=v…         add a custom vendor   k: url, anthropic, responses, gemini, decide, key, key.protocol, models, catalog, icon, header.X-Foo, balance, balance.path, balance.method, balance.token, models.url, list, search, user-agent,
                                           access.key, access.secret (a Volcengine access key, or a Tencent Cloud SecretId and SecretKey, for its plan's windows)
   magpie provider set <id> k=v…           change a provider's settings, with the same k=v pairs as add;
                                           codex=as-sent sends Codex's Responses requests as Codex sent them
@@ -552,7 +552,13 @@ func providerCmd(args []string) error {
 		if err := provider.Save(*p); err != nil {
 			return err
 		}
-		fmt.Println(green.Render("✓"), p.Name, "key", muted.Render(provider.Mask(p.Key)))
+		said := muted.Render(provider.Mask(p.Key))
+		if p.KeyProtocol != "" {
+			// the key keeps the protocol picked for the one before it:
+			// said, with the way off it (#4056)
+			said += muted.Render("  " + string(p.KeyProtocol) + " only · magpie provider set " + p.ID + " key.protocol=any takes it off")
+		}
+		fmt.Println(green.Render("✓"), p.Name, "key", said)
 		return nil
 	case "icon":
 		if len(rest) != 2 {
@@ -1009,7 +1015,13 @@ func showProviderAsking(p provider.Provider, ask bool) error {
 		kv("signs with", creds)
 		kv("as", v.Impersonate)
 	case p.Key != "":
-		kv("key", muted.Render(provider.Mask(p.Key)))
+		key := muted.Render(provider.Mask(p.Key))
+		if p.KeyProtocol != "" {
+			// the one protocol the key works with (#4056), with the way
+			// off it
+			key += muted.Render("  " + string(p.KeyProtocol) + " only · magpie provider set " + p.ID + " key.protocol=any takes it off")
+		}
+		kv("key", key)
 	case p.Ready():
 		kv("key", muted.Render("none needed"))
 	default:
@@ -1217,6 +1229,20 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			}
 		case "key":
 			p.Key = v
+		case "key.protocol":
+			// the one protocol the key works with, as the editor's Key
+			// protocol does; any, or empty, is all of them (#4056: a
+			// relay's key picked up for Anthropic alone, with its URL
+			// typed in the OpenAI field, could only be freed by editing
+			// providers.json by hand)
+			switch proto := provider.Protocol(strings.ToLower(strings.TrimSpace(v))); proto {
+			case "", "any":
+				p.KeyProtocol = ""
+			case provider.Chat, provider.Responses, provider.Anthropic, provider.Gemini:
+				p.KeyProtocol = proto
+			default:
+				return fmt.Errorf("key.protocol=chat|responses|anthropic|gemini|any, not %q", v)
+			}
 		case "catalog":
 			p.Catalog = v
 		case "models":

@@ -2185,6 +2185,10 @@ async function info(id, key, strict, limit, quiet, signal) {
     // tool offered on its Anthropic or Responses API by itself, so a
     // client's web_search goes to it as sent (#2027)
     searches: cfg?.searches === true,
+    // magpie's own field: the provider's upstream only admits the official
+    // Codex client, so Codex's identity headers go on to it as Codex sent
+    // them (#4197)
+    codexClient: cfg?.codexClient === true,
     models: {},
   }
   if (md) for (const m of Object.values(md.models ?? {})) out.models[m.id] = fromModelsDev(md, m)
@@ -2638,6 +2642,7 @@ function rowOf(id, a, keys, stored, p, own) {
     options: optionsOf(a.auth),
     decide: p.decide === true,
     searches: p.searches === true,
+    codexClient: p.codexClient === true,
     maxConcurrency: concurrencyOf(a),
     maxAccounts: atOnceOf(a),
     signedIn: keys.length > 0,

@@ -632,6 +632,10 @@ func pluginProviderServing(pp plugin.Provider, l pluginLogin, keys []string) Pro
 	// searches, as a relay is said to (#2027): its client's web_search goes
 	// to it as sent, on the APIs it has an address for (searchesItself)
 	p.Searches = pp.Searches
+	// one in front of a relay that only admits the official Codex client
+	// says so (#4197): Codex's identity headers go on to it as Codex sent
+	// them, as they do to a provider without an account
+	p.CodexClient = pp.CodexClient
 	return p
 }
 

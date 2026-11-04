@@ -72,13 +72,7 @@ var restProbes = struct {
 // A Retry-After the vendor sent with it is its word on when to ask again,
 // which a list asked sooner would go around.
 func probeable(c candidate, r Rest, header http.Header, now time.Time) bool {
-	if retryAfter(header, now) > 0 || c.p.Account != nil || r.Model != "" || r.Key != c.restKey() || r.Why != failOther || !c.p.ListAsks() {
-		return false
-	}
-	if r.By != "backoff" {
-		return false
-	}
-	if r.Status < 500 && r.Status != http.StatusRequestTimeout && r.Status != 0 {
+	if retryAfter(header, now) > 0 || c.p.Account != nil || r.Model != "" || r.Key != c.restKey() || !outageRest(r) || !c.p.ListAsks() {
 		return false
 	}
 	return probeBefore(now.Add(restProbeSteps[0]), r.Until)

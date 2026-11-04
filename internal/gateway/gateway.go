@@ -3157,6 +3157,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				// is back: none is asked, and the agent is told so at once
 				// (#1772)
 				cands = cands[:i+1]
+			} else if _, _, ok := outageHeld(cands[i:]); ok {
+				// every key left rests twice failed after its vendor could
+				// not be reached: none is asked, and the agent is told so
+				// at once (#2945)
+				cands = cands[:i+1]
 			}
 		}
 		if by := accountSkipped(r.Context(), c.p, c.model); by != "" {
@@ -3526,6 +3531,25 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// the answer names who held it, as one asked would: a magpie
 			// using this one rests that model of it alone (remoteModelRest)
 			noteMember(hw, r, c.p, c.model)
+			writeError(hw, from, call.Status, msg)
+		} else if rested, back, ok := outageHeld(cands[i:]); ok && last {
+			// it rests twice failed after its vendor could not be reached
+			// at all — the connection dead, a dial that hung, a 5xx that
+			// says nothing of why — and so does every key that was left
+			// (#2945: a relay down for 32 minutes was really asked 706
+			// times over 55 conversations, every request its resting keys'
+			// one probe): its failure is given again without asking, with
+			// when the soonest of them is back as Retry-After, for an
+			// agent that waits as told to ask then. Its list is asked in
+			// the background meanwhile (rest_probe.go), which lifts the
+			// rest as soon as the vendor answers again
+			msg := fmt.Sprintf("%s (unreachable: not asked again before %s)", c.p.Name, heldClock(back, time.Now()))
+			held, heldBack, call.Status, call.Error = true, back, cmp.Or(rested.Status, http.StatusBadGateway), msg
+			// the answer names who held it, as one asked would
+			noteMember(hw, r, c.p, c.model)
+			if wait := time.Until(back); wait > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
+			}
 			writeError(hw, from, call.Status, msg)
 		} else {
 			// a stream that fails before anything is said is let go at
@@ -4604,7 +4628,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				break
 			}
 		}
-		if wait, ok := passing(hw.code(), hw.header, hw.errBody(), again); ok && !protected && !sameRefusal && !hw.turnedAway && hw.failed() && waitFrom.IsZero() && !kept.tooQuiet(wait) {
+		if wait, ok := passing(hw.code(), hw.header, hw.errBody(), again); ok && !held && !protected && !sameRefusal && !hw.turnedAway && hw.failed() && waitFrom.IsZero() && !kept.tooQuiet(wait) {
 			// nobody else is left: the same one again, after a moment (not
 			// what Antigravity turned away: it turns it away again; nor
 			// once the group's patience is spent)

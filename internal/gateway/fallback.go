@@ -1391,6 +1391,44 @@ func quotaStatus(status int) bool {
 	return status == http.StatusTooManyRequests || status == http.StatusPaymentRequired
 }
 
+// outageRest says r is a rest taken after the vendor could not be reached
+// at all — a 5xx, a 408, no answer of its own at all — for as long as its
+// ladder guesses ("backoff"), none of it a time the vendor named: the
+// class of rest the background list is asked over (rest_probe.go), and the
+// class a request is answered from once it is twice failed (outageHeld).
+func outageRest(r Rest) bool {
+	return r.Why == failOther && r.By == "backoff" &&
+		(r.Status >= 500 || r.Status == http.StatusRequestTimeout || r.Status == 0)
+}
+
+// outageHeld is, when every candidate of cs rests after its vendor could
+// not be reached — the connection dead, a dial that hung, a 5xx that says
+// nothing of why — the rest of the first, and when the soonest of them is
+// back: asked, each would fail the same (#2945: a relay down for 32
+// minutes was really asked 706 times over 55 conversations, every request
+// its resting keys' one probe). Only a ladder twice climbed holds, a
+// first failure being a moment's, as a key out of its allowance is held
+// once refused twice (quotaHeld, #1772); its rest is asked again in the
+// background meanwhile (rest_probe.go), which lifts it as soon as the
+// vendor answers again.
+func outageHeld(cs []candidate) (Rest, time.Time, bool) {
+	var first Rest
+	var back time.Time
+	for i, c := range cs {
+		r, ok := restingOf(c)
+		if !ok || !outageRest(r) || r.Failures < 2 {
+			return Rest{}, time.Time{}, false
+		}
+		if i == 0 {
+			first = r
+		}
+		if back.IsZero() || r.Until.Before(back) {
+			back = r.Until
+		}
+	}
+	return first, back, len(cs) > 0
+}
+
 // soonestBack is when the first of cs is back from its rest, or asked
 // again before it is (Rest.asksAt); false when one of them isn't resting.
 func soonestBack(cs []candidate) (time.Time, bool) {

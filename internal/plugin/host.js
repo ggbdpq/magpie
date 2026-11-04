@@ -2223,13 +2223,16 @@ function methods(auth) {
 
 // iconOf is the picture a plugin gives its provider, magpie's own field
 // (OpenCode's providers have none): the auth hook's icon, else
-// package.json's magpie.icon. An https URL or a data:image URI; magpie
-// checks and keeps it (internal/provider), nothing is fetched here.
+// package.json's magpie.icon. An https URL, a data:image URI, or the name
+// of an icon magpie bundles, which the page draws from its own files
+// (#5103); magpie checks and keeps a picture (internal/provider), nothing
+// is fetched here.
 function iconOf(a) {
   const ok = (v) => {
     const s = typeof v === "string" ? v.trim() : ""
-    // a data URI of a picture over 1 MB, magpie's most, isn't carried
-    return s.length <= 3 << 19 && /^(https:\/\/|data:image\/)/i.test(s) ? s : ""
+    // a data URI of a picture over 1 MB, magpie's most, isn't carried;
+    // a bare name has neither a scheme nor a path in it
+    return s.length <= 3 << 19 && (s !== "" && !/[:/]/.test(s) || /^(https:\/\/|data:image\/)/i.test(s)) ? s : ""
   }
   const own = ok(a.auth.icon)
   if (own || !a.target) return own

@@ -88,11 +88,15 @@ func keepPlugIcon(k, icon string) {
 // pluginOwnIcon is the Icon value of the picture a plugin gave, "" while
 // there is none to show. A data:image URI is kept at once; an https URL
 // is fetched in the background, through FetchIcon's checks, and shows
-// once it is in (a failure is tried again in an hour). Anything else is
-// refused.
+// once it is in (a failure is tried again in an hour); a name without a
+// scheme or a path is a bundled icon's, given as it is as a market one
+// is (#5103). Anything else is refused.
 func pluginOwnIcon(said string) string {
 	if said == "" {
 		return ""
+	}
+	if !MarketPicture(said) {
+		return said
 	}
 	sum := sha256.Sum256([]byte(said))
 	k := hex.EncodeToString(sum[:16])

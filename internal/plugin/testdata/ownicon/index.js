@@ -25,3 +25,11 @@ export const Lime = async () => ({
     methods: [{ type: "api", label: "API key", placeholder: 42 }],
   },
 })
+
+export const Orange = async () => ({
+  auth: {
+    provider: "orange",
+    icon: "deepseek-color", // a built-in icon's name, given as it is (#5103)
+    methods: [{ type: "api", label: "Orange API key" }],
+  },
+})

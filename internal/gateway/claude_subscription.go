@@ -137,8 +137,9 @@ const (
 
 // parkLongest is how long a run started anew for each turn (Cursor)
 // waits on its caller's tool results. A caller that quit, or was stopped,
-// sends none; one whose tool ran longer gets its answer all the same, from a
-// run started with the whole conversation, as its next turn would be.
+// sends none; one whose tool ran longer gets its answer all the same, from
+// a run resumed of the session the dead one left on the shelf (#4863), as
+// a next turn is.
 var parkLongest = 5 * time.Minute
 
 // A run whose reply called nothing but a tool that ends its caller's turn
@@ -155,7 +156,7 @@ var (
 // once they have waited parkLongest, the longest waiting let go first: a
 // caller stopped with its calls unanswered (a subagent its workflow ended)
 // sends none, and each is a Claude Code process. One let go that does get
-// its results is started anew with the whole conversation.
+// its results goes on from the session it left on the shelf (#4863).
 const parkedMost = 16
 
 type subscriptionRun struct {
@@ -350,6 +351,12 @@ type subscriptionRun struct {
 	// began waiting on them
 	asked    []string
 	parkedAt time.Time
+	// parkKey is where the request carrying those results comes by
+	// (turnKey through the reply, park): a run that dies while it waits on
+	// the calls leaves its session on the shelf there, for the results —
+	// and the turn they end — to go on from, as a next turn goes on from a
+	// shelved one (#4863). Under mu.
+	parkKey string
 
 	// started is when it was started, and active when its turn under way
 	// began (r.mu), for `magpie claude-code runs` (claudeRunList)
@@ -2172,7 +2179,8 @@ func (r *subscriptionRun) ended(req *Request, said, stop string, ok bool) {
 		r.abortFor("its reply failed or was cut short")
 		return
 	case stop == "tool":
-		r.park()
+		reply := Message{Role: "assistant", Parts: []Part{{Kind: Text, Text: said}}}
+		r.park(turnKey(r.owned(), req, append(req.Messages[:len(req.Messages):len(req.Messages)], reply)))
 		return // it waits on its tool calls
 	case r.stdin == nil:
 		return // it ends by itself
@@ -2387,6 +2395,21 @@ func (b *subscriptionBridge) shelve(run *subscriptionRun) {
 		delete(b.shelf, oldKey)
 		go oldest.discard()
 	}
+}
+
+// shelveParked leaves the session of a run that died waiting on its reply's
+// tool calls on the shelf at key, where the request carrying the results
+// goes by (#4863): a parked run has no idle key of its own, so the key is
+// the one park was given. A run let go while it waits (oversized, 3) dies
+// this way too, its session kept as one let go past idleMost keeps its,
+// and the results' turn goes on from it instead of a new Claude Code being
+// told the whole conversation.
+func (b *subscriptionBridge) shelveParked(run *subscriptionRun, key string) {
+	b.mu.Lock()
+	run.idleKey, run.idleAt = key, time.Now()
+	b.shelve(run)
+	run.idleKey = ""
+	b.mu.Unlock()
 }
 
 // unshelve takes the saved session a request's conversation goes on
@@ -3024,8 +3047,11 @@ func (r *subscriptionRun) answered(raw json.RawMessage) {
 
 // park leaves the run waiting on its reply's tool calls: parkLongest for
 // a run started anew for each turn, finalGrace when they end the caller's
-// turn, and among the parkedMost longest waiting otherwise.
-func (r *subscriptionRun) park() {
+// turn, and among the parkedMost longest waiting otherwise. key is where
+// the results' request comes by, for the session to be shelved at should
+// the run die waiting (removeRun), as one let go past idleMost leaves
+// its for the next turn.
+func (r *subscriptionRun) park(key string) {
 	r.mu.Lock()
 	final := len(r.asked) > 0
 	for _, name := range r.asked {
@@ -3033,6 +3059,7 @@ func (r *subscriptionRun) park() {
 	}
 	now := time.Now()
 	r.parkedAt = now
+	r.parkKey = key
 	// the calls just made answer the conversation the run last heard
 	for id, l := range r.lines {
 		if l.seq > r.parkedSeq && l.told == "" {
@@ -3053,7 +3080,7 @@ func (r *subscriptionRun) park() {
 		return
 	}
 	if why, over := r.oversized(3); over {
-		log.Printf("claude: Claude Code pid %d (%s) is let go while it waits on tool calls: %s; their results go to a new one told the whole conversation", r.pid(), r.model, why)
+		log.Printf("claude: Claude Code pid %d (%s) is let go while it waits on tool calls: %s; their results go on from the session it leaves on the shelf", r.pid(), r.model, why)
 		r.abortFor(why)
 		return
 	}
@@ -5212,6 +5239,7 @@ func (r *subscriptionRun) continueWith(results []Part, said string, tools []brid
 	}
 	r.mu.Lock()
 	r.parkedAt = time.Time{}
+	r.parkKey = ""
 	r.mu.Unlock()
 	ch := r.attach()
 	if r.begin != nil {
@@ -5856,8 +5884,18 @@ func (b *subscriptionBridge) removeRun(run *subscriptionRun) {
 	b.mu.Unlock()
 	_ = os.RemoveAll(run.tmp)
 	run.mu.Lock()
-	sid, sessions, shelved := run.sessionID, run.sessions, run.shelved
+	sid, sessions, shelved, parkKey := run.sessionID, run.sessions, run.shelved, run.parkKey
 	run.mu.Unlock()
+	if !shelved && parkKey != "" {
+		// it died waiting on its reply's tool calls: its session is the
+		// conversation as Claude Code asked it of Anthropic, whose cache
+		// has it — on the shelf where the results go by, not deleted
+		// (#4863)
+		b.shelveParked(run, parkKey)
+		run.mu.Lock()
+		shelved = run.shelved
+		run.mu.Unlock()
+	}
 	if !shelved {
 		removeSession(sessions, sid)
 	}

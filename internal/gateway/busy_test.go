@@ -78,7 +78,7 @@ func TestBusy(t *testing.T) {
 	if b := s.Busy(); b.Tools != 0 {
 		t.Fatalf("a run not waiting: %+v", b)
 	}
-	run.park()
+	run.park("")
 	if b := s.Busy(); b.Tools != 1 || !b.Any() {
 		t.Fatalf("a run waiting on tool results: %+v", b)
 	}

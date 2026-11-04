@@ -59,9 +59,9 @@ func claudeRunBudget() (int64, string) {
 // (2 a whole turn, 3 a run that waits on tool calls), and logs what it
 // holds either way: a run's growth across turns is in the log, for an OOM
 // to be put down to the process it was. One waiting on its caller's tool
-// results has no session to shelve there: let go, it is started anew with
-// the whole conversation, which Anthropic's cache has not seen, so it is
-// let go only past half as much again.
+// results has no idle key to be shelved by: let go, it dies waiting, and
+// leaves its session on the shelf where the results go by (shelveParked),
+// so it is let go only past half as much again.
 func (r *subscriptionRun) oversized(share int64) (string, bool) {
 	r.mu.Lock()
 	t := r.tree

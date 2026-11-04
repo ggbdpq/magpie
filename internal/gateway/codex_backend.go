@@ -3619,7 +3619,7 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
 	if late() {
 		local = lateSummary()
 		rec, res, err = &recorder{header: http.Header{}, status: 200}, compactResult{}, nil
-	} else if first := rec.status; lacksEndpoint(first) || itemNotFound(rec) || inputKindRefused(rec, err) || upstreamFailed(rec) || protectionRefused(first, rec.body.Bytes()) ||
+	} else if first := rec.status; lacksEndpoint(first) || itemNotFound(rec) || inputKindRefused(rec, err) || refusesMessages(rec) || upstreamFailed(rec) || protectionRefused(first, rec.body.Bytes()) ||
 		summaryTooLarge(rec) || err != nil && protectionWords.MatchString(err.Error()) {
 		who, msg := compactFailure(body, rec)
 		if err != nil {
@@ -3839,6 +3839,29 @@ func upstreamFailed(rec *recorder) bool {
 }
 
 var upstreamFailedWords = regexp.MustCompile(`(?i)upstream request failed`)
+
+// refusesMessages is a 400 turning the summary request's messages
+// themselves away — "AUBO: Invalid assistant message: content or
+// tool_calls must be set" (#3106, LionGaokk), or the tool exchange a
+// strict chat template refuses, "an assistant message with 'tool_calls'
+// must be followed by tool messages responding to each 'tool_call_id'":
+// the shape of the messages, not the model or the ask, so it failed on
+// every model of that upstream while a laxer one answered the very same
+// request. The turn a client's interrupted reply left in the conversation
+// stays out of what a Chat upstream is sent on ordinary turns
+// (withoutSilentAssistants, #2599); compaction is the one request that
+// carries the whole conversation, so the one that still holds it. The
+// summary asked as text (plainCompact) has no assistant turns to refuse,
+// so the recovery that saves the other refusals saves this one too.
+func refusesMessages(rec *recorder) bool {
+	return rec.status == http.StatusBadRequest && messagesRefusedWords.Match(rec.body.Bytes())
+}
+
+var messagesRefusedWords = regexp.MustCompile(`(?i)` +
+	`invalid assistant message` +
+	`|content or tool_calls must be set` +
+	`|must be a response to a preceding message with 'tool_calls'` +
+	`|must be followed by tool messages responding to each 'tool_call_id'`)
 
 // summaryTooLarge is a summary request refused for its size: past the
 // vendor's byte cap (413; DeepSeek's "Failed to buffer the request body:

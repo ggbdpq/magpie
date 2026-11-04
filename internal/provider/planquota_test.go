@@ -527,6 +527,25 @@ func TestReadKimiCodeMonthEveryWay(t *testing.T) {
 	}
 }
 
+// A key Kimi takes can be told no usage at all: {} (bigbitbox: HTTP 200,
+// two bytes, on every read-only ask, while /models lists fine). The card
+// says the key is taken and nothing came back, with what the reply
+// carries, not a bare "no usage in the reply", and no window is guessed
+// of it — an empty reply is not an unused allowance.
+func TestReadKimiCodeEmptyReply(t *testing.T) {
+	_, ws, err := readKimiCode([]byte(`{}`))
+	if err == nil || len(ws) != 0 {
+		t.Fatalf("%+v %v", ws, err)
+	}
+	if !strings.Contains(err.Error(), "took this key") || !strings.Contains(err.Error(), "an empty object") {
+		t.Fatalf("the empty reply isn't told as Kimi having no usage for a taken key: %v", err)
+	}
+	// a reply that carries fields nothing reads names them
+	if _, _, err := readKimiCode([]byte(`{"hello":"world"}`)); err == nil || !strings.Contains(err.Error(), "fields hello") {
+		t.Fatalf("fields nothing reads aren't named: %v", err)
+	}
+}
+
 // Every way a Kimi Code key is added shows the month Kimi tells: the
 // China and global presets, a provider of its own at the Anthropic base
 // alone, and a key imported from OpenCode's auth.json. Each card is read

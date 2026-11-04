@@ -578,7 +578,11 @@ func readKimiCode(b []byte) (string, []QuotaWindow, error) {
 		})
 	}
 	if len(out) == 0 {
-		return "", nil, fmt.Errorf("no usage in the reply")
+		// a key Kimi takes can have no usage to tell: {} (bigbitbox: HTTP
+		// 200, two bytes, on every read-only ask), so what the reply
+		// carries is said, and an empty reply reads as nothing told, not
+		// as an allowance nothing is used of
+		return "", nil, fmt.Errorf("Kimi took this key but its reply tells no usage (%s): the plan's allowance is unknown, not unused", shapeOf(b))
 	}
 	wallet := r.Booster
 	if len(wallet) == 0 {

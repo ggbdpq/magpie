@@ -28,6 +28,8 @@ import (
 //	           and the TUI take one (#1346, #2201)
 //	models     model ids to show agents, comma separated
 //	catalog    models.dev provider id, for names and reasoning levels
+//	balance    where the key's balance or usage is asked (the editor's
+//	           Balance URL), on the host of one of the base URLs
 //	website    the vendor's site; keys: where keys are made
 //	icon       an https picture of the vendor's own, fetched only after the
 //	           user confirms; falls back to the generic mark when absent
@@ -105,6 +107,9 @@ func ParseImport(link string) (Provider, error) {
 		}
 		p.Website = page(get("website"))
 		p.KeysURL = page(get("keys"))
+		if p.BalanceURL, err = balanceOnEndpointHost(get("balance"), p); err != nil {
+			return Provider{}, err
+		}
 	}
 	if raw := get("icon"); raw != "" {
 		u, err := iconURL(raw)
@@ -182,6 +187,28 @@ func local(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && (ip.IsLoopback() || ip.IsPrivate())
+}
+
+// balanceOnEndpointHost accepts a link's balance= only on the host of one
+// of its base URLs: the key is asked there, so it goes nowhere the link's
+// endpoints don't already send it. As the endpoints, https, or plain http
+// to this machine or the local network; a query is kept, where {key} asks
+// the balance for each key (withBalanceKey).
+func balanceOnEndpointHost(raw string, p Provider) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" ||
+		(u.Scheme != "https" && (u.Scheme != "http" || !local(u.Hostname()))) {
+		return "", errorf("the link's balance= is not a URL magpie can ask: %q", raw)
+	}
+	for _, base := range []string{p.Chat, p.Responses, p.Anthropic, p.Gemini} {
+		if b, err := url.Parse(base); err == nil && base != "" && strings.EqualFold(b.Host, u.Host) {
+			return u.String(), nil
+		}
+	}
+	return "", errorf("the link's balance= must be on a base URL's host: %q", raw)
 }
 
 // page keeps a web page link only when it is https.

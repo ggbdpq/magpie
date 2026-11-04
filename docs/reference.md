@@ -2832,6 +2832,7 @@ you press *Add*. `magpie import <link>` does the same in a terminal.
 | `gemini`    | Google Gemini API base URL (`…/v1beta`), as the app's editor and the TUI take one |
 | `models`    | model ids to expose, comma separated                               |
 | `catalog`   | models.dev provider id, for model names and reasoning levels       |
+| `balance`   | where the key's balance or usage is asked (the editor's Balance URL), shown in the dialog before *Add*; only on the host of one of the link's base URLs, so the key goes nowhere they don't already send it |
 | `website`, `keys` | the vendor's site and its API-key page (https)               |
 | `icon`      | an https picture of the vendor's own (PNG, JPEG, GIF, WebP, ICO, SVG, at most 1 MB). magpie downloads it once, after you confirm the import, into its icons folder; without one it falls back to the catalog's logo or a plain mark |
 

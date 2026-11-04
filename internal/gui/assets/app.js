@@ -10644,6 +10644,8 @@ function renderImport(im) {
   ed.append(...field(t("API key"), keyWrap, p.key ? t("From the link. Kept in ~/.config/magpie/providers.json, readable by you alone.") : ""));
 
   ed.append(...field(t("Endpoints"), renderEndpoints(null, p), ""));
+  // where the key's balance is asked, on one of the hosts named above
+  if (p.balanceURL) ed.append(...field(t("Balance URL"), el("code", "import-balance", p.balanceURL), ""));
   if (p.models?.length) {
     const chips = el("div", "mchips");
     for (const m of p.models) {

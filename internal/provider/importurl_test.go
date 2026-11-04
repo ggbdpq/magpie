@@ -265,3 +265,54 @@ func TestParseImportNameCutKeepsCharactersWhole(t *testing.T) {
 		t.Fatalf("name %q (%d bytes)", p.Name, len(p.Name))
 	}
 }
+
+// A link may name where its key's balance is asked (a relay's usage query),
+// only on the host of one of its base URLs: the key goes nowhere the
+// endpoints don't already send it.
+func TestParseImportBalance(t *testing.T) {
+	link := func(extra url.Values) string {
+		q := url.Values{"name": {"My Relay"}, "anthropic": {"https://relay.example"}, "responses": {"https://relay.example/v1"}, "key": {"sk-relay"}}
+		for k, v := range extra {
+			q[k] = v
+		}
+		return "magpie://import?" + q.Encode()
+	}
+	p, err := ParseImport(link(url.Values{"balance": {"https://relay.example/v1/usage"}}))
+	if err != nil || p.BalanceURL != "https://relay.example/v1/usage" {
+		t.Fatalf("balance on the endpoints' host = %q, %v", p.BalanceURL, err)
+	}
+	// a sub2api-style usage query is read for what is left, in dollars
+	if b, _ := balanceSourceOf(p); b.url != "https://relay.example/v1/usage" || balancePathOf(p) != "$remaining" {
+		t.Fatalf("asked at %q for %q", b.url, balancePathOf(p))
+	}
+	// the key may go in the query, as a Balance URL takes {key}
+	p, err = ParseImport(link(url.Values{"balance": {"https://relay.example/v1/usage?key={key}"}}))
+	if err != nil || p.BalanceURL != "https://relay.example/v1/usage?key={key}" {
+		t.Fatalf("balance with a query = %q, %v", p.BalanceURL, err)
+	}
+	if p, err := ParseImport(link(nil)); err != nil || p.BalanceURL != "" {
+		t.Fatalf("no balance= = %q, %v", p.BalanceURL, err)
+	}
+	// plain http only to this machine or the local network, as the endpoints
+	if p, err := ParseImport("magpie://import?name=Local&chat=http://192.168.1.9:8080/v1&balance=http://192.168.1.9:8080/v1/usage"); err != nil || p.BalanceURL != "http://192.168.1.9:8080/v1/usage" {
+		t.Fatalf("local http = %q, %v", p.BalanceURL, err)
+	}
+	// a preset's balance is its host's own; a link's balance= is not read there
+	if p, err := ParseImport("magpie://import?preset=deepseek&key=sk-deepseek&balance=https://elsewhere.example/v1/usage"); err != nil || p.BalanceURL != "" {
+		t.Fatalf("preset with balance= = %q, %v", p.BalanceURL, err)
+	}
+	for _, bad := range []string{
+		"https://elsewhere.example/v1/usage",          // another host
+		"https://relay.example.evil.example/v1/usage", // a look-alike suffix
+		"https://relay.example:8443/v1/usage",         // the same name, another port
+		"http://relay.example/v1/usage",               // plain http off this machine
+		"https://user:pw@relay.example/v1/usage",      // user:password
+		"https://relay.example/v1/usage#x",            // a fragment
+		"file:///etc/passwd",                          // another scheme
+		"relay.example/v1/usage",                      // a bare host
+	} {
+		if p, err := ParseImport(link(url.Values{"balance": {bad}})); err == nil {
+			t.Errorf("balance=%s: accepted as %q", bad, p.BalanceURL)
+		}
+	}
+}

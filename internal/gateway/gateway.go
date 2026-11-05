@@ -2834,7 +2834,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			record = cappedRecord(held)
 		}
 		if d := time.Until(back); d > 0 {
-			w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())+1))
+			w.Header().Set("Retry-After", strconv.Itoa(capAfter(int(d.Seconds())+1)))
 		}
 		call.Status, call.Error = 429, record
 		writeError(w, from, 429, msg)
@@ -4803,12 +4803,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		}
 		if !hw.passing && hw.code() == http.StatusTooManyRequests && hw.header.Get("Retry-After") == "" {
 			// the vendor said nothing of when: the agent is told when
-			// magpie asks again, the first of those it rested back
+			// magpie asks again, the first of those it rested back —
+			// capped when RetryAfterCap says so (#5371)
 			if heldBack.IsZero() {
 				heldBack, _ = soonestBack(cands[:i+1])
 			}
 			if wait := time.Until(heldBack); wait > 0 {
-				w.Header().Set("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
+				w.Header().Set("Retry-After", strconv.Itoa(capAfter(int((wait+time.Second-1)/time.Second))))
 			}
 		}
 		if hw.refused && !hw.passing && from == provider.Anthropic && hw.handBack() {
@@ -9921,6 +9922,18 @@ func saysBusy(status int, msg string) string {
 }
 
 // writeError answers in the client's own error shape.
+
+// capAfter bounds the Retry-After an agent is told (#5371): the account
+// rests inside magpie for the plan's whole horizon either way, but the
+// agent's wait is capped when RetryAfterCap says so, for an agent that
+// runs its own fallback chain. The horizon below the cap is untouched.
+func capAfter(secs int) int {
+	if cap := settings.Load().RetryAfterCap; cap != nil && *cap > 0 && secs > *cap {
+		return *cap
+	}
+	return secs
+}
+
 func writeError(w http.ResponseWriter, proto provider.Protocol, status int, msg string) int {
 	return writeErrorSaid(w, proto, status, msg, nil, nil)
 }

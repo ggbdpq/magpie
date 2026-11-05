@@ -418,6 +418,13 @@ type Settings struct {
 	// the vendor's own reply, stop_reason "refusal", which Claude Code
 	// answers by switching to its fallback model itself (DD on Discord).
 	RefusalRetries *int `json:"refusalRetries,omitempty"`
+	// RetryAfterCap bounds the Retry-After an agent is told on a 429 that
+	// turns it away, in seconds (#5371): a quota exhaustion rests the
+	// account inside magpie for the plan's whole horizon, but an agent
+	// that runs its own fallback chain stalls on a wait that long. Unset,
+	// as by default, the horizon goes out as it is; the accounts rest
+	// exactly as long either way.
+	RetryAfterCap *int `json:"retryAfterCap,omitempty"`
 	// NoAccountDiscovery leaves every agent's sign-in unread (#1535,
 	// MaxHaiCom): no credential file, Keychain item or agent CLI is asked
 	// who is signed in, and no subscription is offered; API-key providers

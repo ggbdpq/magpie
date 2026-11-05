@@ -784,7 +784,7 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 			call.Error = err.Error()
 			s.record(call)
 			if d := time.Until(capBack); d > 0 {
-				w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())+1))
+				w.Header().Set("Retry-After", strconv.Itoa(capAfter(int(d.Seconds())+1)))
 			}
 			msg := err.Error()
 			if len(skipped) > 0 {

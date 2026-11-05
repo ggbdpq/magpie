@@ -85,6 +85,6 @@ func relayStatus(w http.ResponseWriter, from provider.Protocol, name string, req
 // reads it, and so does the gateway's busy handling (noteBusy).
 func retryAfterOn(w http.ResponseWriter, wait time.Duration) {
 	if wait > 0 {
-		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))
+		w.Header().Set("Retry-After", strconv.Itoa(capAfter(int(math.Ceil(wait.Seconds())))))
 	}
 }

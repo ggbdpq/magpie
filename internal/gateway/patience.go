@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"regexp"
 	"slices"
 	"time"
 
@@ -62,19 +63,37 @@ type busyTry struct {
 // overloaded, unavailable, timed out, or a rate limit that isn't the
 // plan's or the money's, nor an account's token wall (walled). A proxy
 // that refused the connection, a quota used up, response protection's
-// 502, a void cut at its length (cutVoidWords, #2972), or an upstream
-// that answered a stream request with a whole reply (didNotStream) isn't:
-// each fails the same however often it is asked.
+// 502, a void cut at its length (cutVoidWords, #2972), an upstream
+// that answered a stream request with a whole reply (didNotStream), or a
+// vendor that has queued the request (queued) isn't: each fails the same
+// however often it is asked.
 func busy(status int, body []byte) bool {
 	switch {
 	case busyStatus(status):
 		return failure(status, body) == failOther && !protectionRefused(status, body) &&
 			!bytes.Contains(body, []byte(didNotStream)) &&
-			!bytes.Contains(body, []byte(cutVoidWords))
+			!bytes.Contains(body, []byte(cutVoidWords)) &&
+			!queued(body)
 	case status == 429:
 		return failure(status, body) == failRate && !creditWords.Match(wordsOf(body)) && !walled(body)
 	}
 	return false
+}
+
+// queuedWords matches a 503 a plugin answers for a request its vendor has
+// queued (the Qoder and CodeArts plugins, #4049: a 503 + Retry-After that
+// names the queue). The request is in: what clears it is the vendor's
+// queue being worked off, not a pause, and a group's patience asking the
+// members again only queues the same request again, on every account, a
+// whole round at a time (#5346: 217 accounts, one request tried 656
+// times, 20 GB of re-uploaded bodies a day). The members are asked once;
+// the last one left waits its Retry-After (passing) as the vendor's own
+// client does.
+var queuedWords = regexp.MustCompile(`(?i)\bqueue|排队`)
+
+// queued says whether a failure's body names a queue the request sits in.
+func queued(body []byte) bool {
+	return queuedWords.Match(wordsOf(body))
 }
 
 // busyStatus says whether an error status is one a vendor or the relay in

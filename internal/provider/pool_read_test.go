@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/netproxy"
 )
 
 // plugins#349: a careful provider asks when each account's usage was
@@ -83,8 +85,10 @@ func TestUsageReadAndReadAgain(t *testing.T) {
 // #5085: a saved Claude account's, read only when its card is refreshed,
 // the switch off a spent one needs it, or the keep-alive runs) is what
 // the account last said, and is not a failed read: it stands as its
-// reading, dated as the rounds see it, so a careful provider holds it
-// for its age alone, not as one whose usage couldn't be told. A read
+// reading, dated as it was really read (its AsOf), the way a kept
+// reading in memory is dated by its readAt, so a careful provider holds
+// it for its age alone, not as one whose usage couldn't be told, and
+// never counts a reading of any age as just read (#5085 review). A read
 // that failed and was answered from what was kept is a failed one, as
 // before.
 func TestUsageReadDeferredIsNotAFailedRead(t *testing.T) {
@@ -126,8 +130,8 @@ func TestUsageReadDeferredIsNotAFailedRead(t *testing.T) {
 	if !ok || failed {
 		t.Fatalf("a kept reading no one asked for again: failed %v ok %v", failed, ok)
 	}
-	if !at.After(before) {
-		t.Fatalf("a kept reading stands dated as the rounds see it: at %v, asked %v", at, before)
+	if at.After(before) {
+		t.Fatalf("a kept reading counts as just read: at %v, asked %v, read %v", at, before, kept)
 	}
 
 	// a read that failed, answered from what was kept: failed, as before
@@ -137,6 +141,51 @@ func TestUsageReadDeferredIsNotAFailedRead(t *testing.T) {
 	}
 	if _, failed, _ = UsageRead("codex", "me@example.com"); !failed {
 		t.Fatal("a failed read answered from what was kept: not failed")
+	}
+}
+
+// A reading handed over from disk (nothing read since magpie started,
+// a held read is answered by keepLast with the last one, as it stands
+// now) carries its real read time — the snapshot's At, handed over as
+// AsOf — and stands dated by it, the way a kept reading in memory is
+// dated by its readAt: a careful provider counts its age, and holds it
+// when it is too old, rather than trusting a reading of any age as one
+// just made (#5085 review).
+func TestUsageReadKeptOnDiskKeepsItsReadTime(t *testing.T) {
+	signIn(t)
+	reset := func() {
+		LoginUsageVia(nil)
+		loginUsageCache.Lock()
+		loginUsageCache.m, loginUsageCache.pending = nil, nil
+		loginUsageCache.Unlock()
+		lastQuotas.Lock()
+		lastQuotas.m, lastQuotas.loaded = nil, false
+		lastQuotas.Unlock()
+	}
+	reset()
+	t.Cleanup(reset)
+	rememberLogins(true) // the logins list is shared: this home's is the one to read
+	// a restart: nothing read since, what magpie kept on disk is all it
+	// has, read two hours ago
+	resets := time.Now().Add(3 * time.Hour)
+	kept := time.Now().Add(-2 * time.Hour)
+	lastQuotas.Lock()
+	lastQuotas.m = map[string]lastQuota{
+		"codex/me@example.com": {At: kept, Q: SubscriptionQuota{Provider: "codex", Windows: []QuotaWindow{{Span: 5 * time.Hour, Used: 30, ResetsAt: &resets}}}},
+	}
+	lastQuotas.loaded = true
+	lastQuotas.Unlock()
+	ctx := netproxy.Hold(context.Background(), errNotAsked) // a read held back: what was kept stands in
+	_, _, states := loginUsageAt(ctx, "codex")
+	st, ok := states["me@example.com"]
+	if !ok {
+		t.Fatal("no reading")
+	}
+	if st.failed {
+		t.Fatal("a reading kept on disk, no one asked for again: failed")
+	}
+	if st.at.After(kept.Add(time.Minute)) {
+		t.Fatalf("a reading kept on disk counts as just read: at %v, read %v", st.at, kept)
 	}
 }
 

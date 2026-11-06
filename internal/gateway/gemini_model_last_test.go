@@ -255,3 +255,84 @@ func TestGeminiToolResponseTurnHoldsNoText(t *testing.T) {
 		}
 	}
 }
+
+// A tool's image as the request's last item — Codex's view_image, its
+// input_image the last Responses item, or an Anthropic client's
+// tool_result holding an image block (#4069, zhangyang-crazy-one's Claude
+// Code case): Google answers the mixed last turn, a functionResponse with
+// an inlineData beside it, with its "ending with a model turn" words
+// however the roles say, and the turn died with it. A user turn goes
+// after it, as for a model turn. The requests come in the way their
+// reporters' did, at the gateway's own doors.
+func TestGeminiToolImageLastTurnGetsAUserTurn(t *testing.T) {
+	v := &vertexUp{}
+	s := vertexServe(t, v, vertexLevels)
+	for _, c := range []struct{ name, path, body string }{
+		{"codex's view_image", "/v1/responses", `{"model":"google-vertex/gemini-3.8-flash","stream":true,"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+			{"type":"function_call","name":"view_image","call_id":"c1","arguments":"{\"path\":\"a.png\"}"},
+			{"type":"function_call_output","call_id":"c1","output":[{"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgo="}]}]}`},
+		{"claude code's read", "/v1/messages", `{"model":"google-vertex/gemini-3.8-flash","max_tokens":64,"stream":true,
+			"tools":[{"name":"Read","input_schema":{"type":"object","properties":{"file_path":{"type":"string"}}}}],"messages":[
+			{"role":"user","content":"Look at the image at /tmp/a.png."},
+			{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/tmp/a.png"}}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]}]}]}`},
+	} {
+		rec := vertexPost(s, c.path, c.body)
+		if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "model turn") {
+			t.Errorf("%s: %d %s", c.name, rec.Code, rec.Body.String())
+			continue
+		}
+		var q struct {
+			Contents []struct {
+				Role  string           `json:"role"`
+				Parts []map[string]any `json:"parts"`
+			} `json:"contents"`
+		}
+		b, _ := json.Marshal(v.last(t).body["contents"])
+		if err := json.Unmarshal(b, &q.Contents); err != nil {
+			t.Fatal(err)
+		}
+		if len(q.Contents) != 4 {
+			t.Errorf("%s: want the tool-image turn answered with a user turn, got %s", c.name, b)
+			continue
+		}
+		tools, ask := q.Contents[2], q.Contents[3]
+		if tools.Role != "user" || len(tools.Parts) != 2 || tools.Parts[0]["functionResponse"] == nil || tools.Parts[1]["inlineData"] == nil {
+			t.Errorf("%s: the tool-image turn is %v", c.name, tools)
+		}
+		if ask.Role != "user" || len(ask.Parts) != 1 || ask.Parts[0]["text"] != continueText {
+			t.Errorf("%s: the turn after the tool's image is %v", c.name, ask)
+		}
+	}
+}
+
+// A user's own picture — a Responses message's input_image, or an
+// Anthropic message's image block, no tool call beside it — is not a
+// tool's image: Google answers it as it is (Lxiny-zy's shape D, a 200),
+// and the request goes to it unchanged, no user turn put after.
+func TestGeminiUserImageLastTurnStaysAsItIs(t *testing.T) {
+	v := &vertexUp{}
+	s := vertexServe(t, v, vertexLevels)
+	for _, c := range []struct{ name, path, body string }{
+		{"a responses message's image", "/v1/responses", `{"model":"google-vertex/gemini-3.8-flash","stream":true,"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"what colour is it"},{"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgo="}]}]}`},
+		{"an anthropic message's image", "/v1/messages", `{"model":"google-vertex/gemini-3.8-flash","max_tokens":64,"stream":true,"messages":[
+			{"role":"user","content":[{"type":"text","text":"what colour is it"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]}]}`},
+	} {
+		rec := vertexPost(s, c.path, c.body)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: %d %s", c.name, rec.Code, rec.Body.String())
+			continue
+		}
+		contents, _ := v.last(t).body["contents"].([]any)
+		if len(contents) != 1 {
+			t.Errorf("%s: the user's own picture had the conversation rewritten: %s", c.name, contents)
+			continue
+		}
+		turn, _ := contents[0].(map[string]any)
+		if turn["role"] != "user" {
+			t.Errorf("%s: the picture's turn is %v", c.name, turn)
+		}
+	}
+}

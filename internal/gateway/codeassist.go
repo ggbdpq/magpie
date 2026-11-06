@@ -495,11 +495,18 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 		// this user turn before it, and so does this.
 		contents = append([]map[string]any{{"role": "user", "parts": []map[string]any{{"text": "[Continuing from previous AI thoughts...]"}}}}, contents...)
 	}
-	if n := len(contents); n > 0 && contents[n-1]["role"] == "model" {
+	n := len(contents)
+	if n > 0 && (contents[n-1]["role"] == "model" || (!ag && endsWithToolImages(contents[n-1]))) {
 		// nor one that ends with it: "Requests ending with a model turn
 		// are not supported" on Vertex AI, Code Assist and Antigravity
-		// alike (yycsyu: Codex compacting on gemini-3.8-flash). A user
-		// turn goes after it, as Gemini CLI keeps its history ending
+		// alike (yycsyu: Codex compacting on gemini-3.8-flash) — nor one
+		// whose last turn mixes a functionResponse with a tool's image
+		// beside it, Google's words for a turn it can't answer however
+		// the roles say (#1533's mixed-turn refusal, #4069: Codex's
+		// view_image as the request's last item; no Claude model's on
+		// Antigravity, whose tool_result turn holds the images on
+		// purpose). A user turn goes after it, as Gemini CLI keeps its
+		// history ending
 		contents = append(contents, map[string]any{"role": "user", "parts": []map[string]any{{"text": modelLastAsk(r)}}})
 	}
 	req := map[string]any{"contents": contents}
@@ -1745,6 +1752,25 @@ func hasResponse(parts []map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// endsWithToolImages says whether a turn mixes a tool's functionResponse
+// with an image beside it: Google answers a request ending on that shape
+// with its "ending with a model turn" words however the roles say (#4069,
+// as #1533's mixed turn). A user's own picture carries no functionResponse
+// and is not the shape.
+func endsWithToolImages(turn map[string]any) bool {
+	ps, _ := turn["parts"].([]map[string]any)
+	resp, image := false, false
+	for _, p := range ps {
+		if p["functionResponse"] != nil {
+			resp = true
+		}
+		if p["inlineData"] != nil {
+			image = true
+		}
+	}
+	return resp && image
 }
 
 // antigravityRound is ask, a round of magpie's own search for p, told as

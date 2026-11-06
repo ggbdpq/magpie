@@ -772,7 +772,14 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 		req.Header.Set("User-Agent", "magpie")
 		if key != "" {
 			req.Header.Set("Authorization", "Bearer "+key)
-			req.Header.Set("x-api-key", key)
+			if anthropic {
+				// x-api-key is the Anthropic base's header; an
+				// OpenAI-compatible base is asked as its chat requests
+				// are (AuthHeaders), Bearer alone — a relay whose gateway
+				// reads x-api-key as its Anthropic branch's key answers
+				// the pair 401 for a key it was handed (#5521)
+				req.Header.Set("x-api-key", key)
+			}
 			// a vendor that takes one of the two alone
 			OneAuth(req.Header, only)
 		}

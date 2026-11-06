@@ -139,3 +139,39 @@ func TestSearchCLIOffAndMove(t *testing.T) {
 		}
 	}
 }
+
+// magpie search move (and mv) takes a whole number only: 2oops or 1.5 is an
+// error and leaves the saved order unchanged (#5354).
+func TestSearchCLIMoveMalformedPosition(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for _, args := range [][]string{{"add", "tavily", "tvly-1"}, {"add", "exa", "e-1"}, {"add", "brave", "b-1"}} {
+		if err := searchCmd(args); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	order := func() (vs []string) {
+		for _, a := range provider.StoredSearchAPIs() {
+			vs = append(vs, a.Vendor)
+		}
+		return vs
+	}
+	for _, bad := range []string{"2oops", "1.5", "-1", "99999999999999999999", "4", ""} {
+		for _, cmd := range []string{"move", "mv"} {
+			if err := searchCmd([]string{cmd, "exa", bad}); err == nil {
+				t.Errorf("%s %s taken", cmd, bad)
+			}
+			if got := order(); !slices.Equal(got, []string{"tavily", "exa", "brave"}) {
+				t.Fatalf("%s %s reordered the saved APIs: %v", cmd, bad, got)
+			}
+		}
+	}
+	// mv still moves
+	if err := searchCmd([]string{"mv", "exa", "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := order(); !slices.Equal(got, []string{"exa", "tavily", "brave"}) {
+		t.Fatalf("after mv %v", got)
+	}
+}

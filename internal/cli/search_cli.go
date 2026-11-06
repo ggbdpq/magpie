@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -136,7 +137,9 @@ func searchCmd(args []string) error {
 	case "move", "mv":
 		n := 0
 		if len(args) == 3 {
-			fmt.Sscan(args[2], &n)
+			// a whole number only: an integer prefix like 2oops or 1.5
+			// must not be taken for a position (#5354)
+			n, _ = strconv.Atoi(args[2])
 		}
 		as := provider.StoredSearchAPIs()
 		i := slices.IndexFunc(as, func(x provider.SearchAPI) bool { return len(args) > 1 && x.Vendor == strings.ToLower(args[1]) })

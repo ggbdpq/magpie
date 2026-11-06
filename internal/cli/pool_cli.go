@@ -15,7 +15,7 @@ import (
 	"github.com/yetone/magpie/internal/provider"
 )
 
-const poolUsage = "magpie provider pool <id> [--accounts a,b,…] [--cap percent|off] [--stop on|off] [--careful on|off]"
+const poolUsage = "magpie provider pool <id> [--accounts a,b,…] [--cap percent|off] [--stop on|off] [--careful on|off] [--keep on|off]"
 
 // poolCmd shows a subscription's pool, after setting what the flags say:
 // --accounts puts those accounts in use in that order, the rest out of
@@ -23,14 +23,17 @@ const poolUsage = "magpie provider pool <id> [--accounts a,b,…] [--cap percent
 // --stop answers 429 while every account is at its cap rather than going
 // on to the fallbacks (provider.Provider.CapStop); --careful reads usage
 // again near a cap and holds an account whose usage can't be told
-// (provider.Provider.CapCareful).
+// (provider.Provider.CapCareful); --keep keeps a request on the account
+// its conversation answered through a transient rest, a rate limit or a
+// failure, rather than pay its prompt again on another account
+// (provider.Provider.KeepThroughRest).
 func poolCmd(rest []string) error {
 	usage := fmt.Errorf("%s", poolUsage)
 	var id string
 	var accounts []string
 	accountsSet, capSet := false, false
 	capN := 0
-	var stop, careful *bool
+	var stop, careful, keep *bool
 	onOff := func(v string) (*bool, error) {
 		switch strings.ToLower(strings.TrimSpace(v)) {
 		case "on", "true", "yes":
@@ -80,6 +83,8 @@ func poolCmd(rest []string) error {
 			stop, err = onOff(val)
 		case "--careful":
 			careful, err = onOff(val)
+		case "--keep":
+			keep, err = onOff(val)
 		default:
 			return usage
 		}
@@ -175,7 +180,12 @@ func poolCmd(rest []string) error {
 			return err
 		}
 	}
-	if accountsSet || capSet || stop != nil || careful != nil {
+	if keep != nil {
+		if err := provider.SetKeepThroughRest(p.ID, *keep); err != nil {
+			return err
+		}
+	}
+	if accountsSet || capSet || stop != nil || careful != nil || keep != nil {
 		fmt.Println(green.Render("✓"), "saved", p.Name, muted.Render("("+p.ID+")"))
 		if p, err = provider.Find(p.ID); err != nil {
 			return err
@@ -238,8 +248,13 @@ func printPool(p provider.Provider, ls []provider.Login) {
 	if !p.CapCareful {
 		careful = "off: routing goes by the last reading, read again each minute"
 	}
+	keep := "off: a request whose account rests after a rate limit or a failure goes to the next account in line"
+	if p.KeepThroughRest {
+		keep = "on: a request stays on its account through a rest out of a rate limit or a failure, that its cache is not lost; out of quota or credit it moves as ever"
+	}
 	fmt.Println("stop at caps ·", stop)
 	fmt.Println("check usage near the cap ·", careful)
+	fmt.Println("keep through a rest ·", keep)
 	if uncapped > 0 {
 		fmt.Println(muted.Render(fmt.Sprintf("%d account(s) in use have no cap, so nothing holds them before the vendor does: magpie provider pool %s --cap 90", uncapped, p.ID)))
 	}

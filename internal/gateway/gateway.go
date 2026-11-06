@@ -5445,7 +5445,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// there is (imwhatiam123 on Discord: Stays: Strict moved a
 			// session from Qoder CN to WorkBuddy AI after a reply broke
 			// off, the stick gone and the retry routed as a new one)
-			if (hit == nil || !hit.Compact) && aff.Why != "strict" {
+			if (hit == nil || !hit.Compact) && aff.Why != "strict" && !seatKept(c, aff, plannedCs) {
+				// a seat a keeping pool holds through a short rest keeps the
+				// conversation over a ready one that breaks off too (#4030,
+				// seatKept): the retry goes back to its own account, which
+				// has not failed
 				unanswered(stuck, c)
 			}
 			if hw.looped != "" {
@@ -5492,7 +5496,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// a compaction a rule sent to a model of its own leaves the
 			// conversation, and the turn's size, where they were
 			if hit == nil || !hit.Compact {
-				answeredStanding(stuck, c, aff.Turn, call.Usage, standsInFor(c, plannedCs, plannedOrder))
+				// a seat a keeping pool holds through a short rest keeps
+				// the conversation over a ready one's answer (#4030,
+				// seatKept): its own account has it back once the rest is
+				// over
+				if !seatKept(c, aff, plannedCs) {
+					answeredStanding(stuck, c, aff.Turn, call.Usage, standsInFor(c, plannedCs, plannedOrder))
+				}
 				// what it answered, it holds: whatever it refused as too
 				// long on the way is forgotten (#3453)
 				forgetOverflow(stuck, c)

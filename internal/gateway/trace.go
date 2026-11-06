@@ -367,7 +367,12 @@ type Weighed struct {
 	Fit      int               `json:"fit,omitempty"`      // keyFit
 	Speaks   provider.Protocol `json:"speaks,omitempty"`   // a key made for one protocol only
 	Rest     *Rest             `json:"rest,omitempty"`     // resting after a failure, when the request came
-	Unlisted bool              `json:"unlisted,omitempty"`
+	// Keeps: its pool says a transient rest is no reason to move what it
+	// answers (#4030). restLast holds the request back while it rests all
+	// the same; affine holds the conversation's seat through the rest, and
+	// the answer a ready one gives meanwhile doesn't take the conversation
+	Keeps    bool `json:"keeps,omitempty"`
+	Unlisted bool `json:"unlisted,omitempty"`
 	// UseFirst: its provider is set to be used first, which Smart puts
 	// ahead of the other providers' (provider.Provider.UseFirst)
 	UseFirst bool `json:"useFirst,omitempty"`

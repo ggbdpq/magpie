@@ -152,6 +152,18 @@ func SetCapCareful(id string, on bool) error {
 	return Save(*p)
 }
 
+// SetKeepThroughRest has a provider's keys and accounts keep the place
+// the routing gave them through a transient rest, or move behind one
+// again (Provider.KeepThroughRest).
+func SetKeepThroughRest(id string, on bool) error {
+	p, err := Find(id)
+	if err != nil {
+		return err
+	}
+	p.KeepThroughRest = on
+	return Save(*p)
+}
+
 // SetCountFree has every model of a provider count as free for the
 // routings that weigh it, or go by its vendor's word again
 // (Provider.CountFree).

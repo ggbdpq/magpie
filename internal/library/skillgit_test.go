@@ -74,24 +74,44 @@ const gitRemoved = "\x00removed"
 // Keychain).
 func gitRepo(t *testing.T, files map[string]string) (string, func(map[string]string)) {
 	t.Helper()
+	addr, commit, _ := gitRepoFormat(t, files, "sha1")
+	return addr, commit
+}
+
+// gitRepoFormat creates a repository in format and returns a command runner for its working copy.
+func gitRepoFormat(t *testing.T, files map[string]string, format string) (string, func(map[string]string), func(...string) string) {
+	t.Helper()
 	git := realGit
 	if git == "" {
 		t.Skip("git isn't installed")
+	}
+	if format == "sha256" {
+		probe := exec.Command(git, "init", "-q", "--object-format=sha256", filepath.Join(t.TempDir(), "probe"))
+		probe.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+filepath.Join(t.TempDir(), "gitconfig"), "LC_ALL=C", "LANGUAGE=C")
+		if out, err := probe.CombinedOutput(); err != nil {
+			if strings.Contains(string(out), "unknown option") || strings.Contains(string(out), "unknown hash algorithm") {
+				t.Skipf("git doesn't support SHA-256: %s", out)
+			}
+			t.Fatalf("probing git's SHA-256 support: %v\n%s", err, out)
+		}
 	}
 	old := gitPath
 	gitPath = func() string { return git }
 	t.Cleanup(func() { gitPath = old })
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "gitconfig"))
+	t.Setenv("GIT_DEFAULT_HASH", format)
 	root := t.TempDir()
 	bare, work := filepath.Join(root, "skills.git"), filepath.Join(root, "work")
-	run := func(dir string, args ...string) {
+	run := func(dir string, args ...string) string {
 		t.Helper()
 		cmd := exec.Command(git, append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false"}, args...)...)
 		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
+		out, err := cmd.CombinedOutput()
+		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
+		return strings.TrimSpace(string(out))
 	}
 	run(root, "init", "-q", "--bare", bare)
 	run(root, "init", "-q", work)
@@ -114,17 +134,29 @@ func gitRepo(t *testing.T, files map[string]string) (string, func(map[string]str
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p // C:/… on Windows
 	}
-	return "file://" + p, commit
+	return "file://" + p, commit, func(args ...string) string { return run(work, args...) }
 }
 
 func TestInstallFromGitRepo(t *testing.T) {
+	for _, format := range []string{"sha1", "sha256"} {
+		t.Run(format, func(t *testing.T) { testInstallFromGitRepo(t, format) })
+	}
+}
+
+func testInstallFromGitRepo(t *testing.T, format string) {
+	t.Helper()
 	sandbox(t)
-	addr, commit := gitRepo(t, map[string]string{
+	addr, commit, _ := gitRepoFormat(t, map[string]string{
 		"skills/pdf/SKILL.md":    "---\nname: pdf\ndescription: PDFs\n---\nv1\n",
 		"skills/pdf/notes.md":    "one",
 		"skills/review/SKILL.md": "---\nname: review\ndescription: Reviews\n---\n",
 		"README.md":              "hi",
-	})
+	}, format)
+	hashLen, clientFormat := 40, "sha256"
+	if format == "sha256" {
+		hashLen, clientFormat = 64, "sha1"
+	}
+	t.Setenv("GIT_DEFAULT_HASH", clientFormat)
 	p, err := ProbeSkills(addr)
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +169,7 @@ func TestInstallFromGitRepo(t *testing.T) {
 	}
 	l, _ := load()
 	s := l.skill("pdf")
-	if s == nil || s.Source.Kind != "git" || s.Source.Repo != addr || s.Source.Path != "skills/pdf" || s.Hash == "" || len(s.Commit) != 40 {
+	if s == nil || s.Source.Kind != "git" || s.Source.Repo != addr || s.Source.Path != "skills/pdf" || s.Hash == "" || len(s.Commit) != hashLen {
 		t.Fatalf("installed as %+v %+v", s, s.Source)
 	}
 	if b, err := os.ReadFile(filepath.Join(skillDir("pdf"), "notes.md")); err != nil || string(b) != "one" {
@@ -165,7 +197,7 @@ func TestInstallFromGitRepo(t *testing.T) {
 	}
 	l, _ = load()
 	updatedAt := l.skill("pdf").Commit
-	if len(updatedAt) != 40 || updatedAt == installedAt {
+	if len(updatedAt) != hashLen || updatedAt == installedAt {
 		t.Fatalf("commit after the update %q (was %q)", updatedAt, installedAt)
 	}
 	if checks, _ := CheckSkills(); len(checks) != 1 || checks[0].Status != "current" {
@@ -178,7 +210,7 @@ func TestInstallFromGitRepo(t *testing.T) {
 		t.Fatalf("after a commit elsewhere %+v", checks)
 	}
 	l, _ = load()
-	if c := l.skill("pdf").Commit; c == updatedAt || len(c) != 40 {
+	if c := l.skill("pdf").Commit; c == updatedAt || len(c) != hashLen {
 		t.Fatalf("the commit found the same isn't kept: %q", c)
 	}
 

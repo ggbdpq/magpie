@@ -40,7 +40,7 @@ var (
 	// scpLike is git's user@host:path for SSH
 	scpLike = regexp.MustCompile(`^(?:([\w.-]+)@)?([\w.-]+):(.+)$`)
 	gitRef  = regexp.MustCompile(`^[\w./+@-]+$`)
-	hexRef  = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
+	hexRef  = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
 )
 
 // gitSchemes are the URL schemes a git source may have. file:// is a
@@ -312,6 +312,12 @@ func fetchGit(src Source) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
 	env := gitEnv(git)
+	format, err := gitRemoteFormat(ctx, git, env, src)
+	if err != nil {
+		return "", err
+	}
+	// Set the format only for these child processes, leaving the user's config alone.
+	env = append(env, "GIT_DEFAULT_HASH="+format)
 	tmp, err := os.MkdirTemp("", skillTemp)
 	if err != nil {
 		return "", err
@@ -320,7 +326,12 @@ func fetchGit(src Source) (string, error) {
 		os.RemoveAll(tmp)
 		return "", err
 	}
-	if _, err := runGit(ctx, git, env, tmp, src, "init", "-q"); err != nil {
+	initArgs := []string{"init", "-q"}
+	if format == "sha256" {
+		// Leave the newer option out for SHA-1 so older Git still works.
+		initArgs = append(initArgs, "--object-format=sha256")
+	}
+	if _, err := runGit(ctx, git, env, tmp, src, initArgs...); err != nil {
 		return fail(err)
 	}
 	ref := src.Ref
@@ -340,7 +351,7 @@ func fetchGit(src Source) (string, error) {
 	if _, err := runGit(ctx, git, env, tmp, src, "-c", "advice.detachedHead=false", "checkout", "-q", "FETCH_HEAD"); err != nil {
 		return fail(err)
 	}
-	out, err := runGit(ctx, git, env, tmp, src, "rev-parse", "FETCH_HEAD")
+	out, err := runGit(ctx, git, env, tmp, src, "rev-parse", "FETCH_HEAD^{commit}")
 	if err != nil {
 		return fail(err)
 	}
@@ -365,39 +376,90 @@ func dirSize(dir string) int64 {
 	return n
 }
 
-// gitRemoteHead asks the repository, with git ls-remote, which commit its
-// ref (its default branch when "") is at now. A ref that is a commit is
-// that commit.
-func gitRemoteHead(src Source) (string, error) {
-	if hexRef.MatchString(src.Ref) {
-		return strings.ToLower(src.Ref), nil
+// gitObjectFormat identifies full object IDs; hexRef also accepts user-supplied abbreviations.
+func gitObjectFormat(oid string) string {
+	if !hexRef.MatchString(oid) {
+		return ""
 	}
+	switch len(oid) {
+	case 40:
+		return "sha1"
+	case 64:
+		return "sha256"
+	}
+	return ""
+}
+
+// gitRemoteRefs reads and validates full remote object IDs for downloads and update checks.
+func gitRemoteRefs(ctx context.Context, git string, env []string, src Source, patterns ...string) (map[string]string, error) {
+	args := append([]string{"ls-remote", "--", src.Repo}, patterns...)
+	out, err := runGit(ctx, git, env, os.TempDir(), src, args...)
+	if err != nil {
+		return nil, err
+	}
+	return parseGitRemoteRefs(src, string(out))
+}
+
+func parseGitRemoteRefs(src Source, out string) (map[string]string, error) {
+	refs := map[string]string{}
+	format := ""
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		oid, name, ok := strings.Cut(line, "\t")
+		found := gitObjectFormat(oid)
+		if !ok || name == "" || found == "" || (format != "" && format != found) {
+			return nil, fmt.Errorf("%s returned invalid git object IDs", src.Repo)
+		}
+		format = found
+		refs[name] = strings.ToLower(oid)
+	}
+	return refs, nil
+}
+
+// gitRemoteFormat determines the format before init, using other refs when HEAD advertises none.
+func gitRemoteFormat(ctx context.Context, git string, env []string, src Source) (string, error) {
+	refs, err := gitRemoteRefs(ctx, git, env, src, "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if len(refs) == 0 {
+		refs, err = gitRemoteRefs(ctx, git, env, src)
+		if err != nil {
+			return "", err
+		}
+	}
+	for _, oid := range refs {
+		return gitObjectFormat(oid), nil
+	}
+	return "", fmt.Errorf("%s advertises no git object IDs: couldn't determine its object format", src.Repo)
+}
+
+// gitRemoteHead resolves branches and tags before treating a hexadecimal ref as a pinned commit.
+func gitRemoteHead(src Source) (string, error) {
 	git := gitPath()
 	if git == "" {
 		return "", errNoGit()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
-	args := []string{"ls-remote", "--", src.Repo}
-	if src.Ref == "" {
-		args = append(args, "HEAD")
-	} else {
-		args = append(args, "refs/heads/"+src.Ref, "refs/tags/"+src.Ref, "refs/tags/"+src.Ref+"^{}")
+	patterns := []string{"HEAD"}
+	if src.Ref != "" {
+		patterns = []string{"refs/heads/" + src.Ref, "refs/tags/" + src.Ref, "refs/tags/" + src.Ref + "^{}"}
 	}
-	out, err := runGit(ctx, git, gitEnv(git), os.TempDir(), src, args...)
+	refs, err := gitRemoteRefs(ctx, git, gitEnv(git), src, patterns...)
 	if err != nil {
 		return "", err
-	}
-	refs := map[string]string{}
-	for _, l := range strings.Split(string(out), "\n") {
-		if sha, name, ok := strings.Cut(strings.TrimSpace(l), "\t"); ok {
-			refs[name] = sha
-		}
 	}
 	for _, k := range []string{"HEAD", "refs/tags/" + src.Ref + "^{}", "refs/heads/" + src.Ref, "refs/tags/" + src.Ref} {
 		if sha := refs[k]; hexRef.MatchString(sha) {
 			return sha, nil
 		}
+	}
+	if hexRef.MatchString(src.Ref) {
+		return strings.ToLower(src.Ref), nil
 	}
 	if src.Ref == "" {
 		return "", fmt.Errorf("%s names no default branch", src.Repo)

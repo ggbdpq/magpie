@@ -3815,10 +3815,15 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 		return nil
 	}
 	// failed ends the reply with an error where it was cut short with
-	// nothing to go on in
+	// nothing to go on in. The reply had begun, so the status is spent
+	// and the words are all the client has: named with a phrase its own
+	// retry reads as transient ("stream was interrupted"), the turn is
+	// asked again, and the conversation is not written to the cache
+	// whole again (pi matched none of its phrases and failed untried,
+	// #5535)
 	failed := func(why string) {
 		cut = false
-		r.emit(Event{Kind: KError, Text: "Claude Code's stream from Anthropic was cut short " + why, Status: http.StatusBadGateway, RequestID: reqID})
+		r.emit(Event{Kind: KError, Text: "Claude Code's stream from Anthropic was cut short " + why + " (stream was interrupted; retry the request)", Status: http.StatusBadGateway, RequestID: reqID})
 		r.endSegment()
 	}
 	line := func(b []byte) {

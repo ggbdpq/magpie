@@ -590,6 +590,14 @@ func affine(scope, mode string, rotate, spread, inOrder bool, in http.Header, fr
 		// (01huadalang on Discord: a third ZCode account in use at once
 		// had the address banned). Strict, the user's own, keeps it
 		a.Why = "reserve"
+	case pl.order[at].Rest != nil && pl.order[at].Keeps:
+		// a pool set to keep through a transient rest (#4030): a short
+		// rate limit, or a failure that says nothing of why, is no reason
+		// to move what it answers. The seat holds — restLast holds the
+		// resting one back, so a ready one answers meanwhile and nothing
+		// is asked to death — and once the rest is over the conversation
+		// goes back to the account that has its cache
+		a.Why = "keep"
 	case pl.order[at].Rest != nil:
 		a.Why = "resting"
 	case lastBehind(pl.order, at):
@@ -665,6 +673,12 @@ func affine(scope, mode string, rotate, spread, inOrder bool, in http.Header, fr
 		a.Why = "cache"
 	}
 	switch a.Why {
+	case "keep":
+		// the seat holds without taking the request's front: the ready one
+		// answers this turn (restLast put the resting seat behind it), and
+		// the answer doesn't take the conversation over (seatKept, at the
+		// ask) — its own account has it back once the rest is over (#4030)
+		a.Kept = true
 	case "session", "turn", "cache":
 		a.Kept = true
 		if at > 0 {
@@ -962,6 +976,25 @@ func after(cs []candidate, pl planned, at int) ([]candidate, planned) {
 // (Input 0) counts as no cache, as it did.
 func answered(key string, c candidate, turn int, u Usage) {
 	answeredStanding(key, c, turn, u, false)
+}
+
+// seatKept says the answer c gave stands in for a conversation whose own
+// account rests out of a short 429 its pool keeps through (#4030): the
+// conversation stays on that account — this turn's answer must not take
+// it over, and its own account has it back once the rest is over. A
+// conversation answered by its own account, and every answer to a pool
+// without the setting, is affected by none of this.
+func seatKept(ans candidate, aff *Affinity, cs []candidate) bool {
+	if !aff.Kept || ans.rest == aff.Last {
+		return false
+	}
+	for _, c := range cs {
+		if c.rest == aff.Last {
+			r, ok := restingOf(c)
+			return ok && c.keepsThrough(r)
+		}
+	}
+	return false
 }
 
 // answeredStanding is answered, with whether c stood in for a member

@@ -2089,6 +2089,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					in.SwitchOnly, in.RestartApp = old.SwitchOnly, old.RestartApp // switchonly, restartapp
 					in.KeepSelf = old.KeepSelf                                    // keepself
 					in.CapStop, in.CapCareful = old.CapStop, old.CapCareful       // capstop, capcareful
+					in.KeepThroughRest = old.KeepThroughRest                      // keepthroughrest
 					in.Off = old.Off                                              // and this with off and on
 					if in.Contexts == nil {
 						in.Contexts = old.Contexts // a save that doesn't say

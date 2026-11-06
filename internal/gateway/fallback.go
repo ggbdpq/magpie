@@ -1236,7 +1236,11 @@ func asideOf(cs []candidate, q provider.Provider, fallback bool, from provider.P
 // them (creditsLast) behind both, those in their own order. Ahead of the
 // resting, a model its plugin says is busier than the user's
 // settings.BusyLoad (busyOf) goes behind the ready ones: it answers, only
-// after a wait in its vendor's queue (axelburks on Discord).
+// after a wait in its vendor's queue (axelburks on Discord). A pool set
+// to keep through a rest (KeepThroughRest) keeps its place through a
+// transient one — a rate limit, a failure that says nothing of why —
+// which the routing ordered: what its account has cached is worth more
+// than the wait (wssz527, #4030).
 func restLast(out []candidate, pl planned) ([]candidate, planned) {
 	if len(out) == 1 {
 		if r, ok := restingOf(out[0]); ok {
@@ -1253,6 +1257,7 @@ func restLast(out []candidate, pl planned) ([]candidate, planned) {
 		r, isResting := restingOf(c)
 		if isResting {
 			pl.order[i].Rest = &r
+			pl.order[i].Keeps = c.keepsThrough(r) // affine holds the seat (#4030)
 		}
 		load, isBusy := busyOf(c, over, now)
 		switch {
@@ -1270,6 +1275,21 @@ func restLast(out []candidate, pl planned) ([]candidate, planned) {
 	}
 	pl.order = append(append(append(wReady, wBusy...), wResting...), wLast...)
 	return append(append(append(ready, busy...), resting...), last...), pl
+}
+
+// keepsThrough says a rest is no reason to move what c answers: its
+// provider says a transient rest is not worth losing what its key or
+// account has cached (provider.KeepThroughRest, #4030). The request
+// still waits the rest out (restLast holds c back; a ready one answers)
+// — what keepsThrough saves is the conversation: affine holds its seat
+// (affinity.go), and the answer a ready one gives meanwhile doesn't take
+// it over. A rest out of quota or credit, a restricted account, and one
+// asked to verify itself still move it, as they do without the setting.
+func (c candidate) keepsThrough(r Rest) bool {
+	if !c.p.KeepThroughRest {
+		return false
+	}
+	return r.Why == failRate || r.Why == failOther
 }
 
 // busyOf is the load c's plugin last reported for its model, and whether

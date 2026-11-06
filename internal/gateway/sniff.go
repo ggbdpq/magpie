@@ -15,9 +15,13 @@ type usageSniffer struct {
 	proto provider.Protocol
 	sse   bool
 	buf   []byte
-	data  []byte // SSE data lines of the event in progress
-	over  bool   // the JSON body outgrew the cap; give up on it
-	u     Usage
+	// scanned is how much of buf has already been searched for a line's
+	// end: each write searches only what came new, so a line of megabytes
+	// isn't searched from its start on every write
+	scanned int
+	data    []byte // SSE data lines of the event in progress
+	over    bool   // the JSON body outgrew the cap; give up on it
+	u       Usage
 	// served: the model the reply says answered it, the last it named
 	served string
 	// ended: the stream's last event went by (message_stop, [DONE],
@@ -39,6 +43,14 @@ func newSniffer(proto provider.Protocol, contentType string) *usageSniffer {
 	return &usageSniffer{proto: proto, sse: strings.HasPrefix(contentType, "text/event-stream")}
 }
 
+// sniffEventMost is the most a stream event, or a line still arriving, may
+// hold before the sniffer gives up on it: the line sse.go's readers take.
+// A bigger event is let go whole, never accumulated without bound. It used
+// to be a meagre megabyte, and a response.completed that echoes a long
+// tool list grows past one, so the largest Codex turns were counted as 0
+// tokens (#5505).
+const sniffEventMost = 32 << 20
+
 func (s *usageSniffer) write(b []byte) {
 	if !s.sse {
 		if len(s.buf)+len(b) > 8<<20 {
@@ -50,16 +62,20 @@ func (s *usageSniffer) write(b []byte) {
 	}
 	s.buf = append(s.buf, b...)
 	for {
-		i := bytes.IndexByte(s.buf, '\n')
+		i := bytes.IndexByte(s.buf[s.scanned:], '\n')
 		if i < 0 {
+			s.scanned = len(s.buf)
 			break
 		}
+		i += s.scanned
 		s.line(bytes.TrimSuffix(s.buf[:i], []byte{'\r'}))
 		s.buf = s.buf[i+1:]
+		s.scanned = 0
 	}
-	if len(s.buf) > 1<<20 { // a runaway line is not one we can use
+	if len(s.buf) > sniffEventMost { // a runaway line is not one we can use
 		s.buf = nil
 		s.data = nil
+		s.scanned = 0
 	}
 }
 
@@ -77,7 +93,7 @@ func (s *usageSniffer) line(line []byte) {
 	}
 	if rest, ok := bytes.CutPrefix(line, []byte("data:")); ok {
 		rest = bytes.TrimPrefix(rest, []byte{' '})
-		if len(s.data)+len(rest)+1 > 1<<20 {
+		if len(s.data)+len(rest)+1 > sniffEventMost {
 			s.data = nil // never let an unbounded event accumulate
 			return
 		}
@@ -272,6 +288,7 @@ func (s *usageSniffer) drain() {
 		if len(s.buf) > 0 {
 			s.line(bytes.TrimSuffix(s.buf, []byte{'\r'}))
 			s.buf = nil
+			s.scanned = 0
 		}
 		s.flushEvent()
 	}

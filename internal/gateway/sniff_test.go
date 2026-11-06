@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/yetone/magpie/internal/provider"
@@ -85,4 +86,55 @@ func TestSniffSingleNewlineEvents(t *testing.T) {
 	if got := s.usage(); got.Input != 7 || got.Output != 3 {
 		t.Errorf("usage %+v", got)
 	}
+}
+
+// A stream event over a megabyte keeps its usage: a Codex turn with a long
+// tool list has a response.completed that echoes the tools, and those turns
+// used to be counted as 0 tokens (#5505). The copy loops feed the sniffer
+// in 32 KiB writes, so the event sits in the buf with no line end in sight
+// for most of its length.
+func TestSniffUsagePastOneMiB(t *testing.T) {
+	s := newSniffer(provider.Responses, "text/event-stream")
+	payload := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_big\",\"tools\":[\"" + strings.Repeat("x", 1<<20) + "\"],\"usage\":{\"input_tokens\":313000,\"output_tokens\":9000}}}\n\n"
+	for i := 0; i < len(payload); i += 32 << 10 {
+		end := i + (32 << 10)
+		if end > len(payload) {
+			end = len(payload)
+		}
+		s.write([]byte(payload[i:end]))
+	}
+	if got := s.usage(); got != (Usage{Input: 313000, Output: 9000, ResponseID: "resp_big"}) {
+		t.Fatalf("usage %+v", got)
+	}
+	if !s.whole() {
+		t.Fatal("the stream does not read as ended")
+	}
+}
+
+// An event past the cap itself is still let go — the sniffer never
+// accumulates without bound — and the stream goes on reading: what follows
+// is counted, and the end still reads as one.
+func TestSniffEventPastTheCapIsLetGo(t *testing.T) {
+	t.Run("a whole event past the cap", func(t *testing.T) {
+		s := newSniffer(provider.Responses, "text/event-stream")
+		s.write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_big\",\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}}\n\n"))
+		// last, and with figures of its own: were the cap gone, its counts
+		// would overwrite the first reply's and the test would read them
+		s.write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"tools\":[\"" + strings.Repeat("x", sniffEventMost) + "\"],\"response\":{\"id\":\"resp_giant\",\"usage\":{\"input_tokens\":999999,\"output_tokens\":888888}}}\n\n"))
+		if got := s.usage(); got != (Usage{Input: 5, Output: 2, ResponseID: "resp_big"}) {
+			t.Fatalf("usage %+v", got)
+		}
+		if !s.whole() {
+			t.Fatal("the stream does not read as ended")
+		}
+	})
+	t.Run("a line that never ends", func(t *testing.T) {
+		s := newSniffer(provider.Responses, "text/event-stream")
+		s.write([]byte("data: " + strings.Repeat("x", sniffEventMost+(4<<10))))
+		s.write([]byte("\n\n"))
+		s.write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_big\",\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}}\n\n"))
+		if got := s.usage(); got != (Usage{Input: 5, Output: 2, ResponseID: "resp_big"}) {
+			t.Fatalf("usage %+v", got)
+		}
+	})
 }

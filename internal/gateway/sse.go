@@ -26,7 +26,7 @@ func readSSEAlive(r io.Reader, fn func(event, data string) error, alive func()) 
 		r = bareErrors(r)
 	}
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64<<10), 32<<20)
+	sc.Buffer(make([]byte, 0, 64<<10), sniffEventMost)
 	var event string
 	var data []string
 	flush := func() error {

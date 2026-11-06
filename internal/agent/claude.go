@@ -929,8 +929,8 @@ func claudeIn(at place) *Agent {
 	budgeted := false
 	// writeCompact has Claude Code compact at the working window
 	// (settings.WorkingWindow) on magpie, unless settings.FullContext or the
-	// main model is one of Anthropic's Claude models: Anthropic runs a [1m]
-	// one to its whole 1M, so it gets its own window (Max on Discord: a
+	// main model is one of Anthropic's own Claude models: Anthropic runs a
+	// [1m] one to its whole 1M, so it gets its own window (Max on Discord: a
 	// [1m] model stopped at 272K), or a routing group made only of
 	// them (provider.ClaudeGroup, #1741)
 	writeCompact := func() error {
@@ -947,7 +947,7 @@ func claudeIn(at place) *Agent {
 		main := mainModel()
 		n := provider.CompactSet(main)
 		long := false
-		if s := settings.Load().ForAgent("claude"); n == 0 && !claudeModel(main) && !provider.ClaudeGroup(main) {
+		if s := settings.Load().ForAgent("claude"); n == 0 && !claudeOfficial(main) && !provider.ClaudeGroup(main) {
 			n, long = s.Compact(), true
 			// magpie's default gives way to an autoCompactWindow the user
 			// set in Claude Code (/autocompact, its settings), which the env
@@ -1229,8 +1229,9 @@ func claudeIn(at place) *Agent {
 		userTop = userTop && !defaultOurs()
 		// the window each model of magpie's compacts at (claudeBudget's
 		// compact), as writeCompact gives the main model: the user's
-		// threshold for it first (#876); a Claude model, or a group of them,
-		// runs to its own (#1741), as does one whose window the user typed
+		// threshold for it first (#876); one of Anthropic's own Claude
+		// models, or a group of them, runs to its own (#1741), as does one
+		// whose window the user typed
 		// (#1809); the user's autoCompactWindow, unless they gave magpie a
 		// threshold for every model; then that one, the working window
 		// unless Full window. It is the model's own entry, so Desktop's
@@ -1240,7 +1241,7 @@ func claudeIn(at place) *Agent {
 			if n := provider.CompactSet(ref); n > 0 {
 				return n
 			}
-			if claudeModel(ref) || provider.ClaudeGroup(ref) {
+			if claudeOfficial(ref) || provider.ClaudeGroup(ref) {
 				return -1
 			}
 			if s.CompactAt == 0 && userTop {
@@ -1280,14 +1281,15 @@ func claudeIn(at place) *Agent {
 			for _, v := range refs {
 				m, _ := tierAt(v)
 				bare := strings.TrimSuffix(m, "[1m]")
-				if v == "" || claudeModel(bare) || provider.ClaudeGroup(bare) {
+				if v == "" || claudeOfficial(bare) || provider.ClaudeGroup(bare) {
 					continue
 				}
 				models = append(models, claudeBudget{id: spell(v), window: window[bare], long: strings.HasSuffix(v, "[1m]"), compact: work(bare)})
 			}
 			// the one for every model else, as the variable gave it: none
-			// on a Claude main model, which Anthropic runs to its own
-			if m, _ := tierAt(main); !claudeModel(strings.TrimSuffix(m, "[1m]")) && !provider.ClaudeGroup(strings.TrimSuffix(m, "[1m]")) {
+			// on a Claude main model of Anthropic's own, which Anthropic
+			// runs to its own
+			if m, _ := tierAt(main); !claudeOfficial(strings.TrimSuffix(m, "[1m]")) && !provider.ClaudeGroup(strings.TrimSuffix(m, "[1m]")) {
 				def = s.Compact()
 			}
 		}
@@ -2704,6 +2706,30 @@ func claude1MFor(agent string) func(ref string) string {
 // working window (划船不靠桨 on Discord).
 func claudeModel(ref string) bool {
 	return provider.ClaudeModel(strings.TrimSuffix(ref, "[1m]"))
+}
+
+// claudeOfficial says ref names one of Anthropic's own Claude models, on a
+// provider Anthropic serves itself — api.anthropic.com, its Claude
+// subscription, Bedrock or Vertex. A relay's or another subscription's
+// claude model is not, whatever its name: Claude Code knows no window for
+// the prefixed id magpie hands it, and since 2.1.159 nothing auto-compacts
+// a local session unless an auto-compact window is set
+// (anthropics/claude-code#64520), so without one a long conversation runs
+// until every turn is a 400 "Context window is full" (#5537). A model no
+// provider of magpie's answers for is told a window as any other model's.
+func claudeOfficial(ref string) bool {
+	if !claudeModel(ref) {
+		return false
+	}
+	pid, _, ok := strings.Cut(ref, "/")
+	if !ok || pid == "" {
+		return true // Claude Code's own pick, on Anthropic's own endpoint
+	}
+	p, err := provider.Find(pid)
+	if err != nil {
+		return false
+	}
+	return provider.HostOf(p.Anthropic) == "api.anthropic.com" || p.IsBedrock() || p.IsVertex()
 }
 
 // claudeOwnCompact says the settings.json at path has an auto-compact

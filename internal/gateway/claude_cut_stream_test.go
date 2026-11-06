@@ -197,6 +197,28 @@ func TestClaudeCutStreamAfterWords(t *testing.T) {
 	}
 }
 
+// A stream cut short mid tool call fails the reply with words the client
+// reads as prose, its status already spent on the reply that began: a
+// client that retries on its own wording knows "stream was interrupted",
+// not "cut short after the reply had begun", so the turn failed untried
+// and its next turn wrote the whole conversation to the cache again
+// (#5535). The failure names the phrase to retry on.
+func TestClaudeCutStreamMidToolCallWordedToRetry(t *testing.T) {
+	lines := []string{
+		cutStart,
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_w","name":"mcp__magpie__Write","input":{}}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"report.md\",\"content\":\"half o"}}}`,
+		`{"type":"stream_event","event":{"type":"message_stop"}}`,
+	}
+	_, stop, _, _, raw, _, ok := claudeReply(t, &subscriptionRun{}, lines, true)
+	if stop == "end_turn" || ok || !strings.Contains(raw, "cut short after the reply had begun") {
+		t.Fatalf("stop %q, ok %v:\n%s", stop, ok, raw)
+	}
+	if !strings.Contains(raw, "(stream was interrupted; retry the request)") {
+		t.Fatalf("the failure says nothing a client's own retry reads as transient:\n%s", raw)
+	}
+}
+
 // A whole stream's output count is its message_delta's, which the client
 // is told: no usage is lost on the way (#726's first question).
 func TestClaudeStreamOutputCounted(t *testing.T) {

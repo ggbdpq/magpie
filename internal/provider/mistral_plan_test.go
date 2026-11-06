@@ -94,10 +94,12 @@ func TestMistralVibeBudget(t *testing.T) {
 		t.Errorf("pro, payg: %q %+v %v", plan, ws, err)
 	}
 
-	// the subscription unread: the window stands, with no plan name
+	// the subscription unread: unknown, so an error naming the ask —
+	// the last reading stands over it, never a spent window that stops
+	// the key (#5087)
 	budget, sub = reply{200, vibe}, reply{500, `{"message":"boom"}`}
-	if plan, ws, err := read(); err != nil || plan != "" || len(ws) != 1 || ws[0].Used != 42.5 {
-		t.Errorf("no subscription: %q %+v %v", plan, ws, err)
+	if plan, ws, err := read(); err == nil || !strings.Contains(err.Error(), "mistral subscription") || len(ws) != 0 {
+		t.Errorf("no subscription: %q %+v %v, want an error naming the ask", plan, ws, err)
 	}
 
 	// a key with no Vibe budget: no windows, so no card, and nothing more asked
@@ -117,6 +119,96 @@ func TestMistralVibeBudget(t *testing.T) {
 	budget = reply{403, `{"message":"Forbidden"}`}
 	if _, ws, err := read(); err == nil || len(ws) != 0 {
 		t.Errorf("a member without the permission: %+v %v, want an error, and no card from it unless one was read", ws, err)
+	}
+}
+
+// A spent API budget with the subscription unread is unknown, not a spent
+// month that stops a key: whether what goes past the budget is billed is
+// the subscription's pay-as-you-go to tell (yetone on #5087: a
+// pay-as-you-go organization's spent budget would hold a key Mistral
+// keeps serving), so a read of it that fails is an error the last reading
+// stands over, with what Mistral said in it.
+func TestMistralSubscriptionUnread(t *testing.T) {
+	type reply struct {
+		status int
+		body   string
+	}
+	// one organization's budgets, the API month spent, its own
+	// payg_enabled unnamed: the subscription's is the one that decides
+	const spent = `{"vibe_budget":{"usage_percentage":0.43,"initial_budget":150.0,"currency":"USD","reset_at":"2026-12-01T00:00:00Z","payg_enabled":false},"api_budget":{"usage_percentage":100.0,"initial_budget":15.0,"currency":"USD","reset_at":"2026-12-01T00:00:00Z"}}`
+	who := reply{200, `{"plan_type":"API","plan_name":"INDIVIDUAL"}`}
+	budget := reply{200, spent}
+	sub := reply{500, `{"message":"boom"}`}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rep reply
+		switch r.URL.Path {
+		case "/api/vibe/whoami":
+			rep = who
+		case "/v1/billing/budget":
+			rep = budget
+		case "/v1/billing/subscription":
+			rep = sub
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(rep.status)
+		w.Write([]byte(rep.body))
+	}))
+	t.Cleanup(srv.Close)
+	addr := srv.Listener.Addr().String()
+	old := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, addr)
+		},
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	t.Cleanup(func() { http.DefaultClient.Transport = old })
+	mistralKeyKinds.Clear()
+	t.Cleanup(mistralKeyKinds.Clear)
+
+	p := Provider{ID: "mistral", Chat: "https://api.mistral.ai/v1", Key: "spent-key"}
+	src, ok := planQuotaSourceOf(p)
+	if !ok {
+		t.Fatalf("source: %+v %v", src, ok)
+	}
+	read := func() (string, []QuotaWindow, error) {
+		plan, ws, _, err := planKeyWindows(context.Background(), p, src, p.Key)
+		return plan, ws, err
+	}
+
+	// the subscription unread (a 500, a key without its scope, a body
+	// that isn't the reply): an error naming the ask, Mistral's words in
+	// it, and no window read — never a spent month that stops the key
+	for _, bad := range []reply{
+		{500, `{"message":"boom"}`},
+		{401, `{"message":"Invalid API Key"}`},
+		{200, `<html>not the reply</html>`},
+	} {
+		sub = bad
+		plan, ws, err := read()
+		if err == nil || plan != "" || len(ws) != 0 {
+			t.Errorf("%d %q: %q %+v %v, want an error and no windows", bad.status, bad.body, plan, ws, err)
+			continue
+		}
+		if !strings.Contains(err.Error(), "mistral subscription") {
+			t.Errorf("%d: %v, want the ask named", bad.status, err)
+		}
+		if bad.status == 500 && !strings.Contains(err.Error(), "boom") {
+			t.Errorf("500: %v, want what Mistral said", err)
+		}
+		if bad.status == 401 && !strings.Contains(err.Error(), "Invalid API Key") {
+			t.Errorf("401: %v, want what Mistral said", err)
+		}
+	}
+
+	// read whole: the plan's name, and pay-as-you-go leaving a spent
+	// month going, as it is billed past the budget
+	sub = reply{200, `{"plan_name":"INDIVIDUAL","payg_enabled":true,"vibe_payg_enabled":false,"enterprise":false}`}
+	if plan, ws, err := read(); err != nil || plan != "Pro" || len(ws) != 1 || !ws[0].Aside || ws[0].Used != 100 || ws[0].Amount != 15 {
+		t.Errorf("whole: %q %+v %v", plan, ws, err)
 	}
 }
 

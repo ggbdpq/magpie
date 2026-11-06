@@ -142,10 +142,13 @@ func readMistralPlan(b []byte) (string, []QuotaWindow, error) {
 }
 
 // mistralKeyWindows is readMistralBudget's window for the key's kind, with
-// the plan it is on, asked only of a key that has a budget; the card
-// stands without its name when billing/subscription can't be read. A key
-// whose kind whoami doesn't tell has no card read: the organization's
-// budget alone doesn't say which of its two it spends.
+// the plan it is on, asked only of a key that has a budget. The
+// subscription's read failing is unknown, an error — the last reading
+// stands over it (a card read before keeps its, as a vendor failing a
+// while does) — never a spent window that stops a key Mistral bills past
+// its budget (#5087). A key whose kind whoami doesn't tell has no card
+// read: the organization's budget alone doesn't say which of its two it
+// spends.
 func mistralKeyWindows(ctx context.Context, src planQuotaSource, key string) (string, []QuotaWindow, error) {
 	kind, err := mistralKeyKind(ctx, key)
 	if err != nil {
@@ -162,14 +165,23 @@ func mistralKeyWindows(ctx context.Context, src planQuotaSource, key string) (st
 	if err != nil || len(ws) == 0 {
 		return "", ws, err
 	}
+	// whether what goes past the budget is billed is the subscription's
+	// to tell, so its read failing is unknown, an error, and no window of
+	// this read stands on it (#5087): the ask is named, with what
+	// Mistral said in it, as whoami's is
 	var sub mistralSubscription
-	if sb, err := planBody(ctx, planQuotaSource{url: mistralSubscriptionURL, bearer: true}, key); err == nil && json.Unmarshal(sb, &sub) == nil {
-		payg := sub.VibePaygEnabled
-		if kind == mistralAPIKey {
-			payg = sub.PaygEnabled
-		}
-		ws, _ = readMistralBudget(b, kind, payg)
+	sb, err := planBody(ctx, planQuotaSource{url: mistralSubscriptionURL, bearer: true}, key)
+	if err != nil {
+		return "", nil, fmt.Errorf("mistral subscription: %s", err)
 	}
+	if err = json.Unmarshal(sb, &sub); err != nil {
+		return "", nil, fmt.Errorf("mistral subscription: %s", err)
+	}
+	payg := sub.VibePaygEnabled
+	if kind == mistralAPIKey {
+		payg = sub.PaygEnabled
+	}
+	ws, _ = readMistralBudget(b, kind, payg)
 	name := strings.ToUpper(strings.TrimSpace(sub.PlanName))
 	plan := mistralPlanTitles[name]
 	if plan == "" {

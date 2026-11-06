@@ -229,6 +229,13 @@ type Request struct {
 	// such prompts, with the interactive mode on all the same
 	// (thirdPartyPrint)
 	tuiRefused bool
+	// tuiEnvTooBig, for the Claude bridge, is that this request's
+	// interactive run was not started: its safety context as one
+	// environment entry is longer than one exec string may be, which the
+	// exec refused (E2BIG, #4978). Its turn is answered by claude -p,
+	// whose safety context goes over stdin, with the interactive mode
+	// tried first again on the next turn.
+	tuiEnvTooBig bool
 	// hourMarks has the cache marks magpie adds on Anthropic's Messages
 	// (anthropicBody) last an hour: a Responses client's (Codex's), whose
 	// turns are often more than five minutes apart and whose own vendor

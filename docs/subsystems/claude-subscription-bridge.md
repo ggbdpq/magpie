@@ -362,6 +362,25 @@ turn whose reply had begun, and Off are never asked again
 (`thirdPartyRefused` says why). Settings' own value is not changed.
 `claude_tui_refusal_test.go` holds each case.
 
+A second exception is an exec the kernel refuses for size (`E2BIG`,
+"argument list too long", #4978): the interactive mode's Claude Code is
+given its safeguards in one environment entry (`CLAUDE_CODE_EXTRA_BODY`)
+read as it starts, and a long auto-mode conversation's classifier context
+(#4804) grows that entry past what one exec string may carry on Linux,
+where the exec of the helper failed with magpie's own binary named — the
+turn was answered 502, Claude Code asked again, and every try failed the
+same way. The exec's own error is caught (`startRun`,
+`errors.Is(err, syscall.E2BIG)`), on every OS, where no bound of magpie's
+guesses one: macOS, which holds no per-string bound, keeps taking entries
+of 128KB and more it takes today. The turn is answered by `claude -p`,
+whose safeguards go over stdin (`Request.tuiEnvTooBig`, `claudePrint`
+code `extra-body`), and the interactive mode is tried first again on the
+next turn, whose entry may be smaller after a compaction. A `-p` run's
+exec carries no string a request grows but `--json-schema`: refused over
+one, the request is answered 400, its schema's size said
+(`execTooBig`, `claude_e2big_test.go`), where the E2BIG was a 502 every
+account was asked in turn (#4778).
+
 A JSON schema is answered through an answer tool of magpie's
 (`claude_tui_schema.go`): interactive Claude Code takes `--json-schema`
 and does nothing with it (2.1.316, a real run: its result's

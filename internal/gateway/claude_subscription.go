@@ -6691,6 +6691,13 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
 	if err != nil {
 		return writeError(w, from, 400, err.Error()), err.Error()
 	}
+	// Claude Code's advisor (/advisor, advisor.go) is a server tool only the
+	// vendor runs, and the run magpie drives is not started with it: the
+	// parse left it out and told the model it is gone. Said by nobody, the
+	// user only saw a model that never calls the advisor, on a 200 (#5514).
+	if name == "Claude Code" && bytes.Contains(body, []byte(`"advisor_`)) {
+		log.Printf("%s: the turn declares Claude Code's advisor, which the run magpie drives is not started with: the tool is left out, and the model is told it is gone", name)
+	}
 	// output_config's effort is the level the CLI thinks at (--effort), which
 	// works whatever the turn thinks: taken also when the request asks no
 	// thinking, which upstream a reasoning ask would turn on though the

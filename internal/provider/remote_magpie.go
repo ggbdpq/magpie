@@ -127,6 +127,10 @@ func (p Provider) listHeaders() map[string]string {
 			delete(h, k)
 		}
 	}
+	// its key as x-api-key in place, as remoteKey signs its other requests:
+	// the list asked an OpenAI-compatible base Bearer alone now, which the
+	// default both-header ask used to carry it on (#5521)
+	h["x-api-key"] = p.Key
 	h[DrawersHeader] = "1"
 	h[VideomakersHeader] = "1"
 	h[PricesHeader] = "1"

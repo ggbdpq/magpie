@@ -8,6 +8,12 @@ import (
 	"github.com/yetone/magpie/internal/provider"
 )
 
+// sniffEventMost is the longest stream event read for its usage, as long as
+// sse.go's readers take a line. A reply echoes the request's tools in its
+// last event, so a turn with a thousand tools has one of megabytes, with the
+// usage in it (#5505).
+const sniffEventMost = 32 << 20
+
 // usageSniffer picks the usage block out of a provider reply that is being
 // copied to the client untouched. Streams are read line by line as they
 // pass; a plain JSON body is kept and parsed at the end.
@@ -62,15 +68,20 @@ func (s *usageSniffer) write(b []byte) {
 		return
 	}
 	s.buf = append(s.buf, b...)
+	// what was held before b has no line end: a line of megabytes isn't
+	// searched again from its start on every write
+	from := len(s.buf) - len(b)
 	for {
-		i := bytes.IndexByte(s.buf, '\n')
+		i := bytes.IndexByte(s.buf[from:], '\n')
 		if i < 0 {
 			break
 		}
+		i += from
 		s.line(bytes.TrimSuffix(s.buf[:i], []byte{'\r'}))
 		s.buf = s.buf[i+1:]
+		from = 0
 	}
-	if len(s.buf) > 1<<20 { // a runaway line is not one we can use
+	if len(s.buf) > sniffEventMost { // a runaway line is not one we can use
 		s.buf = nil
 		s.data = nil
 	}
@@ -90,7 +101,7 @@ func (s *usageSniffer) line(line []byte) {
 	}
 	if rest, ok := bytes.CutPrefix(line, []byte("data:")); ok {
 		rest = bytes.TrimPrefix(rest, []byte{' '})
-		if len(s.data)+len(rest)+1 > 1<<20 {
+		if len(s.data)+len(rest)+1 > sniffEventMost {
 			s.data = nil // never let an unbounded event accumulate
 			return
 		}

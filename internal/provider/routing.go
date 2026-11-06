@@ -873,9 +873,13 @@ func UsageRead(agent, user string) (at time.Time, failed, ok bool) {
 // ReadUsageNow has agent's accounts users read again now, past the
 // minute their readings are kept and though allowances are read only when
 // asked, and waits, till ctx ends, for a reading begun after it asked. It
-// says whether one came back (UsageRead then tells how it went).
+// says whether one came back (UsageRead then tells how it went). The ask
+// is recorded (readAsked): a reader that decides by its own schedule
+// whether to read at all — a saved Claude account's — answers it, so a
+// careful provider's re-read of one is a read (#5079), not what was kept.
 func ReadUsageNow(ctx context.Context, agent string, users ...string) bool {
 	for _, u := range users {
+		markReadAsked(agent, u)
 		StaleAllowance(agent, u)
 	}
 	c := &usedCache

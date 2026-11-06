@@ -850,6 +850,42 @@ func AskUsage() {
 	l.Unlock()
 }
 
+// readAsked is when an account's usage was last asked to be read again now
+// (ReadUsageNow: a careful provider's re-read, cap_careful.go), by
+// agent/user. Only claudeWindows consults it: a saved Claude account's
+// /usage runs for no ask of routing's otherwise (#5079), so a careful
+// re-read of one came back as what was kept and held it for good (#5085).
+var readAsked struct {
+	sync.Mutex
+	at map[string]time.Time
+}
+
+func markReadAsked(agent, user string) {
+	readAsked.Lock()
+	if readAsked.at == nil {
+		readAsked.at = map[string]time.Time{}
+	}
+	readAsked.at[agent+"/"+strings.ToLower(user)] = time.Now()
+	readAsked.Unlock()
+}
+
+// takeReadAsked is the standing ask of user's allowance under agent, made
+// after the account's last read attempt, and forgets it: one sight of the
+// account answers it, read or kept. What declined it is asked again by the
+// next re-read (carefulRetry), so the floor below, not the ask, is what
+// spaces the runs.
+func takeReadAsked(agent, user string, tried time.Time) time.Time {
+	key := agent + "/" + strings.ToLower(user)
+	readAsked.Lock()
+	defer readAsked.Unlock()
+	at, ok := readAsked.at[key]
+	if !ok || at.IsZero() || !at.After(tried) {
+		return time.Time{}
+	}
+	delete(readAsked.at, key)
+	return at
+}
+
 // claudeWindows is the allowance of the Claude account user, read by
 // Claude Code's own /usage. The account Claude Code is signed in to
 // (active) is read when the user asked since it last was, when the last
@@ -859,7 +895,9 @@ func AskUsage() {
 // (savedRefresh) or every allowance was refreshed by hand since it was
 // read (AskEveryClaudeUsage), or when the switch off a spent account
 // has no reading of it (spareRead), or when the keep-alive runs Claude
-// Code on it (keepingAlive), by Claude Code run in the account's own
+// Code on it (keepingAlive), or when a careful provider's re-read asks it
+// (ReadUsageNow, #5079: the ask that reaches it, where none of the others
+// do), by Claude Code run in the account's own
 // config directory
 // (readSavedClaudeUsage), Claude Code's own sign-in left as it is (#1630).
 // Any other time it is what was kept.
@@ -892,7 +930,26 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
 	// every allowance refreshed by hand since this saved account's last
 	// read (AskEveryClaudeUsage), as its own card's refresh would
 	every := !active && claudeEveryAsked.Load() > e.asked && now.Sub(time.Unix(0, claudeEveryAt.Load())) < claudeEveryFor
-	read := ((active || savedRefresh(ctx, user) || every) && due || spare || alive != nil) && (now.Sub(e.tried) >= claudeAskFloor || alive != nil) && !holding(ctx)
+	// a careful re-read ask is a read of a saved account too (#5079): no
+	// other ask of routing's reaches it, careful holds it meanwhile as
+	// unknown. The ask is taken here — one sight of the account answers
+	// it — and the floor below spaces the runs; a read that failed is run
+	// again only once its wait is up, so an account whose /usage keeps
+	// failing doesn't start a Claude Code on every request that holds it.
+	reread := false
+	if !active {
+		if at := takeReadAsked("claude", user, e.tried); !at.IsZero() {
+			switch {
+			case e.tried.IsZero():
+				reread = true // never read here
+			case e.ws != nil:
+				reread = now.Sub(e.tried) >= claudeAskFloor // read well: the floor is the cap on its runs
+			default:
+				reread = e.err != nil && now.Sub(e.tried) >= e.wait // failed: its wait is up
+			}
+		}
+	}
+	read := ((active || savedRefresh(ctx, user) || every) && due || spare || reread || alive != nil) && (now.Sub(e.tried) >= claudeAskFloor || alive != nil) && !holding(ctx)
 	c.Lock()
 	// one reading an ask or a wait, its first caller's; the others keep
 	// to it

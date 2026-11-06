@@ -5409,6 +5409,12 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 	// OAuth HTTP requests are content-classified as third-party traffic when
 	// they carry another agent's harness (Pi, OpenCode, and others).
 	if p.Account != nil && p.Account.Agent == "claude" {
+		// a subscription is asked only translated, so a sealed compaction
+		// the routing doesn't hold to its writer (translatedCompaction)
+		// is refused before it is read as nothing (#5411)
+		if msg, refused := translatedCompaction(p, model, from, body); refused {
+			return writeError(w, from, 400, msg), msg
+		}
 		call.To = provider.Anthropic
 		return s.serveClaudeSubscription(w, r, from, p, model, body, &call.Usage)
 	}
@@ -5549,6 +5555,17 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 		msg := fmt.Sprintf("%s doesn't serve %s on the Responses API, so Codex's native compaction can't be asked of it", p.Name, model)
 		return writeError(w, from, 400, msg), msg
 	}
+	// from here the request is translated, and a translation reads no
+	// compaction item: a sealed one — whose writer magpie doesn't know, a
+	// known one never routing here (checkpointReaders) — went out left
+	// out, and a checkpoint-only handoff lost the conversation's earlier
+	// turns silently, answered 200 (#5411). Refused, as a known writer's
+	// is: the seal can't be carried where the request is translated, and
+	// magpie doesn't drop it or summarise it in its place unasked. What
+	// was relayed as it came had its say above; this is the silent path.
+	if msg, refused := translatedCompaction(p, model, from, body); refused {
+		return writeError(w, from, 400, msg), msg
+	}
 	to := s.usable(p, model)
 	if len(to) == 0 {
 		// every API turned the model away: the one the user picked for it
@@ -5580,6 +5597,24 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 // OpenAI's API, Messages for a Claude model where it is served.
 func firstElsewhere(p provider.Provider, model string, from provider.Protocol) bool {
 	return p.ResponsesFirst(model) && from != provider.Responses || p.MessagesFirst(model) && from != provider.Anthropic
+}
+
+// translatedCompaction is the refusal a Responses request carrying a
+// sealed compaction is answered when it would be translated: a
+// translation reads no compaction item, and a checkpoint-only handoff
+// lost the conversation's earlier turns silently, answered 200 (#5411).
+// A writer magpie knows never routes there (checkpointReaders); one it
+// doesn't — a checkpoint carried over by hand, or by another magpie —
+// did. Refused, as a known writer's is: the seal can't be carried where
+// the request is translated, and magpie doesn't drop it or summarise it
+// in its place unasked. What is relayed as it came keeps its say — the
+// destination reads it, or refuses it and is asked again without
+// (withoutSeals, withoutCompaction); this is only the silent path.
+func translatedCompaction(p provider.Provider, model string, from provider.Protocol, body []byte) (string, bool) {
+	if from != provider.Responses || len(sealedCompactions(body)) == 0 {
+		return "", false
+	}
+	return fmt.Sprintf("This conversation was compacted natively: its earlier turns are sealed in a compaction (encrypted_content) only the key or account that wrote it reads. %s answers %s on an API the request must be translated for, and a translation leaves the compaction out, silently losing the conversation's earlier context. magpie doesn't drop it or summarise it in its place unasked: ask for %s where the request goes as it came (the account that compacted this conversation), or start a new conversation.", p.Name, model, model), true
 }
 
 // autoPicks is whether c is Copilot's Auto, which picks the model itself.

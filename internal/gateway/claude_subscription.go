@@ -56,6 +56,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -907,7 +908,8 @@ func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, con
 	var full *claudeFull
 	var refused *cliSchemaRefused
 	var tui *tuiRefusal
-	if err != nil && (from != nil || req.replayed) && !errors.As(err, &full) && !errors.As(err, &refused) && !errors.As(err, &tui) && ctx.Err() == nil {
+	var big *execTooBig
+	if err != nil && (from != nil || req.replayed) && !errors.As(err, &full) && !errors.As(err, &refused) && !errors.As(err, &tui) && !errors.As(err, &big) && ctx.Err() == nil {
 		log.Printf("claude: Claude Code could not go on from the conversation's saved session (%v); a new one is told the whole conversation", err)
 		req.branch, req.told = nil, true
 		return b.startTrusted(ctx, req, model, configDir, owner, nil)
@@ -1210,7 +1212,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	// runs them interactively. A run it can't take is refused, never made
 	// -p: a refused request never ran, and isn't the last run
 	tui, code := claudeTUI(req, binary)
-	if !tui && code != "off" && code != "no-shim" && code != thirdPartyCode && code != cacheMarksCode {
+	if !tui && code != "off" && code != "no-shim" && code != thirdPartyCode && code != cacheMarksCode && code != extraBodyCode {
 		cleanup()
 		return nil, nil, &tuiRefusal{claudeTUIErr(claudeNotTUIWhy(req, binary))}
 	}
@@ -1349,6 +1351,32 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	if err != nil {
 		_, _ = stdout.Close(), stderr.Close()
 		b.removeRun(run)
+		if errors.Is(err, syscall.E2BIG) {
+			// the kernel refused the exec: one of the strings it would
+			// have carried is longer than one exec string may be. In the
+			// interactive mode that is the safety context, one
+			// environment entry read as the run starts, which a long
+			// auto-mode conversation's classifier context grows past
+			// (#4978, #4804): the exec failed "argument list too long"
+			// for magpie's own binary, the turn was answered 502, Claude
+			// Code asked again, and every try failed the same way, so
+			// the conversation went on nowhere. The turn is answered by
+			// claude -p, whose safety context goes over stdin, and the
+			// interactive mode is tried first again on the next turn. A
+			// -p run's exec carries no string a request grows but
+			// --json-schema: refused over it, the request's size is
+			// said, a 400 no account is asked for (#4778).
+			if tui {
+				kept = true
+				req.tuiEnvTooBig = true
+				log.Printf("claude: the interactive run's exec was refused as too big (E2BIG); the turn is answered as claude -p, its safety context over stdin")
+				return b.startRun(ctx, req, model, configDir, owner, from)
+			}
+			if n := len(cliSchema(req.Format.schema())); n > 0 {
+				return nil, nil, &execTooBig{msg: fmt.Sprintf("claude was not started: the exec was refused as too big (E2BIG), and its --json-schema argument carries the request's schema, %d bytes", n)}
+			}
+			return nil, nil, &execTooBig{msg: "claude was not started: the exec was refused as too big (E2BIG)"}
+		}
 		return nil, nil, err
 	}
 	go func() {
@@ -1525,6 +1553,7 @@ func claudePrint(req *Request, binary claudeCLI) (code, why string) {
 		{urlImages(req.Messages) > 0, "image", "an image known by its URL"},
 		{req.tuiRefused, thirdPartyCode, "Anthropic refused this agent's system prompt in the interactive mode as a third-party app's"},
 		{req.clientCache.keptAsPrint(), cacheMarksCode, fmt.Sprintf("the client's cache marks keep %dKB of history, which a fresh interactive run writes again each call", markedHistory(req)>>10)},
+		{req.tuiEnvTooBig, extraBodyCode, "the safety context is too big for one environment entry"},
 	} {
 		if c.is {
 			return c.code, c.why
@@ -6441,9 +6470,13 @@ func (r *subscriptionRun) finish() {
 	}
 }
 
+// startTree is launch's proc.StartTree, a var for the tests of an exec a
+// kernel refused for size (#4978).
+var startTree = proc.StartTree
+
 // launch starts the run's agent, to end with all it starts.
 func (r *subscriptionRun) launch() error {
-	t, err := proc.StartTree(r.cmd)
+	t, err := startTree(r.cmd)
 	if err != nil {
 		return err
 	}
@@ -7315,9 +7348,10 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
 		var full *claudeFull
 		var refused *cliSchemaRefused
 		var tui *tuiRefusal
+		var big *execTooBig
 		if errors.As(err, &full) {
 			code = 503
-		} else if errors.As(err, &refused) || errors.As(err, &tui) {
+		} else if errors.As(err, &refused) || errors.As(err, &tui) || errors.As(err, &big) {
 			code = 400
 		}
 		return writeError(w, from, code, name+": "+err.Error()), err.Error()
@@ -7480,6 +7514,22 @@ const thirdPartyCode = "third-party"
 // because its client's cache marks keep more history than a fresh
 // interactive run should write again (keptByPrint).
 const cacheMarksCode = "cache-marks"
+
+// extraBodyCode is claudePrint's code for a run that is claude -p because
+// its interactive exec was refused as too big (E2BIG): the safeguards
+// ride one environment entry there, and claude -p's go over stdin.
+const extraBodyCode = "extra-body"
+
+// execTooBig is an exec a kernel refused for size: one argument or
+// environment string of the run it would have started is longer than one
+// exec string may be (E2BIG, "argument list too long"). The same request
+// fails the same way on every account and every try (#4978), so it is
+// the request's 400, neither asked again nor of the next account, where
+// the E2BIG was a 502 every account was asked in turn and rested some
+// (#4778). The sizes of the request's own are said with it.
+type execTooBig struct{ msg string }
+
+func (e *execTooBig) Error() string { return e.msg }
 
 // redoAsPrint is relay's status for an interactive-mode turn Anthropic
 // refused as a third-party app's (#4503, Raven on Discord: Pi in Cindy

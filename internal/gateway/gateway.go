@@ -6359,7 +6359,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 	// what comes back is counted as it is read, as what went is (#4456)
 	res = gotDown(ctx, res)
 	if err == nil && res.StatusCode >= 400 && provider.OpenCodeURL(req.URL.String()) {
-		logOpenCodeRefusal(p, req, res.StatusCode)
+		logOpenCodeRefusal(p, req, res)
 	}
 	if err == nil && to == provider.Anthropic {
 		// a vendor that takes the key in x-api-key or Authorization

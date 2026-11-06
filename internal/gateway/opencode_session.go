@@ -3,11 +3,13 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/tidwall/gjson"
 	"github.com/yetone/magpie/internal/provider"
@@ -44,8 +46,11 @@ func openCodeSeed(in http.Header, body []byte) string {
 // first 8 characters. OpenCode answers a request without one 400
 // "Request is missing x-opencode-session and cannot be routed
 // efficiently" (luci on Discord), and this tells that apart from a
-// session the user's own header pins every conversation to.
-func logOpenCodeRefusal(p provider.Provider, req *http.Request, status int) {
+// session the user's own header pins every conversation to. A 429 whose
+// quota is hardly touched and a spent one are told apart by the wait the
+// vendor names and its own words, so both are said here, and the body is
+// put back for what reads it next (#5509, lingengyuan).
+func logOpenCodeRefusal(p provider.Provider, req *http.Request, res *http.Response) {
 	var names []string
 	for k := range req.Header {
 		names = append(names, strings.ToLower(k))
@@ -61,8 +66,25 @@ func logOpenCodeRefusal(p provider.Provider, req *http.Request, status int) {
 			}
 		}
 	}
-	log.Printf("opencode: %s answered %d to %s %s%s; x-opencode-session %s; headers sent: %s",
-		p.ID, status, req.Method, req.URL.Host, req.URL.Path, session, strings.Join(names, ", "))
+	said := fmt.Sprintf("opencode: %s answered %d to %s %s%s; x-opencode-session %s",
+		p.ID, res.StatusCode, req.Method, req.URL.Host, req.URL.Path, session)
+	if d := retryAfter(res.Header, time.Now()).Round(time.Second); d > 0 {
+		said += "; retry-after " + d.String()
+	}
+	if res.Body != nil {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
+		// what wasn't read is read after what was: a body is never cut
+		res.Body = readCloser{io.MultiReader(bytes.NewReader(b), res.Body), res.Body}
+		words := vendorMessage(b)
+		if words == "" {
+			words = strings.TrimSpace(string(b))
+		}
+		if words = clipRunes(words, 200); words != "" {
+			said += fmt.Sprintf("; says %q", words)
+		}
+	}
+	said += "; headers sent: " + strings.Join(names, ", ")
+	log.Print(said)
 }
 
 // errorKeys are the fields any error an API answers carries, in its own

@@ -597,6 +597,9 @@ type drawing struct {
 	N      int
 	Images []picture // to edit, or draw from
 	Mask   *picture
+	// Markup is the transparent annotation layer drawn over Images to
+	// steer the edit (#5364), the way a Mask restricts it.
+	Markup *picture
 	// Extra are the request's fields magpie doesn't read, which a
 	// vendor's own images API that takes them is sent as they came
 	// (Ark's sequential_image_generation, optimize_prompt_options,
@@ -949,6 +952,13 @@ func readDrawing(r *http.Request) (drawing, error) {
 			}
 			d.Mask = &pic
 		}
+		if fhs := f.File["markup"]; len(fhs) > 0 {
+			pic, err := readPart(fhs[0])
+			if err != nil {
+				return d, err
+			}
+			d.Markup = &pic
+		}
 	} else {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -965,6 +975,7 @@ func readDrawing(r *http.Request) (drawing, error) {
 			Image          json.RawMessage `json:"image"`
 			Images         json.RawMessage `json:"images"`
 			Mask           json.RawMessage `json:"mask"`
+			Markup         json.RawMessage `json:"markup"`
 			ResponseFormat string          `json:"response_format"`
 		}
 		if err := json.Unmarshal(body, &in); err != nil {
@@ -991,6 +1002,13 @@ func readDrawing(r *http.Request) (drawing, error) {
 				return d, err
 			}
 			d.Mask = &pic
+		}
+		if srcs := imageSources(in.Markup); len(srcs) > 0 {
+			pic, err := pictureOf(srcs[0])
+			if err != nil {
+				return d, err
+			}
+			d.Markup = &pic
 		}
 	}
 	d.Model = strings.TrimSpace(d.Model)
@@ -1575,6 +1593,9 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 		if d.Mask != nil {
 			req["mask"] = map[string]string{"image_url": d.Mask.dataURL()}
 		}
+		if d.Markup != nil {
+			req["markup"] = map[string]string{"image_url": d.Markup.dataURL()}
+		}
 		body, _ = json.Marshal(req)
 		ct, url = "application/json", base+"/images/edits"
 	} else {
@@ -1599,6 +1620,9 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 		}
 		if d.Mask != nil {
 			pics, fields = append(pics, *d.Mask), append(fields, "mask")
+		}
+		if d.Markup != nil {
+			pics, fields = append(pics, *d.Markup), append(fields, "markup")
 		}
 		for i, pic := range pics {
 			if pic.URL != "" {
@@ -1638,6 +1662,9 @@ func senseNovaDrawer(model string) bool {
 func (s *Server) drawOpenRouterImages(ctx context.Context, p provider.Provider, model string, d drawing) (drawn, int, error) {
 	if d.Mask != nil {
 		return drawn{}, http.StatusBadRequest, errors.New("OpenRouter's images API does not support mask edits")
+	}
+	if d.Markup != nil {
+		return drawn{}, http.StatusBadRequest, errors.New("OpenRouter's images API does not support a markup layer")
 	}
 	req := map[string]any{"model": model, "prompt": d.Prompt, "n": d.N}
 	for k, v := range map[string]string{"size": d.Size, "quality": d.Quality, "background": d.Background, "output_format": d.Format} {

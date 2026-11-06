@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -33,6 +35,11 @@ type usageSniffer struct {
 	tail chatTail
 	// found: the searches the reply ran by itself (searchTally)
 	found searchTally
+	// askedJSON: the request went as the client sent it with a json_schema
+	// format in it (#5082), and the answer's text is gathered as it goes
+	// by, to learn from one that answers with text that is no JSON
+	askedJSON bool
+	text      strings.Builder
 }
 
 func newSniffer(proto provider.Protocol, contentType string) *usageSniffer {
@@ -95,7 +102,9 @@ func (s *usageSniffer) line(line []byte) {
 
 func (s *usageSniffer) flushEvent() {
 	if len(s.data) > 0 {
-		s.parse(bytes.TrimSpace(s.data))
+		b := bytes.TrimSpace(s.data)
+		s.parse(b)
+		s.gatherText(b)
 		s.data = nil
 	}
 }
@@ -288,6 +297,69 @@ func (s *usageSniffer) settleWhole() {
 		s.failed = msg
 		s.u.ErrType = provider.ErrorType(bytes.TrimSpace(s.buf))
 	}
+}
+
+// gatherWhole gathers a reply that came whole for its answer's text
+// (askedJSON, #5082); a stream's text is gathered event by event instead.
+// Call it once the body has ended, before usage reads it.
+func (s *usageSniffer) gatherWhole() {
+	if s.sse || s.over || len(s.buf) == 0 {
+		return
+	}
+	s.gatherText(bytes.TrimSpace(s.buf))
+}
+
+// gatherText gathers the answer's text out of what went by, askedJSON
+// alone (#5082): a stream's text deltas, or a whole reply's message.
+func (s *usageSniffer) gatherText(b []byte) {
+	if !s.askedJSON {
+		return
+	}
+	switch s.proto {
+	case provider.Chat:
+		for _, c := range gjson.GetBytes(b, "choices").Array() {
+			if s.sse {
+				s.text.WriteString(c.Get("delta.content").String())
+			} else {
+				s.text.WriteString(c.Get("message.content").String())
+			}
+		}
+	case provider.Responses:
+		if s.sse {
+			if gjson.GetBytes(b, "type").String() == "response.output_text.delta" {
+				s.text.WriteString(gjson.GetBytes(b, "delta").String())
+			}
+			return
+		}
+		for _, o := range gjson.GetBytes(b, "output").Array() {
+			for _, c := range o.Get("content").Array() {
+				s.text.WriteString(c.Get("text").String())
+			}
+		}
+	default:
+		if s.sse {
+			if gjson.GetBytes(b, "type").String() == "content_block_delta" {
+				s.text.WriteString(gjson.GetBytes(b, "delta.text").String())
+			}
+			return
+		}
+		for _, c := range gjson.GetBytes(b, "content").Array() {
+			s.text.WriteString(c.Get("text").String())
+		}
+	}
+}
+
+// ignoredFormat reports whether a reply a json_schema was asked of
+// (#5082) came back saying something that is no JSON: a relay that takes
+// the format field as sent and drops it answers a 200 like that. A
+// stream that never reached its last event, one that failed, and one
+// that said nothing are none of them a verdict.
+func (s *usageSniffer) ignoredFormat() bool {
+	if !s.askedJSON || s.failed != "" || s.sse && !s.ended {
+		return false
+	}
+	txt := strings.TrimSpace(s.text.String())
+	return txt != "" && !json.Valid([]byte(txt))
 }
 
 // usage is what the reply reported, the model it named in Served; call it

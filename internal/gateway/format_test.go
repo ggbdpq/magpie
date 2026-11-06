@@ -282,3 +282,192 @@ func TestStructuredOutputOnGemini(t *testing.T) {
 		t.Fatalf("response_format = %s", chat.ResponseFormat)
 	}
 }
+
+// titleBody is Claude Code's session-title request, asked of a relay's
+// model in Anthropic's words: its answer read back as JSON (#5082).
+var titleBody = `{"model":"relay/deepseek-chat","max_tokens":256,"system":"Generate a concise title for this session.",` +
+	`"messages":[{"role":"user","content":"help me add a header mod"}],"output_config":{"format":{"type":"json_schema","schema":` +
+	`{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}}}}`
+
+// sdkChatObjectAsk is a chat.completions ask for any JSON object, no
+// schema in it.
+const sdkChatObjectAsk = `{"messages":[{"role":"user","content":"hi"}],"model":"%s","response_format":{"type":"json_object"},"stream":false}`
+
+// withStream asks a whole body for a stream.
+func withStream(body string) string {
+	return strings.TrimSuffix(body, "}") + `,"stream":true}`
+}
+
+// ignoredVendor serves Chat, Responses and Messages like a relay in front
+// of a model without structured output (#5082): the format field is taken
+// as sent, and the answer comes back anyway, plain text that is no JSON —
+// or, with honors, the JSON an upstream that honors the field answers
+// with. Streamed requests are answered in kind. It keeps what each was
+// sent.
+type ignoredVendor struct {
+	mu     sync.Mutex
+	bodies []map[string]any
+	paths  []string
+	honors bool // answer with the JSON an honoring upstream would
+}
+
+func (v *ignoredVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	b, _ := io.ReadAll(r.Body)
+	var m map[string]any
+	json.Unmarshal(b, &m)
+	v.mu.Lock()
+	v.bodies = append(v.bodies, m)
+	v.paths = append(v.paths, r.URL.Path)
+	v.mu.Unlock()
+	stream, _ := m["stream"].(bool)
+	answer, _ := json.Marshal("I added the header mod to your config.")
+	if v.honors {
+		answer, _ = json.Marshal(calendarAnswer)
+	}
+	if !stream {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/chat/completions"):
+			io.WriteString(w, `{"id":"c1","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":`+string(answer)+`},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":5,"total_tokens":10}}`)
+		case strings.HasSuffix(r.URL.Path, "/responses"):
+			io.WriteString(w, `{"id":"r1","object":"response","model":"m","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":`+string(answer)+`}]}],"usage":{"input_tokens":5,"output_tokens":5}}`)
+		default:
+			io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":`+string(answer)+`}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":5}}`)
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	switch {
+	case strings.HasSuffix(r.URL.Path, "/chat/completions"):
+		io.WriteString(w, sse(`data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":`+string(answer)+`}}]}`,
+			`data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":5,"total_tokens":10}}`,
+			`data: [DONE]`))
+	case strings.HasSuffix(r.URL.Path, "/responses"):
+		io.WriteString(w, sse(`data: {"type":"response.output_text.delta","delta":`+string(answer)+`}`,
+			`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":`+string(answer)+`}]}}`,
+			`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}`))
+	default:
+		io.WriteString(w, sse(`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`,
+			`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":`+string(answer)+`}}`,
+			`event: content_block_stop`+"\n"+`data: {"type":"content_block_stop","index":0}`,
+			`event: message_delta`+"\n"+`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+			`event: message_stop`+"\n"+`data: {"type":"message_stop"}`))
+	}
+}
+
+func (v *ignoredVendor) sent() (string, map[string]any) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if len(v.bodies) == 0 {
+		return "", nil
+	}
+	return v.paths[len(v.paths)-1], v.bodies[len(v.bodies)-1]
+}
+
+// fieldIn reads a body's format field out, by its path as it went as sent.
+func fieldIn(sent map[string]any, field string) any {
+	got := any(sent)
+	for _, k := range strings.Split(field, ".") {
+		m, _ := got.(map[string]any)
+		got = m[k]
+	}
+	return got
+}
+
+// A relay that takes the format field as sent and answers anyway — a 200
+// whose text is no JSON, a model without structured output behind it
+// (#5082) — is learned from: the schema was asked and never reached its
+// model in any form, so from the next turn the format is told in the
+// system prompt for that provider and model alone, the way a refusal
+// (formatRefused) is. The first turn still goes as the client sent it:
+// an honoring upstream must keep the field it was asked in.
+func TestIgnoredFormatLearnedFromReply(t *testing.T) {
+	for _, c := range []struct {
+		name, path, body, field string // where the format went as sent
+	}{
+		{"Claude Code's session-title request", "/v1/messages", titleBody, "output_config.format"},
+		{"that request, streamed", "/v1/messages", withStream(titleBody), "output_config.format"},
+		{"a chat.completions.parse", "/v1/chat/completions", strings.Replace(sdkChatParse, "%s", "relay/deepseek-chat", 1), "response_format"},
+		{"a responses.parse", "/v1/responses", strings.Replace(sdkResponsesParse, "%s", "relay/deepseek-chat", 1), "text.format"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fresh(t)
+			up := &ignoredVendor{}
+			srv := httptest.NewServer(up)
+			t.Cleanup(srv.Close)
+			if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k",
+				Chat: srv.URL + "/v1", Responses: srv.URL + "/v1", Anthropic: srv.URL + "/v1",
+				Models: []string{"deepseek-chat"}}); err != nil {
+				t.Fatal(err)
+			}
+			h := New().Handler()
+			for i := range 2 {
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, httptest.NewRequest("POST", c.path, strings.NewReader(c.body)))
+				if rec.Code != 200 {
+					t.Fatalf("turn %d: status %d: %s", i, rec.Code, rec.Body.String())
+				}
+				_, sent := up.sent()
+				got, words := fieldIn(sent, c.field), strings.Count(jsonOf(sent), "Respond with a single JSON")
+				if i == 0 {
+					if got == nil {
+						t.Fatalf("turn %d: the format field was dropped before anything was learned: %s", i, jsonOf(sent))
+					}
+					if words != 0 {
+						t.Fatalf("turn %d: told in words before anything was learned: %s", i, jsonOf(sent))
+					}
+					continue
+				}
+				if got != nil {
+					t.Fatalf("turn %d: the format field was kept: %s", i, jsonOf(sent))
+				}
+				if words != 1 {
+					t.Fatalf("turn %d: format not told in words once: %s", i, jsonOf(sent))
+				}
+			}
+		})
+	}
+}
+
+// An upstream that honors the format field answers the JSON it was asked
+// for, and is never learned from; a JSON object asked without a schema is
+// not learned from either. Whatever the answers, the field goes as sent
+// and no words are said, turn after turn.
+func TestHonoredFormatNeverLearned(t *testing.T) {
+	for _, c := range []struct {
+		name, path, body, field string
+		honors                  bool
+	}{
+		{"an honoring relay's chat parse", "/v1/chat/completions", strings.Replace(sdkChatParse, "%s", "relay/deepseek-chat", 1), "response_format", true},
+		{"an object ask at a dropping relay", "/v1/chat/completions", strings.Replace(sdkChatObjectAsk, "%s", "relay/deepseek-chat", 1), "response_format", false},
+		{"an honoring relay's session title", "/v1/messages", titleBody, "output_config.format", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fresh(t)
+			up := &ignoredVendor{honors: c.honors}
+			srv := httptest.NewServer(up)
+			t.Cleanup(srv.Close)
+			if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k",
+				Chat: srv.URL + "/v1", Responses: srv.URL + "/v1", Anthropic: srv.URL + "/v1",
+				Models: []string{"deepseek-chat"}}); err != nil {
+				t.Fatal(err)
+			}
+			h := New().Handler()
+			for i := range 2 {
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, httptest.NewRequest("POST", c.path, strings.NewReader(c.body)))
+				if rec.Code != 200 {
+					t.Fatalf("turn %d: status %d: %s", i, rec.Code, rec.Body.String())
+				}
+				_, sent := up.sent()
+				if got := fieldIn(sent, c.field); got == nil {
+					t.Fatalf("turn %d: the format field was dropped: %s", i, jsonOf(sent))
+				}
+				if words := strings.Count(jsonOf(sent), "Respond with a single JSON"); words != 0 {
+					t.Fatalf("turn %d: told in words: %s", i, jsonOf(sent))
+				}
+			}
+		})
+	}
+}

@@ -33,7 +33,7 @@ func holdReads(t *testing.T, p Proxy, at time.Time, wait time.Duration) (*atomic
 	}
 	readWait = wait
 	sysCache.Lock()
-	sysCache.at, sysCache.p, sysCache.failed = at, p, false
+	sysCache.at, sysCache.p, sysCache.quiet, sysCache.failed = at, p, 0, false
 	sysCache.Unlock()
 	t.Cleanup(func() {
 		// the read still under way ends before the next test reads
@@ -41,7 +41,7 @@ func holdReads(t *testing.T, p Proxy, at time.Time, wait time.Duration) (*atomic
 		readEnds(t, underWay())
 		readSystem, readWait = oldRead, oldWait
 		sysCache.Lock()
-		sysCache.at, sysCache.p, sysCache.failed = time.Time{}, Proxy{}, false
+		sysCache.at, sysCache.p, sysCache.quiet, sysCache.failed = time.Time{}, Proxy{}, 0, false
 		sysCache.Unlock()
 	})
 	return &reads, answers

@@ -20,12 +20,12 @@ func TestSystemProxySetAfterStartIsTakenSoon(t *testing.T) {
 	readSystem = func() (Proxy, bool) { return p.Load().(Proxy), true }
 	noneKeep = 50 * time.Millisecond
 	sysCache.Lock()
-	sysCache.at, sysCache.p = time.Time{}, Proxy{}
+	sysCache.at, sysCache.p, sysCache.quiet = time.Time{}, Proxy{}, 0
 	sysCache.Unlock()
 	t.Cleanup(func() {
 		readSystem, noneKeep = oldRead, oldNone
 		sysCache.Lock()
-		sysCache.at, sysCache.p = time.Time{}, Proxy{}
+		sysCache.at, sysCache.p, sysCache.quiet = time.Time{}, Proxy{}, 0
 		sysCache.Unlock()
 	})
 

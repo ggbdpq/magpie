@@ -28,6 +28,13 @@ func TestClaudeCompactWindow(t *testing.T) {
 	if err := catalog.SaveLive("v", "https://example.test/v1", []catalog.Model{{ID: "big", Context: 1000000}, {ID: "claude-opus-5-5", Context: 1000000}}); err != nil {
 		t.Fatal(err)
 	}
+	if err := provider.Save(provider.Provider{ID: "an", Name: "Anthropic", Anthropic: "https://api.anthropic.com", Key: "k",
+		Models: []string{"claude-opus-5-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive("an", "https://api.anthropic.com", []catalog.Model{{ID: "claude-opus-5-5", Context: 1000000}}); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(home, ".claude", "settings.json")
 	writeFile(t, path, `{}`)
 	a := claude(home)
@@ -53,16 +60,21 @@ func TestClaudeCompactWindow(t *testing.T) {
 	if compact() != "272000" {
 		t.Fatalf("back to the working window: %q", compact())
 	}
-	// a Claude model runs to its whole window, as Anthropic runs a [1m]
-	// one (Max on Discord: a [1m] model stopped at 272K), and another
-	// vendor's is capped again after it
-	must(a.Field("model").Set("v/claude-opus-5-5[1m]"))
+	// a Claude model of Anthropic's own runs to its whole window, as
+	// Anthropic runs a [1m] one (Max on Discord: a [1m] model stopped at
+	// 272K), and one a relay serves is capped again like any other
+	// model's (#5537)
+	must(a.Field("model").Set("an/claude-opus-5-5[1m]"))
 	if compact() != "" {
 		t.Fatalf("a Claude model: %q", compact())
 	}
 	must(a.Sync())
 	if compact() != "" {
 		t.Fatalf("a Claude model, synced: %q", compact())
+	}
+	must(a.Field("model").Set("v/claude-opus-5-5[1m]"))
+	if compact() != "272000" {
+		t.Fatalf("a relay's Claude model: %q", compact())
 	}
 	must(a.Field("model").Set("v/big[1m]"))
 	if compact() != "272000" {
@@ -145,7 +157,7 @@ func TestClaudeCompactAt(t *testing.T) {
 	expect("a Claude model, its provider's", "600000")
 	must(provider.SetModelCompacts("v", map[string]int{"flash": 200000}))
 	must(a.Sync())
-	expect("a Claude model, none set", "")
+	expect("a relay's Claude model, every model's", "400000")
 	must(provider.SetFullContext(true))
 	must(a.Field("model").Set("v/flash"))
 	expect("full window, the model's own", "200000")
@@ -301,6 +313,75 @@ func TestClaudeGroupCompactWindow(t *testing.T) {
 	}
 }
 
+// A claude model a relay serves is not one of Anthropic's, whatever its
+// name: Claude Code knows no window for the prefixed id magpie hands it,
+// and since 2.1.159 nothing auto-compacts a local session unless an
+// auto-compact window is set (anthropics/claude-code#64520), so a long
+// conversation ran until every turn was a 400 "Context window is full",
+// the compaction request as oversized as the history it carries (#5537,
+// 99iii). magpie tells the window as it does any other model's: the
+// working window, a threshold set on the model's provider first (#876).
+// One of Anthropic's own, on api.anthropic.com, still runs to its own.
+func TestClaudeCompactWindowRelayClaude(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	if err := provider.Save(provider.Provider{ID: "v", Name: "V", Chat: "https://example.test/v1", Key: "k",
+		Models: []string{"claude-opus-5-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive("v", "https://example.test/v1", []catalog.Model{{ID: "claude-opus-5-5", Context: 1000000}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Save(provider.Provider{ID: "an", Name: "Anthropic", Anthropic: "https://api.anthropic.com", Key: "k",
+		Models: []string{"claude-opus-5-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive("an", "https://api.anthropic.com", []catalog.Model{{ID: "claude-opus-5-5", Context: 1000000}}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".claude", "settings.json")
+	writeFile(t, path, `{}`)
+	a := claude(home)
+	compact := func() string { v, _ := edit.GetJSON(path, "env."+claudeCompactEnv); return v }
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	expect := func(what, want string) {
+		t.Helper()
+		if got := compact(); got != want {
+			t.Fatalf("%s: %q; want %q", what, got, want)
+		}
+	}
+
+	must(a.Field("model").Set("v/claude-opus-5-5"))
+	expect("a relay's claude model", "272000")
+	must(a.Field("model").Set("v/claude-opus-5-5[1m]"))
+	expect("a relay's claude [1m] model", "272000")
+	must(a.Sync())
+	expect("a relay's claude [1m] model, synced", "272000")
+	// a threshold set on the relay comes first, as for any other model
+	must(provider.SetModelCompacts("v", map[string]int{"*": 600000}))
+	must(a.Sync())
+	expect("a relay's claude model, its provider's", "600000")
+	must(provider.SetModelCompacts("v", nil))
+	must(a.Sync())
+	expect("back to the working window", "272000")
+	// one of Anthropic's own runs to its own
+	must(a.Field("model").Set("an/claude-opus-5-5[1m]"))
+	expect("Anthropic's own [1m]", "")
+	must(a.Field("model").Set("an/claude-opus-5-5"))
+	expect("Anthropic's own", "")
+	// back on the relay, the window is told again
+	must(a.Field("model").Set("v/claude-opus-5-5"))
+	expect("back on the relay", "272000")
+}
+
 // A Claude model runs to its whole window whatever name its provider gives
 // it: Amazon Bedrock names Claude Opus us.anthropic.claude-…, which
 // magpie's [1m] Claude Opus there was not taken for, so Claude Code was
@@ -314,11 +395,12 @@ func TestClaudeCompactWindowBedrockClaude(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	const opus, nova = "us.anthropic.claude-opus-5-5-v1", "us.amazon.nova-premier-v1"
-	if err := provider.Save(provider.Provider{ID: "br", Name: "Bedrock", Chat: "https://example.test/v1", Key: "k",
+	if err := provider.Save(provider.Provider{ID: "br", Name: "Bedrock", Preset: "bedrock",
+		Anthropic: "https://bedrock-runtime.us-east-1.amazonaws.com", Key: "k",
 		Models: []string{opus, nova}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := catalog.SaveLive("br", "https://example.test/v1", []catalog.Model{{ID: opus, Context: 1000000}, {ID: nova, Context: 1000000}}); err != nil {
+	if err := catalog.SaveLive("br", "https://bedrock-runtime.us-east-1.amazonaws.com", []catalog.Model{{ID: opus, Context: 1000000}, {ID: nova, Context: 1000000}}); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(home, ".claude", "settings.json")

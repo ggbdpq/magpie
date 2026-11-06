@@ -265,7 +265,7 @@ func TestPickerModelsTheirOwnWindow(t *testing.T) {
 	a := claude(home)
 	env := func(k string) string { v, _ := edit.GetJSON(path, "env."+k); return v }
 	budget := func(id string) string { v, _ := edit.GetJSON(path, budgetPath(id)); return v }
-	check := func(name string, want map[string]string) {
+	check := func(name string, top string, want map[string]string) {
 		t.Helper()
 		// glm is 1M, marked [1m] in /model: the window told
 		if w := env(claudeContextEnv); w != "1000000" {
@@ -274,14 +274,20 @@ func TestPickerModelsTheirOwnWindow(t *testing.T) {
 		if c := env(claudeCompactEnv); c != "" {
 			t.Errorf("%s: %s is %q, which would hold every model to it", name, claudeCompactEnv, c)
 		}
+		if v, _ := edit.GetJSON(path, "autoCompactWindow"); v != top {
+			t.Errorf("%s: top-level autoCompactWindow %q; want %q", name, v, top)
+		}
 		for id, w := range want {
 			if v := budget(id); v != w {
 				t.Errorf("%s: %s in /model compacts at %q; want %q", name, id, v, w)
 			}
 		}
 	}
+	// the main is a relay's claude model (#5537), which the working window
+	// serves as the top-level autoCompactWindow: a model whose own is that
+	// one has no entry of its own beside it
 	must(a.Field("model").Set("a/claude-opus-5-5"))
-	check("a Claude main", map[string]string{"group/mix": "272000", "w/gpt-6.1-sol": "272000", "v/grok": "256000", "v/gpt": "272000"})
+	check("a Claude main", "272000", map[string]string{"group/mix": "", "w/gpt-6.1-sol": "", "v/grok": "256000", "v/gpt": ""})
 	// beside a main whose window is told, a /model pick runs at that one
 	// value, as before
 	must(a.Field("model").Set("v/grok"))
@@ -297,5 +303,5 @@ func TestPickerModelsTheirOwnWindow(t *testing.T) {
 	must(settings.Save(s))
 	SyncCatalog()
 	must(a.Field("model").Set("a/claude-opus-5-5"))
-	check("Full window", map[string]string{"group/mix": "500000", "w/gpt-6.1-sol": "500000", "v/grok": "256000", "v/gpt": "272000"})
+	check("Full window", "", map[string]string{"group/mix": "500000", "w/gpt-6.1-sol": "500000", "v/grok": "256000", "v/gpt": "272000"})
 }

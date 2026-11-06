@@ -940,3 +940,52 @@ func TestNativeCompactionDecisionLeavesTheTurnsAlone(t *testing.T) {
 		}
 	}
 }
+
+// A sealed compaction whose writer magpie doesn't know (never recorded: a
+// checkpoint carried over by hand, or by another magpie), asked of a
+// provider the request must be translated for, was dropped by the
+// translation — which reads no compaction item — and a checkpoint-only
+// handoff lost the conversation's earlier turns silently, answered 200
+// (#5411). Refused now, said why, the provider never asked. A provider
+// that takes the request as it came is still asked, seal and all: what it
+// says of a seal it can't read is its own.
+func TestNativeCompactionSealedIsNotTranslatedAway(t *testing.T) {
+	chat := &fake{t: t, reply: sse(
+		`data: {"id":"c1","model":"m1","choices":[{"delta":{"role":"assistant","content":"ANSWER"}}]}`,
+		`data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)}
+	setup(t, provider.Chat, chat)
+	relay := &fake{t: t, reply: sse(`data: {"type":"response.completed","response":{"id":"resp_r","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)}
+	up := httptest.NewServer(relay)
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{ID: "other", Name: "Other", Key: "k2", Models: []string{"m1"}, Responses: up.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	sealed := `{"model":"%s","stream":true,"input":[{"type":"compaction","encrypted_content":"gAAAAB-sealed-unknown"},{"type":"message","role":"user","content":[{"type":"input_text","text":"what were the three facts?"}]}]}`
+
+	code, body := post(t, "/v1/responses", strings.Replace(sealed, "%s", "fake/m1", 1))
+	if code != 400 || !strings.Contains(body, "compacted natively") || !strings.Contains(body, "translated") {
+		t.Fatalf("translated: %d %s", code, body)
+	}
+	if chat.calls != 0 {
+		t.Errorf("the translated provider was asked: %s", chat.got)
+	}
+
+	code, body = post(t, "/v1/responses", strings.Replace(sealed, "%s", "other/m1", 1))
+	if code != 200 || !strings.Contains(string(relay.got), `"encrypted_content":"gAAAAB-sealed-unknown"`) {
+		t.Errorf("relayed: %d %s\nrelay got %s", code, body, relay.got)
+	}
+}
+
+// A subscription is asked only translated: refused there too, before the
+// compaction is read as nothing (#5411).
+func TestNativeCompactionSealedIsNotTranslatedIntoASubscription(t *testing.T) {
+	s := New()
+	p := provider.Provider{ID: "claude", Account: &provider.Account{Agent: "claude", User: "u"}}
+	body := `{"model":"claude-sonnet-5","stream":true,"input":[{"type":"compaction","encrypted_content":"gAAAAB-sealed-unknown"},{"type":"message","role":"user","content":[{"type":"input_text","text":"what were the three facts?"}]}]}`
+	rec := httptest.NewRecorder()
+	var call Call
+	code, msg := s.attempt(rec, httptest.NewRequest("POST", "/v1/responses", nil), provider.Responses, p, "claude-sonnet-5", []byte(body), &call)
+	if code != 400 || !strings.Contains(msg, "compacted natively") || !strings.Contains(msg, "translated") {
+		t.Fatalf("%d %s", code, msg)
+	}
+}

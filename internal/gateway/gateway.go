@@ -6807,11 +6807,22 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		body, _, _ = withHistoryTools(proto, body)
 	}
 	// structured output an upstream turned away before (#2126): a schema
-	// as any JSON object, or the format told in the system prompt alone
+	// as any JSON object, or the format told in the system prompt alone;
+	// one that took the field as sent and answered without it (#5082, as
+	// learned from its reply below) is told it in words alone, as one
+	// that refused is
 	if !s.fits(p.ID, formatRefused(model), proto) {
 		body, _ = formatInBody(proto, body, false)
 	} else if !s.fits(p.ID, schemaRefused(model), proto) {
 		body, _ = formatInBody(proto, body, true)
+	} else if !s.fits(p.ID, formatIgnored(model), proto) {
+		body, _ = formatInBody(proto, body, false)
+	}
+	// a json_schema sent as the client asked it, none of the marks above
+	// having rewritten it: its answer is learned from (#5082)
+	schemaAsked := false
+	if f := bodyFormat(proto, body); f != nil && f.Type == "json_schema" {
+		schemaAsked = true
 	}
 	// xAI's own API takes neither a sealed reasoning item's null content
 	// nor a system turn in Messages (xai_body.go, #3392)
@@ -7317,6 +7328,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	}
 	f, _ := w.(http.Flusher)
 	sniff := newSniffer(proto, res.Header.Get("Content-Type"))
+	sniff.askedJSON = schemaAsked // the schema went as sent (#5082): its answer is learned from
 	defer func() { u.add(sniff.usage()) }()
 	var tidy *chatTidy
 	if proto == provider.Chat && sse {
@@ -7707,12 +7719,21 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		sniff.drain()
 	} else {
 		sniff.settleWhole()
+		sniff.gatherWhole()
 	}
 	if sniff.failedNamed != 0 {
 		// the stream's error frame named its own status: the failure is
 		// booked and rested as it (saidStatusHeader, #4855), while the
 		// frame itself goes to the client as it came
 		noteSaidStatus(w, sniff.failedNamed)
+	}
+	if schemaAsked && (rerr == nil || rerr == io.EOF) && sniff.ignoredFormat() {
+		// a 200 whose answer is no JSON for a schema sent as the client
+		// asked it (#5082): a relay that takes the field and drops it —
+		// the model was never told. The format is told in the system
+		// prompt for this provider and model from now on, as one that
+		// refused is.
+		s.markUnfit(p.ID, formatIgnored(model), proto)
 	}
 	if gather != nil {
 		// the gathered stream is read here, not by the client: it gets

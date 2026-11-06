@@ -118,7 +118,8 @@ func (f *Format) chat() map[string]any {
 // instruction is the format said in words, for a model whose API can't be
 // asked for it: Anthropic's Messages for any JSON object (its
 // output_config.format takes a schema only), a bridge to a vendor's own
-// API, or an upstream that turned the field away (formatRefused).
+// API, or an upstream that turned the field away (formatRefused) or took
+// it and answered without it (formatIgnored).
 func (f *Format) instruction() string {
 	if s := f.schema(); len(s) > 0 {
 		return "Respond with a single JSON value and nothing else, matching this JSON schema:\n" + string(s) + "."
@@ -162,6 +163,14 @@ func refusesFormat(status int, body []byte) bool {
 // allowed", #2126), so it is asked for a JSON object, the schema told in
 // the system prompt, from then on.
 func schemaRefused(model string) string { return "json_schema:" + model }
+
+// formatIgnored is how unfit remembers a provider that took the format
+// field as sent and answered anyway — a relay in front of a model without
+// structured output replying a 200 whose text is no JSON (#5082) — so the
+// format is told in the system prompt for that model alone from then on,
+// the way a refusal (formatRefused) is. Learned from a reply, not from a
+// 400: asked and answered is all the silence such a relay ever says.
+func formatIgnored(model string) string { return "format_ignored:" + model }
 
 // asObject is r asking for any JSON object, its schema told in the system
 // prompt; r itself when it asks for no schema.

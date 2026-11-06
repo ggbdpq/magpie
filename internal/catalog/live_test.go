@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -307,5 +308,55 @@ func TestFetchRelayDrawerNames(t *testing.T) {
 	}
 	if !chat["omni_flash-10s"] || !chat["claude-sonnet-4-5"] {
 		t.Errorf("the chat list lost a model: omni_flash-10s %v, claude-sonnet-4-5 %v", chat["omni_flash-10s"], chat["claude-sonnet-4-5"])
+	}
+}
+
+// #5521 (wabxn514): lightvela's gateway forwards any request that carries
+// x-api-key to its new-api upstream, which answers 401 for the key it was
+// handed — Authorization alone the gateway answers itself. An
+// OpenAI-compatible base is asked as its chat requests are (AuthHeaders):
+// Bearer alone. x-api-key stays the Anthropic base's, asked as it always
+// was, the version header beside it.
+func TestListBearerOnlyOnOpenAIBase(t *testing.T) {
+	var mu sync.Mutex
+	var asked []http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		asked = append(asked, r.Header.Clone())
+		mu.Unlock()
+		if r.Header.Get("anthropic-version") == "" && r.Header.Get("x-api-key") != "" {
+			// lightvela: the gateway sends it on, the upstream refuses it
+			http.Error(rw, `{"error":{"message":"Invalid token (request id: 202611060939163895096998268d9d6bo12ykfZ)","type":"new_api_error"}}`, http.StatusUnauthorized)
+			return
+		}
+		rw.Write([]byte(`{"data":[{"id":"auto"},{"id":"deepseek-v4-pro-202606"},{"id":"ep-hyasr3"}]}`))
+	}))
+	defer srv.Close()
+	ms, _, err := FetchAt(context.Background(), srv.URL+"/v1", "sk-lightvela", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) != 3 {
+		t.Errorf("listed %d models", len(ms))
+	}
+	mu.Lock()
+	h := asked[0]
+	mu.Unlock()
+	if h.Get("Authorization") != "Bearer sk-lightvela" {
+		t.Errorf("Authorization %q", h.Get("Authorization"))
+	}
+	if h.Get("x-api-key") != "" {
+		t.Errorf("x-api-key %q went to an OpenAI-compatible base", h.Get("x-api-key"))
+	}
+
+	// the Anthropic base keeps both, and its version header
+	if _, _, err := FetchAt(context.Background(), srv.URL, "sk-lightvela", true, nil); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	h = asked[len(asked)-1]
+	mu.Unlock()
+	if h.Get("x-api-key") != "sk-lightvela" || h.Get("Authorization") != "Bearer sk-lightvela" || h.Get("anthropic-version") == "" {
+		t.Errorf("anthropic asked x-api-key %q, Authorization %q, version %q", h.Get("x-api-key"), h.Get("Authorization"), h.Get("anthropic-version"))
 	}
 }

@@ -117,6 +117,21 @@ func TestFakeMCPServer(t *testing.T) {
 			text, _ := json.Marshal(said)
 			fmt.Printf(`{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":%s}]}}`+"\n", *m.ID, text)
 		case "initialize":
+			// MAGPIE_FAKE_MCP_FIRSTINIT: a marker file; the first process
+			// started writes it and takes MAGPIE_FAKE_MCP_SLOW_INIT to
+			// answer initialize, a start again answers at once (a cold
+			// first start, #5638)
+			if f := os.Getenv("MAGPIE_FAKE_MCP_FIRSTINIT"); f != "" {
+				if _, err := os.Stat(f); err != nil {
+					os.WriteFile(f, []byte("yes"), 0o644)
+					if d, err := time.ParseDuration(os.Getenv("MAGPIE_FAKE_MCP_SLOW_INIT")); err == nil && d > 0 {
+						time.Sleep(d)
+					}
+				}
+			} else if d, err := time.ParseDuration(os.Getenv("MAGPIE_FAKE_MCP_SLOW_INIT")); err == nil && d > 0 {
+				// a server that is slow to answer initialize at all
+				time.Sleep(d)
+			}
 			fmt.Printf(`{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1"}}}`+"\n", *m.ID)
 		case "notifications/initialized":
 			os.WriteFile(os.Getenv("MAGPIE_FAKE_MCP_INIT"), []byte("yes"), 0o644)

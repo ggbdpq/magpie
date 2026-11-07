@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,6 +18,11 @@ import (
 	"testing"
 	"time"
 )
+
+// fakeImageName matches a pasted chunk with a line that is an image file's
+// name, as Claude Code 2.1.318's paste handler tests each pasted line by:
+// one is tried as an image file before the words are taken in.
+var fakeImageName = regexp.MustCompile(`(?m)\.(png|jpe?g|gif|webp)[ \t]*$`)
 
 // The test binary is also the shim (MAGPIE_TUI_TEST=shim) and a fake
 // Claude Code (MAGPIE_TUI_TEST=claude): interactive, it shows a prompt,
@@ -313,6 +319,16 @@ func fakeClaude(args []string) {
 	var mu sync.Mutex
 	var typed, paste strings.Builder
 	pasting, images := false, 0
+	// FAKE_SLOW_PASTE: the paste handler of 2.1.318, whose take-in of a
+	// chunk with a line naming an image file runs late (it tries the name
+	// as an image file first), who numbers images and long pasted text
+	// alike, and who takes any paste's end as the end of pasting: a take-in
+	// another paste ended lands its words after the next Enter, one turn
+	// late (#5548, Suge8's helper log)
+	slowPaste := os.Getenv("FAKE_SLOW_PASTE") == "1"
+	marks := 0 // images and long pasted text, numbered alike in that mode
+	slowDone := 0
+	var pending []string
 	// retry is what an "r" draws while /usage's panel says it couldn't
 	// load the figures, nil when it says nothing of the kind
 	var retry []byte
@@ -333,15 +349,48 @@ func fakeClaude(args []string) {
 				continue
 			}
 			p := paste.String()
+			if slowPaste {
+				// an end of any paste ends a take-in still running
+				mu.Lock()
+				slowDone++
+				mu.Unlock()
+			}
 			if b, err := os.ReadFile(p); err == nil && strings.HasPrefix(filepath.Base(p), "image-") {
-				images++
+				if slowPaste {
+					marks++
+				} else {
+					images++
+				}
 				n := images
+				if slowPaste {
+					n = marks
+				}
 				go func() {
 					time.Sleep(200 * time.Millisecond)
 					mu.Lock()
 					defer mu.Unlock()
 					typed.WriteString(fmt.Sprintf("[Image #%d:%s]", n, b))
 					fmt.Printf("[Image #%d]", n)
+				}()
+				continue
+			}
+			if slowPaste && fakeImageName.MatchString(p) {
+				// a line naming an image file: the words are tried as an
+				// image first, so they are taken in late
+				marks++
+				n, gen := marks, slowDone
+				go func() {
+					time.Sleep(400 * time.Millisecond)
+					mu.Lock()
+					defer mu.Unlock()
+					if slowDone > gen {
+						// another paste ended meanwhile, and these words
+						// land after the next Enter, one turn late
+						pending = append(pending, p)
+						return
+					}
+					typed.WriteString(p)
+					fmt.Printf("[Pasted text #%d +%d lines]", n, strings.Count(p, "\n"))
 				}()
 				continue
 			}
@@ -367,6 +416,15 @@ func fakeClaude(args []string) {
 		mu.Lock()
 		line := typed.String()
 		typed.Reset()
+		if slowPaste && len(pending) > 0 {
+			// a take-in another paste ended lands its words in the next
+			// prompt, one turn late
+			for _, w := range pending {
+				typed.WriteString(w)
+				fmt.Print(w)
+			}
+			pending = nil
+		}
 		mu.Unlock()
 		if listed != "" {
 			if _, err := os.Stat(listed); err != nil {

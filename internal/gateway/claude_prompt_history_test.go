@@ -124,6 +124,75 @@ func TestClaudePromptSaysWhoseImageNotesAre(t *testing.T) {
 	}
 }
 
+// A text-only turn after a history with images (#5410, PeterZ-1's remote
+// magpie: 48 view_image calls on Claude Code's note paths in one Codex
+// session, every one failed, 47 on turns with no new image, half within 30 s
+// of a compaction): the notes are Claude Code's records of where it keeps
+// the history's images, on its own computer, so a path in one is not
+// something to open — with the caller on another computer such a call can
+// only fail. Told whose the notes are but not this, the model opened the
+// paths. The turn with its own images among the history's says it too.
+func TestClaudePromptSaysNotesPathsArentOpen(t *testing.T) {
+	var png bytes.Buffer
+	red := image.NewRGBA(image.Rect(0, 0, 120, 60))
+	for i := 0; i < len(red.Pix); i += 4 {
+		red.Pix[i], red.Pix[i+3] = 0xff, 0xff
+	}
+	if err := imagepng.Encode(&png, red); err != nil {
+		t.Fatal(err)
+	}
+	url := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png.Bytes())
+	chat := func(last string) *Request {
+		body := `{"model":"claude/claude-sonnet-5-5","stream":true,"messages":[
+			{"role":"user","content":"look at /tmp/a.png"},
+			{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{\"path\": \"/tmp/a.png\"}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"Read image file [image/png]"},
+			{"role":"user","content":[{"type":"text","text":"Attached image(s) from tool result:"},{"type":"image_url","image_url":{"url":"` + url + `"}}]},
+			{"role":"assistant","content":"This is a red image."},
+			` + last + `],
+			"tools":[{"type":"function","function":{"name":"read","description":"Read a file","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}}]}`
+		req, err := parseChat([]byte(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return req
+	}
+	turn := func(req *Request) string {
+		blocks, err := renderClaudePrompt(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var all strings.Builder
+		for _, b := range blocks {
+			s, _ := b["text"].(string)
+			all.WriteString(s)
+		}
+		_, now, ok := strings.Cut(all.String(), "<current_turn>\n")
+		if !ok {
+			t.Fatalf("no turn to answer: %q", all.String())
+		}
+		return now
+	}
+	says := func(now string) {
+		t.Helper()
+		if !strings.Contains(now, "on its own computer") || !strings.Contains(now, "not something to open") {
+			t.Fatalf("the turn doesn't say a note's path is not to open:\n%s", now)
+		}
+	}
+
+	says(turn(chat(`{"role":"user","content":"Go on, work out the follower distribution."}`)))
+	// a turn with an image of its own: the notes are the history's and its
+	withOne := chat(`{"role":"user","content":[{"type":"text","text":"How many images are attached to this message?"},{"type":"image_url","image_url":{"url":"` + url + `"}}]}`)
+	says(turn(withOne))
+	// a history with no image keeps the plain turn: the turn's own notes are
+	// imageNotesNote's, which says it already
+	textOnly := chat(`{"role":"user","content":"Go on."}`)
+	textOnly.Messages[3].Parts = textOnly.Messages[3].Parts[:1]
+	if now := turn(textOnly); strings.Contains(now, "not something to open") {
+		t.Fatalf("a history with no image says it:\n%s", now)
+	}
+}
+
 // A tool that returns images (seven photos, as sinsoul1647 on Discord,
 // v0.1.2862) leaves Claude Code's notes after the message with paths in the
 // gateway's temp folder ("[Image: source: …/images/1.jpg]"). With no history

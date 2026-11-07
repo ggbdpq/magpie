@@ -4820,7 +4820,11 @@ const (
 // note of its own after the message, so after the turn to answer: told
 // nothing of them, the model took the history's images for ones sent with
 // that turn, said they were attached and opened them again (#1751). Where
-// the history has images, the turn says whose the notes are.
+// the history has images, the turn says whose the notes are — and that a
+// path in one is not something to open: they are Claude Code's records of
+// where it keeps the images, on its own computer, so told only whose they
+// were, a model whose caller was on another computer opened the paths and
+// failed on every one (#5410).
 func currentTurnOpen(msgs []Message, split int) string {
 	earlier, now := countImages(msgs[:split]), countImages(msgs[split:])
 	switch {
@@ -4828,10 +4832,13 @@ func currentTurnOpen(msgs []Message, split int) string {
 		return historyClose
 	case now == 0:
 		return "</conversation_history>\n\n<current_turn>\nThe turn to answer now. Any \"[Image: …]\" notes after it are about " +
-			"the images in the conversation history above, not images sent with this turn.\n\n"
+			"the images in the conversation history above, not images sent with this turn. Each note is Claude Code's record of " +
+			"where it keeps them, on its own computer: a path in one is not something to open; the images themselves are in " +
+			"the history above.\n\n"
 	}
 	return "</conversation_history>\n\n<current_turn>\nThe turn to answer now. Any \"[Image: …]\" notes after it are about " +
-		"the images above in their order: the conversation history's first, then this turn's.\n\n"
+		"the images above in their order: the conversation history's first, then this turn's. Each note is Claude Code's record " +
+		"of where it keeps them, on its own computer: a path in one is not something to open.\n\n"
 }
 
 // imageNotesNote ends a turn whose images (a tool result's among them) all

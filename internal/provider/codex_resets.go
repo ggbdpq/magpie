@@ -123,8 +123,12 @@ type codexResetCreditsWireCredit struct {
 
 // first is the credit still to be used that runs out first, and when:
 // one that never runs out comes after all that do. id is "" when none is
-// left.
-func (w codexResetCreditsWire) first() (id string, at *time.Time) {
+// left. One that ran out already is not it, and hides none behind it
+// (#5568): the list keeps a card past its expiry until the vendor takes
+// it off, and taken for the one that runs out first it was spent in the
+// live one's place, or, as when they run out (Until), it kept the ones
+// still to run out from ever being spent by themselves.
+func (w codexResetCreditsWire) first(now time.Time) (id string, at *time.Time) {
 	for _, c := range w.Credits {
 		if c.Status != "available" || c.ID == "" {
 			continue
@@ -134,6 +138,9 @@ func (w codexResetCreditsWire) first() (id string, at *time.Time) {
 			if p, err := time.Parse(time.RFC3339, *c.ExpiresAt); err == nil {
 				t = &p
 			}
+		}
+		if t != nil && !t.After(now) {
+			continue // ran out: nothing to spend, and it hides the live ones
 		}
 		if id == "" || t != nil && (at == nil || t.Before(*at)) {
 			id, at = c.ID, t
@@ -151,13 +158,13 @@ func (w codexResetCreditsWire) held(credit string) bool {
 
 // soonest is when the first of the credits still to be used runs out, nil
 // when none of them does.
-func (w codexResetCreditsWire) soonest() *time.Time {
-	_, at := w.first()
+func (w codexResetCreditsWire) soonest(now time.Time) *time.Time {
+	_, at := w.first(now)
 	return at
 }
 
 // each is every credit still to be used, as ResetCredits.Each lists them.
-func (w codexResetCreditsWire) each() []ResetCard {
+func (w codexResetCreditsWire) each(now time.Time) []ResetCard {
 	var out []ResetCard
 	for _, c := range w.Credits {
 		if c.Status != "available" || c.ID == "" {
@@ -166,6 +173,9 @@ func (w codexResetCreditsWire) each() []ResetCard {
 		r := ResetCard{ID: c.ID}
 		if c.ExpiresAt != nil {
 			if p, err := time.Parse(time.RFC3339, *c.ExpiresAt); err == nil {
+				if !p.After(now) {
+					continue // ran out: not one still to be used (#5568)
+				}
 				r.Until = &p
 			}
 		}
@@ -193,10 +203,11 @@ func codexResets(ctx context.Context, base, token, accountID string, count int) 
 	if err := accountJSON(ctx, base+"/wham/rate-limit-reset-credits", token, codexAccountHeaders(accountID), &w); err != nil {
 		out.untilUnread = true
 	} else {
-		out.Until = w.soonest()
+		now := time.Now()
+		out.Until = w.soonest(now)
 		// listed only when they are the ones counted: a list that says
 		// otherwise isn't put on the card as if it were
-		if each := w.each(); len(each) == count {
+		if each := w.each(now); len(each) == count {
 			out.Each = each
 		}
 	}
@@ -291,7 +302,7 @@ func spendCodexReset(ctx context.Context, user, credit, why string) (ResetOutcom
 		return ResetOutcome{}, fmt.Errorf("couldn't read which reset runs out first, so none was used: %w", err)
 	}
 	if credit == "" {
-		credit, _ = w.first()
+		credit, _ = w.first(time.Now())
 		if credit == "" {
 			return ResetOutcome{Code: "no_credit"}, nil
 		}

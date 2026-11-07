@@ -311,6 +311,17 @@ func renewSaved(ctx context.Context, agent, user string, force bool, stale strin
 			ls[i].Auth = auth
 			ls[i].Renewed = time.Now().UTC().Truncate(time.Second)
 			ls[i].Lapsed = ""
+			// the refreshed tokens name the plan the account is on now; the
+			// saved one followed the sign-in it was made of, so it follows
+			// the refresh too (#5593). Kept as it was when the fresh tokens
+			// name none (an answer of tokens alone), as the ChatGPT API's
+			// refresh keeps its account's (siwcFresh).
+			var a codexAuth
+			if json.Unmarshal(auth, &a) == nil {
+				if p := codexPlan(a); p != "" {
+					ls[i].Plan = p
+				}
+			}
 		}
 	}
 	return tok, accountID, writeLogins(ls)

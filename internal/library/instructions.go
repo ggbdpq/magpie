@@ -337,6 +337,22 @@ func (l *Library) syncInstructions(t *Target, b *backups, res *Result, auto bool
 	if res.unreached(t) {
 		return
 	}
+	// the managed Claude spawns read this snapshot: they run with
+	// --setting-sources "" on purpose, so ~/.claude/CLAUDE.md never
+	// reaches them and the Library could not deliver to the very
+	// sessions magpie hosts (#5445, luzhuang). Off, or with no text for
+	// claude, the snapshot goes and the spawns read nothing.
+	if t.Agent.ID == "claude" {
+		snapshot := filepath.Join(Dir(), "instructions-claude.md")
+		if text := l.wanted(t.Agent.ID); text != "" {
+			if err := os.WriteFile(snapshot, []byte(text), 0o600); err != nil {
+				res.fail(t.Agent.ID, "instructions", err)
+				return
+			}
+		} else {
+			os.Remove(snapshot)
+		}
+	}
 	if t.Instructions == "" {
 		return
 	}

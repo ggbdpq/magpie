@@ -1167,6 +1167,11 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		// message, its earlier turns marked as such (renderClaudePrompt)
 		log.Printf("claude: a new Claude Code is told the whole conversation: %d messages, %d images, the last turn marked as the one to answer", len(req.Messages), countImages(req.Messages))
 	}
+	// the Library's text for Claude, as its sync last wrote it: the
+	// spawns run with --setting-sources "" on purpose, so
+	// ~/.claude/CLAUDE.md never reaches them and the Library could not
+	// deliver to the very sessions magpie hosts (#5445, luzhuang)
+	lib := claudeLibraryInstructions()
 	if req.appendPrompt {
 		// pasted, the caller's instructions lose their cache mark (the
 		// paste is one text), and every new run wrote them to the cache
@@ -1179,11 +1184,25 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		// the run's own, as a lean run's
 		appendPath := filepath.Join(tmp, "append.md")
 		req.appendPrompt = true
-		if err := os.WriteFile(appendPath, []byte(leanSystem(req)), 0o600); err != nil {
+		text := leanSystem(req)
+		if lib != "" {
+			// the Library's steadier shared text goes first, the caller's
+			// own last (#5445)
+			text = lib + "\n\n" + text
+		}
+		if err := os.WriteFile(appendPath, []byte(text), 0o600); err != nil {
 			cleanup()
 			return nil, nil, err
 		}
 		args = append(args, "--append-system-prompt-file", binary.file(appendPath))
+	} else if lib != "" {
+		// no caller instructions of this run's own: the Library's rides alone
+		libPath := filepath.Join(tmp, "append-library.md")
+		if err := os.WriteFile(libPath, []byte(lib), 0o600); err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+		args = append(args, "--append-system-prompt-file", binary.file(libPath))
 	}
 	req.clientCache.selected(from == nil)
 	var prompt []map[string]any
@@ -3759,6 +3778,20 @@ func claudeRunName(model string) string {
 		return model
 	}
 	return model + "[1m]"
+}
+
+// claudeLibraryInstructions is the text the Library last wrote for Claude,
+// from the snapshot its sync keeps at <settings dir>/library/
+// instructions-claude.md — the spawns run with --setting-sources "" on
+// purpose, so ~/.claude/CLAUDE.md never reaches them and the Library
+// could not deliver to the very sessions magpie hosts (#5445, luzhuang).
+// "" when there is none. A var so tests can stand in for it (stillExpiring).
+var claudeLibraryInstructions = func() string {
+	b, err := os.ReadFile(filepath.Join(settings.Dir(), "library", "instructions-claude.md"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // claudeCLIArgs runs Claude Code with none of its own tools but, when the

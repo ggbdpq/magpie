@@ -99,8 +99,10 @@ func heatDiskWrite(key string, cut, since time.Time, days []Day) error {
 // heatSettledKey names what the days before cut were counted of: each
 // chunk by its rows (a session file's through sourceDigest) under the
 // same root and meta, and the counting by the call shards' version and
-// settledCountVersion. False: the chunks
-// can't be named so (a probe's chunk made again for each query).
+// settledCountVersion. A chunk made again for each query (the probes',
+// with no serial) is named by its rows too: given up on, every start and
+// every poll past heatFresh paired the whole history while the last probe,
+// tool call or search was days back. False: no root.
 func heatSettledKey(d heatDiskRef, cut, since time.Time, f Filter, identities map[string]sessions.CodexIdentity, settled [3][]*rowChunk, before heatSum) (string, bool) {
 	if d.root == "" {
 		return "", false
@@ -126,9 +128,6 @@ func heatSettledKey(d heatDiskRef, cut, since time.Time, f Filter, identities ma
 			return strings.Compare(a.Source.Path, b.Source.Path)
 		})
 		for _, c := range set {
-			if c.serial == 0 {
-				return "", false
-			}
 			b = fmt.Appendf(b[:0], "\x01%d\x00%s\x00%d\x00%d\x00%s\x00", k, c.Computer, c.Count, c.Latest.UnixNano(), c.Source.Path)
 			h.Write(b)
 			if c.Source.Path != "" {

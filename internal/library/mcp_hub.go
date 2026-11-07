@@ -477,6 +477,7 @@ type backend struct {
 	conn    hubConn
 	ready   chan struct{} // while it is being connected to
 	err     error         // why the last connection failed
+	slow    bool          // the last start ran out of its step's budget, so it may answer next time
 	list    []map[string]json.RawMessage
 	listed  bool
 	says    serverSays // what the server said of itself when it was connected to
@@ -542,6 +543,7 @@ func (b *backend) start(ready chan struct{}) {
 		c = nil
 	}
 	b.conn, b.err, b.ready = c, err, nil
+	b.slow = err != nil && ctx.Err() != nil
 	if c != nil {
 		b.says = c.said()
 	}
@@ -613,7 +615,14 @@ func (b *backend) stop() {
 	}
 }
 
-// tools are the tools the server lists, every page of them.
+// tools are the tools the server lists, every page of them. A start that
+// ran out of its step's budget (b.slow) is tried again while the list
+// waits: a standard client connects the moment magpie writes its config,
+// and its tools/list inherits the first start's effort, which on a cold
+// machine (an npx still fetching its package) can run out before the
+// server answers — left at that, the agent's whole list came back empty
+// and every SDK behind the router saw no tool (#5638). A start that
+// failed some other way isn't tried again here; the next list starts one.
 func (b *backend) tools(ctx context.Context) ([]map[string]json.RawMessage, error) {
 	b.use()
 	defer b.done()
@@ -624,10 +633,27 @@ func (b *backend) tools(ctx context.Context) ([]map[string]json.RawMessage, erro
 		return ts, nil
 	}
 	b.mu.Unlock()
-	c, err := b.connect(ctx)
-	if err != nil {
-		return nil, err
+	for {
+		c, err := b.connect(ctx)
+		if err != nil {
+			b.mu.Lock()
+			retry := b.slow && ctx.Err() == nil
+			b.mu.Unlock()
+			if !retry {
+				return nil, err
+			}
+			continue
+		}
+		all, err := b.listTools(ctx, c)
+		if err != nil {
+			return nil, err
+		}
+		return all, nil
 	}
+}
+
+// listTools asks the connection for every page of the server's tools.
+func (b *backend) listTools(ctx context.Context, c hubConn) ([]map[string]json.RawMessage, error) {
 	var all []map[string]json.RawMessage
 	cursor := ""
 	for page := 0; page < maxToolPages; page++ {

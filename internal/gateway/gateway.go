@@ -5757,6 +5757,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 	body = copilotGeminiToolUnions(p, to, body)
 	body = kimiToolEnumTypes(p, to, body)
 	body = kimiToolRefTypes(p, to, body)
+	body = aliyunToolAnyRefs(p, to, body)
 	body = geminiToolTypes(body)
 	body = kimiLockedSampling(p, to, body)
 	body = clinePin(p, to, body)

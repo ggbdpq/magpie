@@ -146,3 +146,61 @@ func TestCodexThreadsComeBackOffMagpie(t *testing.T) {
 		}
 	})
 }
+
+// #5494: a takeover of a provider of the user's (CC Switch's "custom")
+// stashes it as the source, and bringOver moves its threads onto magpie.
+// The switch back to it can land after magpie is already off the config —
+// a hand edit, another CC Switch pick, this very sync — and bringBack then
+// read where Codex was on *now*: no model_provider key, Codex's default,
+// openai. Every thread was filed there — custom → magpie → openai — and
+// the user's own provider no longer listed them ("This chat uses openai,
+// but your current provider is custom"). The stashed source is where they
+// go back; the config keeps answering for a move magpie has no stash of.
+func TestCodexThreadsBackToTheirSource(t *testing.T) {
+	const moved = "019a0000-0000-7000-8000-0000000000c1"
+	home, _ := codexHome(t, "", `model = "gpt-5.4"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+`)
+	dir := filepath.Join(home, ".codex")
+	path := filepath.Join(dir, "config.toml")
+	cx := codex(home)
+	// the takeover names magpie and stashes custom, the provider Codex was on
+	if err := cx.Fields[0].Set("fake/m1"); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := edit.GetTOMLTop(path, "model_provider"); p != "magpie" {
+		t.Fatalf("provider %q, want magpie", p)
+	}
+	// a thread started on custom before the takeover follows onto magpie
+	// (bringOver), as the reporter's 242 + 1,626 did
+	codexThreadOn(t, dir, moved, "custom")
+	if err := cx.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if p := codexRowOn(t, dir, moved); p != "magpie" {
+		t.Fatalf("thread on %q, want magpie after bringOver", p)
+	}
+	// magpie is already off the config when the threads move back: the
+	// switch back to custom comes after this sync (a hand edit here), so
+	// the config names no provider and Codex reads its default, openai.
+	// The model goes with it — the user is back on their relay's models —
+	// or Sync would wire magpie in again for the magpie model it still
+	// names (#322's self-heal).
+	if err := edit.DelTOMLTop(path, "model_provider"); err != nil {
+		t.Fatal(err)
+	}
+	if err := edit.SetTOMLTop(path, edit.KV{Path: "model", Value: "zcode/GLM-5.3-Flash"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cx.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if p := codexRowOn(t, dir, moved); p != "custom" {
+		t.Fatalf("thread on %q, want custom, the provider stashed before the takeover — not the openai the config fell back to", p)
+	}
+}

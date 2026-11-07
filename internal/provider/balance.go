@@ -28,6 +28,28 @@ import (
 	"time"
 )
 
+// unlimitedQuotaBalance is the account-level field a new-api key-usage
+// reply carries when the key has no quota of its own (unlimited_quota:
+// true): its token-scoped total_available is what the key has spent, not
+// what is left, and it goes negative once use passes the token's grant
+// (#5436, AnxForever: $-4.38 shown where the account held $106.44). The
+// account's own total_available, under user_quota in the same reply, in
+// the same units, is the balance then.
+func unlimitedQuotaBalance(b []byte) (string, bool) {
+	var r struct {
+		Data struct {
+			UnlimitedQuota bool `json:"unlimited_quota"`
+			UserQuota      *struct {
+				TotalAvailable *float64 `json:"total_available"`
+			} `json:"user_quota"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(b, &r) != nil || !r.Data.UnlimitedQuota || r.Data.UserQuota == nil || r.Data.UserQuota.TotalAvailable == nil {
+		return "", false
+	}
+	return "$data.user_quota.total_available / 500000", true
+}
+
 // balanceSource is where one provider's balance is asked and how the
 // reply reads.
 type balanceSource struct {
@@ -53,7 +75,20 @@ func balanceSourceOf(p Provider) (balanceSource, bool) {
 		// a token saved beside it (a new-api relay's access token, its
 		// /api/user/self telling the account's quota) is asked with
 		// instead of the key
-		return balanceSource{p.BalanceURL, func(b []byte) (string, error) { return readBalancePath(b, path) }, p.BalanceToken, nil, nil}, true
+		// a new-api key-usage query left on its default field reads the
+		// account's own figure when the key has no quota of its own
+		// (#5436): the key's total_available is what an unlimited key has
+		// spent, not what is left, and the user's hand-set field is never
+		// second-guessed
+		mind := strings.TrimSpace(p.BalancePath) == "" && balanceURLPath(p.BalanceURL) == newAPIKeyUsage
+		return balanceSource{p.BalanceURL, func(b []byte) (string, error) {
+			if mind {
+				if alt, ok := unlimitedQuotaBalance(b); ok {
+					return readBalancePath(b, alt)
+				}
+			}
+			return readBalancePath(b, path)
+		}, p.BalanceToken, nil, nil}, true
 	}
 	if src, ok := zhipuBalanceSource(p); ok {
 		return src, true

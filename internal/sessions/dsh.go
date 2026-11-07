@@ -41,10 +41,15 @@ import (
 // inherited. They count where they were first written. dsh has no command
 // that picks up a session by its id.
 
-// DshDir is dsh's folder: $DSH_HOME, else ~/.dsh.
+// DshDir is dsh's folder: $DSH_HOME, else ~/.dsh. A DSH_HOME naming DS
+// Bot's data folder is that app's own (appdir.DsbotOwns, #5624): its
+// sessions are DS Bot's, not the harness's.
 func DshDir() string {
 	if d := appdir.Getenv("DSH_HOME"); d != "" {
-		return expandHome(d)
+		d = expandHome(d)
+		if !appdir.DsbotOwns(d) {
+			return d
+		}
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".dsh")

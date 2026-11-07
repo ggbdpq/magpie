@@ -95,7 +95,13 @@ func dshIn(at place) *Agent { return dshAt(at) }
 // dshAt is DeepSeek Harness with its home at at.home, reaching the gateway
 // as at does. A distro's DSH_HOME can't be read, so there it is ~/.dsh.
 func dshAt(at place) *Agent {
+	// DSH_HOME the DS Bot app exports (its registry value on Windows, which
+	// appdir.Getenv follows while magpie runs) names its own data folder,
+	// its DSH's home: not this one's (#5624)
 	dir := at.getenv("DSH_HOME")
+	if dir != "" && appdir.DsbotOwns(dir) {
+		dir = ""
+	}
 	if dir == "" {
 		dir = at.join(".dsh")
 	}
@@ -2596,9 +2602,11 @@ func dshWriteError(err error) string {
 	return err.Error()
 }
 
-// dshHome is where dsh keeps its profiles: $DSH_HOME, or ~/.dsh.
+// dshHome is where dsh keeps its profiles: $DSH_HOME, or ~/.dsh. A
+// DSH_HOME naming DS Bot's data folder is that folder's owner's, not this
+// one's (appdir.DsbotOwns, #5624).
 func dshHome() string {
-	if dir := appdir.Getenv("DSH_HOME"); dir != "" {
+	if dir := appdir.Getenv("DSH_HOME"); dir != "" && !appdir.DsbotOwns(dir) {
 		return dir
 	}
 	home, err := os.UserHomeDir()

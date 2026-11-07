@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -155,7 +156,7 @@ func TestDsBotWired(t *testing.T) {
 // the app doesn't run on then.
 func TestDsBotDataFolder(t *testing.T) {
 	home, _, userData, _ := dsbotSandbox(t)
-	if dir, ok := dsbotHome(); !ok || dir != filepath.Join(home, ".ds-bot") {
+	if dir, ok := appdir.DsbotHome(); !ok || dir != filepath.Join(home, ".ds-bot") {
 		t.Fatalf("no locations.json: %q %v", dir, ok)
 	}
 	picked := filepath.Join(home, "Documents", "bot-data")
@@ -166,7 +167,7 @@ func TestDsBotDataFolder(t *testing.T) {
 	if err := os.WriteFile(loc, []byte(`{"dataDir":"`+filepath.ToSlash(picked)+`","workspace":"x","freeAtStart":false}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if dir, ok := dsbotHome(); !ok || filepath.Clean(dir) != picked {
+	if dir, ok := appdir.DsbotHome(); !ok || filepath.Clean(dir) != picked {
 		t.Fatalf("locations.json's dataDir: %q %v", dir, ok)
 	}
 	a := dsbot(home)
@@ -178,7 +179,7 @@ func TestDsBotDataFolder(t *testing.T) {
 	}
 
 	t.Setenv("DS_BOT_HOME", filepath.Join(home, "throwaway"))
-	if dir, ok := dsbotHome(); !ok || dir != filepath.Join(home, "throwaway") {
+	if dir, ok := appdir.DsbotHome(); !ok || dir != filepath.Join(home, "throwaway") {
 		t.Fatalf("DS_BOT_HOME: %q %v", dir, ok)
 	}
 	t.Setenv("DS_BOT_HOME", "")
@@ -187,7 +188,7 @@ func TestDsBotDataFolder(t *testing.T) {
 		if err := os.WriteFile(loc, []byte(bad), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if dir, ok := dsbotHome(); ok {
+		if dir, ok := appdir.DsbotHome(); ok {
 			t.Fatalf("%s taken for %q", bad, dir)
 		}
 		a := dsbot(home)
@@ -213,7 +214,7 @@ func TestDsBotDataFolder(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(legacy, "locations.json"), []byte(`{"dataDir":"`+filepath.ToSlash(old)+`"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if dir, ok := dsbotHome(); !ok || filepath.Clean(dir) != old {
+	if dir, ok := appdir.DsbotHome(); !ok || filepath.Clean(dir) != old {
 		t.Fatalf("legacy userData: %q %v", dir, ok)
 	}
 	now := filepath.Join(cfg, "DS Bot")
@@ -223,7 +224,7 @@ func TestDsBotDataFolder(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(now, "locations.json"), []byte(`{"dataDir":"`+filepath.ToSlash(picked)+`"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if dir, ok := dsbotHome(); !ok || filepath.Clean(dir) != picked {
+	if dir, ok := appdir.DsbotHome(); !ok || filepath.Clean(dir) != picked {
 		t.Fatalf("DS Bot's own userData beside the legacy one: %q %v", dir, ok)
 	}
 }

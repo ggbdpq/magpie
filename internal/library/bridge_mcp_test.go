@@ -124,6 +124,44 @@ func TestRemoteMagpieRouterIsAServer(t *testing.T) {
 	}
 }
 
+// The Remote magpie's server asks its router with the provider's own
+// headers too (#5487): a router behind Cloudflare Access answers only
+// requests that carry them. An Authorization the provider lists itself,
+// spelled in any case, is the one — as on the requests magpie itself
+// sends the provider (signRemote).
+func TestRemoteMagpieServerCarriesProviderHeaders(t *testing.T) {
+	hubSandbox(t)
+	home := provider.RemoteHub{ID: "home", Name: "Home", Root: "http://192.168.1.9:3425", Key: "k",
+		Headers: map[string]string{"CF-Access-Client-Id": "home.access", "CF-Access-Client-Secret": "s3cret"}}
+	f := fakeRemoteHubs(t, home)
+	ok(t)(SetRemoteMCP("home", true))
+	provider.RemoteHubFound("home")
+	s := loaded(t).server("home")
+	if s == nil {
+		t.Fatal("no server for the Remote magpie")
+	}
+	if s.Headers["CF-Access-Client-Id"] != "home.access" || s.Headers["CF-Access-Client-Secret"] != "s3cret" ||
+		s.Headers["Authorization"] != "Bearer k" {
+		t.Fatalf("the provider's headers missing: %v", s.Headers)
+	}
+
+	// the provider's headers changed, the server's are
+	f.hs[0].Headers["CF-Access-Client-Secret"] = "n3w"
+	ok(t)(Sync())
+	if s := loaded(t).server("home"); s.Headers["CF-Access-Client-Secret"] != "n3w" {
+		t.Fatalf("the provider's secret changed, the server's headers: %v", s.Headers)
+	}
+
+	// an Authorization the provider has itself, spelled in any case, is
+	// the one: none generated beside it
+	f.hs[0].Headers = map[string]string{"authorization": "Bearer mine"}
+	ok(t)(Sync())
+	s = loaded(t).server("home")
+	if s.Headers["authorization"] != "Bearer mine" || s.Headers["Authorization"] != "" {
+		t.Fatalf("the provider's own Authorization: %v", s.Headers)
+	}
+}
+
 // The server is offered once each time its switch is turned on: removed
 // by the user, it isn't added again until the switch is turned on again
 // (removing it turned the switch off); the provider removed and added

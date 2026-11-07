@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -29,11 +30,13 @@ var (
 var RemoteHubWait = 5 * time.Second
 
 // RemoteHub is a Remote magpie as its router's server is made: its
-// address (the gateway's root) and its key, and the ids it had before it
-// was renamed (Provider.Was), which its server follows.
+// address (the gateway's root) and its key, the ids it had before it
+// was renamed (Provider.Was), which its server follows, and the headers
+// its router is asked with (Provider.Headers, Cloudflare Access's).
 type RemoteHub struct {
 	ID, Name, Root, Key string
 	Was                 []string
+	Headers             map[string]string
 }
 
 // RemoteHubs are the Remote magpies in providers.json, turned off or not,
@@ -50,7 +53,7 @@ func RemoteHubs() ([]RemoteHub, error) {
 		if !p.IsRemoteMagpie() || p.SelfAnswered() || p.Key == "" || p.Anthropic == "" {
 			continue
 		}
-		out = append(out, RemoteHub{ID: p.ID, Name: p.Name, Root: strings.TrimRight(p.Anthropic, "/"), Key: p.Key, Was: slices.Clone(p.Was)})
+		out = append(out, RemoteHub{ID: p.ID, Name: p.Name, Root: strings.TrimRight(p.Anthropic, "/"), Key: p.Key, Was: slices.Clone(p.Was), Headers: maps.Clone(p.Headers)})
 	}
 	return out, nil
 }

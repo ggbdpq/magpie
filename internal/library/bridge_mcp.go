@@ -36,6 +36,7 @@ package library
 
 import (
 	"log"
+	"maps"
 	"net/url"
 	"slices"
 	"strconv"
@@ -64,9 +65,26 @@ func init() {
 // bridgeURL is the address of the router of the magpie at root.
 func bridgeURL(root string) string { return strings.TrimRight(root, "/") + gateway.HubMCPAll }
 
-// bridgeHeaders are the headers its router is asked with.
-func bridgeHeaders(key string) map[string]string {
-	return map[string]string{"Authorization": "Bearer " + key}
+// bridgeHeaders are the headers its router is asked with: the provider's
+// own first (#5487, Cloudflare Access's), then the key — an Authorization
+// the provider lists itself, spelled in any case, stays the provider's,
+// as it does on the requests magpie itself sends it (signRemote).
+func bridgeHeaders(h provider.RemoteHub) map[string]string {
+	out := maps.Clone(h.Headers)
+	if out == nil {
+		out = map[string]string{}
+	}
+	auth := false
+	for k := range out {
+		if strings.EqualFold(k, "Authorization") {
+			auth = true
+			break
+		}
+	}
+	if !auth {
+		out["Authorization"] = "Bearer " + h.Key
+	}
+	return out
 }
 
 // routerAt is whether u is a magpie's router at host (scheme and host).
@@ -170,7 +188,7 @@ func adoptBridge(id string) (bool, error) {
 	host := originOf(bridgeURL(h.Root))
 	if !slices.ContainsFunc(l.MCP, func(s *Server) bool { return s.Bridge == id || (s.Remote() && routerAt(s.URL, host)) }) {
 		l.MCP = append(l.MCP, &Server{Name: l.bridgeName(h), Transport: "http", URL: bridgeURL(h.Root),
-			Headers: bridgeHeaders(h.Key), Bridge: id, Local: true, Agents: l.hubAgents()})
+			Headers: bridgeHeaders(h), Bridge: id, Local: true, Agents: l.hubAgents()})
 	}
 	return true, l.save()
 }
@@ -243,7 +261,7 @@ func (l *Library) adoptBridges() bool {
 		if u := bridgeURL(h.Root); s.URL != u {
 			s.URL, changed = u, true
 		}
-		if want := bridgeHeaders(h.Key); !sameHeaders(s.Headers, want) {
+		if want := bridgeHeaders(h); !sameHeaders(s.Headers, want) {
 			s.Headers, changed = want, true
 		}
 	}

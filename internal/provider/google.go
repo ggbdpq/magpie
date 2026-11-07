@@ -1329,7 +1329,8 @@ func (g googleAccount) quota(ctx context.Context, plan string) SubscriptionQuota
 	if g.app.agent == "antigravity" {
 		q.Windows = append(q.Windows, g.pools(ctx, q.Windows)...)
 	}
-	if p, err := g.project(ctx); err == nil && q.Plan == "" {
+	// Code Assist's plan can have changed since this account was signed in.
+	if p, err := g.project(ctx); err == nil && p.plan != "" {
 		q.Plan = p.plan
 	}
 	return q

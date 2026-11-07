@@ -1309,6 +1309,16 @@ A client that drops the images' message without adding text to a result
 goes on only when that message held images alone, no text. A tool result of an image alone (pi-ai's "(see attached image)")
 whose text is replaced by the line is not this shape, and starts anew.
 
+`looseTurn` keeps the whole conversation as `heardRuns` too (`whole`),
+and `rewritten` takes a run, or a saved session, whose conversation the
+request's is with the images of turns BEFORE the last taken out
+(`looseTurn.mediaLost`, #5612): WorkBuddy strips the images of earlier
+turns between turns, and the conversation it sent back then had a key no
+run had, so its next turn was told to a new Claude Code whole, all of it
+written to the prompt cache again, `cache_read` back to the system
+prompt's size (previous_message_not_found). A conversation whose words
+changed is never this, and starts anew.
+
 ## How many Claude Code processes run (`claudeRoom`, #2956)
 
 Every Claude Code magpie starts for a Claude subscription takes a place in

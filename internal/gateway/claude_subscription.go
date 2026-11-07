@@ -1907,9 +1907,13 @@ func (b *subscriptionBridge) resume(req *Request, owner string) (*subscriptionRu
 		// the client sent the conversation back rewritten (#912): the
 		// run is its own when nothing else could be, and its agent was
 		// told every tool the client offers now
-		if r, _ := b.rewritten(req, owner); r != nil && r.offers(req.Tools) && !r.asideOf(req) {
+		if r, _, media := b.rewritten(req, owner); r != nil && r.offers(req.Tools) && !r.asideOf(req) {
 			run = r
-			log.Printf("claude: a conversation whose last turn the client rewrote goes on in its run")
+			if media {
+				log.Printf("claude: a conversation whose client took the images of earlier turns out goes on in its run")
+			} else {
+				log.Printf("claude: a conversation whose last turn the client rewrote goes on in its run")
+			}
 		}
 	}
 	if run != nil {
@@ -2062,6 +2066,12 @@ func nextTurn(req *Request, owner string) (string, []Message) {
 type looseTurn struct {
 	key  string
 	turn []turnWords
+	// whole is the conversation the earlier turns hold, as lostMedia
+	// compares it (#1382): a client that takes the images of turns
+	// before the last one out between turns (WorkBuddy, #5612) sends a
+	// key no run had, and its next turn was told to a new Claude Code
+	// whole, all of it written to the prompt cache again
+	whole []heardRun
 	// runs is the turn as lostMedia compares it (#1382): sealed as a run
 	// keeps it, with its words as a request has it
 	runs []heardRun
@@ -2093,7 +2103,7 @@ func newLooseTurn(owner string, req *Request, msgs []Message, sealed bool) *loos
 	fmt.Fprintf(h, "%s\x00%s\x00%t\x00%t\x00%s\x00%s\x00%t\x00%s\x00%d", owner, req.Model, req.Effort != "", req.ThinkOff, req.ToolChoice, withoutBillingHeader(req.System), req.WebSearch, req.Format.schema(), start)
 	cacheIdentity(h, req)
 	hashMessages(h, msgs[:start], nil)
-	l := &looseTurn{key: hex.EncodeToString(h.Sum(nil)), runs: heardRuns(msgs[start:], sealed)}
+	l := &looseTurn{key: hex.EncodeToString(h.Sum(nil)), whole: heardRuns(msgs, sealed), runs: heardRuns(msgs[start:], sealed)}
 	words := messageWords(msgs)
 	for i := start; i < len(msgs); i++ {
 		tools := false
@@ -2115,6 +2125,16 @@ func (l *looseTurn) rewrote(now *looseTurn) bool {
 		return true
 	}
 	return len(now.runs) == len(l.runs) && lostMedia(l.runs, now.runs)
+}
+
+// mediaLost says now's conversation is the one l kept with the images or
+// files of the turns before the last taken out, and that alone
+// (lostMedia over the whole conversation, #5612): rewrote compares the
+// last turn a client sent back rewritten, while a client that strips the
+// images of earlier turns between turns sends a conversation whose key no
+// run had.
+func (l *looseTurn) mediaLost(now *looseTurn) bool {
+	return lostMedia(l.whole, now.whole)
 }
 
 // cut is rewrote for a client that cut a user's message or the reply.
@@ -2156,38 +2176,50 @@ func cutFrom(was, s string) bool {
 
 // rewritten finds the run, or the saved session, waiting at the
 // conversation a request goes on from as its client rewrote it
-// (looseTurn), when there is just one (b.mu held). Two that could be it
-// are two conversations alike as far as their words go, and neither is
-// taken: a run handed another's would answer from what the other was told.
-func (b *subscriptionBridge) rewritten(req *Request, owner string) (*subscriptionRun, *savedSession) {
+// (looseTurn), or as its client took the images of earlier turns out
+// (mediaLost, #5612), when there is just one (b.mu held). Two that could
+// be it are two conversations alike as far as their words go, and neither
+// is taken: a run handed another's would answer from what the other was
+// told. The bool says the match was the images taken out.
+func (b *subscriptionBridge) rewritten(req *Request, owner string) (*subscriptionRun, *savedSession, bool) {
 	key, since := nextTurn(req, owner)
 	if key == "" {
-		return nil, nil
+		return nil, nil, false
 	}
 	l := newLooseTurn(owner, req, req.Messages[:len(req.Messages)-len(since)], false)
 	if l == nil {
-		return nil, nil
+		return nil, nil, false
 	}
 	var run *subscriptionRun
 	var saved *savedSession
-	found := 0
+	found, media := 0, false
 	for _, r := range b.idle {
-		if r.owned() == owner && r.loose != nil && r.loose.key == l.key && r.loose.rewrote(l) {
+		if r.owned() != owner || r.loose == nil {
+			continue
+		}
+		if r.loose.key == l.key && r.loose.rewrote(l) {
 			run, found = r, found+1
+		} else if r.loose.mediaLost(l) {
+			run, found, media = r, found+1, true
 		}
 	}
 	for _, s := range b.shelf {
-		if s.owner == owner && s.loose != nil && s.loose.key == l.key && s.loose.rewrote(l) {
+		if s.owner != owner || s.loose == nil {
+			continue
+		}
+		if s.loose.key == l.key && s.loose.rewrote(l) {
 			saved, found = s, found+1
+		} else if s.loose.mediaLost(l) {
+			saved, found, media = s, found+1, true
 		}
 	}
 	if found != 1 {
 		if found > 1 {
 			log.Printf("claude: %d conversations could be the one a rewritten turn goes on from; none is taken", found)
 		}
-		return nil, nil
+		return nil, nil, false
 	}
-	return run, saved
+	return run, saved, media
 }
 
 // toolsCover says tools has every one of names: a session resumed with
@@ -2541,9 +2573,13 @@ func (b *subscriptionBridge) unshelve(req *Request, owner string) *savedSession 
 		// rewritten (resume); its Claude Code is told the tools the
 		// client offers now, and the session keeps the calls made of
 		// those it had
-		if _, saved := b.rewritten(req, owner); saved != nil && toolsCover(req.Tools, saved.tools) {
+		if _, saved, media := b.rewritten(req, owner); saved != nil && toolsCover(req.Tools, saved.tools) {
 			s, key = saved, saved.key
-			log.Printf("claude: a conversation whose last turn the client rewrote goes on from its saved session")
+			if media {
+				log.Printf("claude: a conversation whose client took the images of earlier turns out goes on from its saved session")
+			} else {
+				log.Printf("claude: a conversation whose last turn the client rewrote goes on from its saved session")
+			}
 		}
 	}
 	if s == nil {
@@ -6515,7 +6551,7 @@ func (b *subscriptionBridge) whyNoRun(req *Request, owner string) string {
 	keys := conversationKeys(owner, req.Messages)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if r, _ := b.rewritten(req, owner); r != nil {
+	if r, _, _ := b.rewritten(req, owner); r != nil {
 		if n, names := r.untold(req.Tools); n > 0 {
 			return fmt.Sprintf("its run waits under another key: the client offers %d tool(s) its Claude Code wasn't told of (%s), and a run is told its tools when it starts", n, names)
 		}

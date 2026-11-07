@@ -440,13 +440,19 @@ func notePluginLapse(pp plugin.Provider, key string, status int) {
 }
 
 // What plugin accounts' sign-ins were told of (a request's answer, a usage
-// reading, a sign-in) is counted, under loginsMu: pluginSignInTold
-// counts it all, and pluginSignInSaid has the count each account was last
-// told of at. A count, not a time: Windows' clock moves in ticks of up to
-// 15.6ms, and a reading begun just after an answer would read as begun
-// with it.
+// reading, a sign-in) is counted: pluginSignInTold counts it all, and
+// pluginSignInSaid has the count each account was last told of at. A
+// count, not a time: Windows' clock moves in ticks of up to 15.6ms, and a
+// reading begun just after an answer would read as begun with it.
+// pluginSignInSaid is told under loginsMu; the count is read without it,
+// which every plugin account's usage poll asks of it — the lock put them
+// all in the queue on logins.json's lock (7 goroutines parked there in
+// #5430's dump). A read sees the count as it is made, a step past a tell
+// still saying itself, which the lock would have waited out: a tell that
+// said itself before the note takes the lock still stands over the
+// reading, by the count as before.
 var (
-	pluginSignInTold uint64
+	pluginSignInTold atomic.Uint64
 	pluginSignInSaid = map[string]uint64{}
 )
 
@@ -455,9 +461,7 @@ const toldNow = ^uint64(0)
 
 // pluginSignInAt is the count a usage reading beginning now goes by.
 func pluginSignInAt() uint64 {
-	loginsMu.Lock()
-	defer loginsMu.Unlock()
-	return pluginSignInTold
+	return pluginSignInTold.Load()
 }
 
 // notePluginLapseSince is notePluginLapse for what a usage reading begun
@@ -483,8 +487,7 @@ func notePluginLapseOf(agent, key string, status int, began uint64, text func(us
 		return
 	}
 	if began == toldNow {
-		pluginSignInTold++
-		began = pluginSignInTold
+		began = pluginSignInTold.Add(1)
 	}
 	pluginSignInSaid[said] = began
 	ls := readLogins()

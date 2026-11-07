@@ -565,15 +565,36 @@ func claudeSignedOut(l savedLogin) string {
 	return claudeGoneLapse
 }
 
+// standInBuilds counts the stand-in's builds (a test reads it): with no
+// Claude Code sign-in every catalog build made one, and each took
+// logins.json's lock (#5430).
+var standInBuilds atomic.Int64
+
+// claudeStandInOf is what the stand-in's build gives.
+type claudeStandInOf struct {
+	p  Provider
+	ok bool
+}
+
 // claudeStandInAccount is the Claude Code provider while Claude Code is
-// signed out, on claudeListed's account; false with no account saved.
+// signed out, on claudeListed's account; false with no account saved. It
+// is held under one key, as Logins is: with no sign-in every catalog
+// build asked for it, and each took logins.json's lock — 47 goroutines
+// parked there in #5430's dump. A write lists it anew, as Logins does.
 func claudeStandInAccount() (Provider, bool) {
+	st := heldOf("claudeStandIn", claudeStandInBuild)
+	return st.p, st.ok
+}
+
+// claudeStandInBuild is the stand-in's build.
+func claudeStandInBuild() claudeStandInOf {
+	standInBuilds.Add(1)
 	loginsMu.Lock()
 	ls := readLogins()
 	loginsMu.Unlock()
 	user := claudeListed(ls)
 	if user == "" {
-		return Provider{}, false
+		return claudeStandInOf{}
 	}
 	acct := &Account{Agent: "claude", User: user, standIn: true}
 	for _, l := range ls {
@@ -582,7 +603,7 @@ func claudeStandInAccount() (Provider, bool) {
 		}
 	}
 	acct.token = func(context.Context) (string, error) { return claudeSavedDir(user) }
-	return claudeProvider(acct), true
+	return claudeStandInOf{claudeProvider(acct), true}
 }
 
 // AgentsOwn says the account is the one the agent itself is signed in to,

@@ -133,3 +133,77 @@ func TestOwnPausedListedOnceARequest(t *testing.T) {
 		t.Fatal("a write did not list OwnPaused anew")
 	}
 }
+
+// TestClaudeStandInListedOnceARequest: with no Claude Code sign-in, every
+// catalog build fell to claudeStandInAccount, and each took logins.json's
+// lock and read the file again — 47 goroutines parked on the lock in
+// #5430's dump, one build after another re-multiplying as #5104's held
+// waiters timed out at 5s. The stand-in is listed once a request, as
+// Logins is, and a write lists it anew.
+func TestClaudeStandInListedOnceARequest(t *testing.T) {
+	claudeHome(t)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	if err := writeLogins([]savedLogin{
+		{Agent: "claude", User: "a@x.com", Auth: []byte(`{"claudeAiOauth":{"accessToken":"tok-a","refreshToken":"r-a"}}`)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer func(d time.Duration) { heldFor = d }(heldFor)
+	heldFor = time.Hour // a loaded machine's pause isn't the bound
+	release := Hold()
+	defer func() { release() }()
+	if _, ok := claudeStandInAccount(); !ok {
+		t.Fatal("no stand-in account")
+	}
+	runs := standInBuilds.Load()
+	const n = 20
+	start := make(chan struct{})
+	done := make(chan struct{}, n)
+	for range n {
+		go func() {
+			<-start
+			claudeStandInAccount()
+			done <- struct{}{}
+		}()
+	}
+	close(start)
+	for range n {
+		<-done
+	}
+	if got := standInBuilds.Load() - runs; got != 0 {
+		t.Fatalf("%d asks in one request built the stand-in %d times again, want 0 (each took logins.json's lock: #5430)", n, got)
+	}
+	if err := writeLogins(readLogins()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := claudeStandInAccount(); !ok {
+		t.Fatal("no stand-in account after a write")
+	}
+	if got := standInBuilds.Load() - runs; got != 1 {
+		t.Fatalf("after a write: built the stand-in %d times, want 1", got)
+	}
+	release()
+	release = func() {}
+	claudeStandInAccount()
+	claudeStandInAccount()
+	if got := standInBuilds.Load() - runs; got != 3 {
+		t.Fatalf("outside a request: built the stand-in %d times, want 3", got)
+	}
+}
+
+// TestPluginSignInAtNeedsNoLock: pluginSignInAt reads one counter, and
+// taking logins.json's lock for it put every plugin account's usage poll
+// in the queue on that lock — 7 goroutines parked in it behind the
+// catalog build in #5430's dump. The counter is read without the lock.
+func TestPluginSignInAtNeedsNoLock(t *testing.T) {
+	signIn(t)
+	loginsMu.Lock()
+	done := make(chan uint64, 1)
+	go func() { done <- pluginSignInAt() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pluginSignInAt waited for loginsMu: a counter read queued on logins.json's lock (#5430)")
+	}
+	loginsMu.Unlock()
+}

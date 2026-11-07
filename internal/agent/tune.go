@@ -216,6 +216,16 @@ type tunePlace struct {
 	number bool
 }
 
+// TuneAgents are the agents tune has a setting to put a value in, the
+// names tuneWhere answers for: an agent whose settings tune gains goes
+// into tuneWhere and this list, and nowhere else carries the names again
+// (#5627: the gui kept its own copy of the two, and an agent past them
+// was invisible to tune, its blank pane said "not enough calls").
+func TuneAgents() []string { return []string{"claude", "codex"} }
+
+// Tunable says whether tune has a setting for agent.
+func Tunable(agent string) bool { return slices.Contains(TuneAgents(), agent) }
+
 func tuneWhere(home, agent, knob, model string) (tunePlace, error) {
 	home = tuneHome(home)
 	switch agent {

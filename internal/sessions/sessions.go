@@ -979,6 +979,23 @@ var filesHook func()
 
 func allFiles() []file { return allFilesWith(&allKept[0], zcodeFiles) }
 
+// TouchedSince is every agent with a session file modified since, named
+// with its newest file's time: the sessions page's listing, no file read
+// (tune names the agents of the range it has no card for, #5627).
+func TouchedSince(since time.Time) map[string]time.Time {
+	out := map[string]time.Time{}
+	s := modOf(since)
+	for _, f := range allFiles() {
+		if f.mod.Before(s) {
+			continue
+		}
+		if at, ok := out[f.agent]; !ok || f.mod.After(modOf(at)) {
+			out[f.agent] = f.mod.Time()
+		}
+	}
+	return out
+}
+
 // allFilesForTitles is allFiles with ZCode's sessions listed from their own
 // rows alone: a name poll needs titles, not every message counted
 // (zcodeFiles joins them for a session's size and last activity).

@@ -2,10 +2,9 @@
 // Context windows: what a request's prompt holds, as the gateway read it
 // (gateway.Route.Prompt), drawn as a card — how full the window is, how
 // much the vendor read from its cache, a grid of the window with a cell
-// for each 1/400 of it coloured by what fills it, and the contents part by
-// part. Routing shows the card for the request it tells of; the Usage
-// page's Context tab scores each agent's use of its window, tags it, and
-// lists its sessions' fill request by request.
+// for each 1/400 of it coloured by what fills it. Routing shows the card
+// for the request it tells of; the Usage page's Context tab scores each
+// agent's use of its window and lists its sessions' fill request by request.
 (() => {
   const PARTS = ["system", "tools", "skills", "memory", "files", "results", "chat"];
   const PART_NAMES = {
@@ -192,9 +191,9 @@
   }
 
   // Narrow layouts go by the card's own width, as classes (max520), not
-  // container queries: WebKit pulled a view scrolled to its end up by a
-  // card's height on each redraw (#1249). A redrawn card starts at the last
-  // width in its place, so it never lays out wide and pulls the page up
+  // container queries: WebKit pulled a scrolled view up by a card's height
+  // on each redraw (#1249); a redrawn card starts at the last width in its
+  // place, so it never lays out wide and pulls the page up
   const cardWidth = {};
   const sizeCard = (card, w) => {
     card.classList.toggle("max520", w <= 520);
@@ -258,13 +257,12 @@
     for (let i = kids.length; i < old.length; i++) old[i].remove();
   }
 
-  // ---------- the map: the window as tiles (flohoeller's context map) ----------
+  // the map: the window as tiles (flohoeller's context map)
 
   // The card's window is drawn one of two ways, the reader's pick: the
   // map, each item a tile sized by its tokens inside its part's, the free
   // space a hatched tile of its share; or the grid, a cell for each 1/400
-  // of the window. The map is the default; the grid is kept for those who
-  // had it.
+  // of the window. The map is the default; the grid stays for those who had it.
   let ctxLook = "map";
   try { if (localStorage.getItem("magpie.ctxLook") === "grid") ctxLook = "grid"; } catch {}
 
@@ -307,12 +305,12 @@
   }
 
   // tilesOf lays a prompt out on a map W×H px: the used share of the
-  // window and the free space side by side along its long side (the
-  // used share eased, see usedLen), the used
-  // parts squarified in it, a part's items in the part. An item too small
-  // to read goes in one tile with the part's other small ones; a part too
-  // small for its items is one tile. Each tile: key (stays across draws),
-  // kind, its item (it), the items it stands for (its), rect in px.
+  // window and the free space side by side along its long side (the used
+  // share eased, see usedLen), the used parts squarified in it, a part's
+  // items in the part. An item too small to read shares a tile with the
+  // part's other small ones; a part too small for its items is one tile.
+  // Each tile: key (stays across draws), kind, its item (it), its items
+  // (its), rect in px.
   const TILE_MIN = 1500, TILE_MAX = 12, TILE_FLOOR = 700, TILE_SIDE = 16;
   // the look switch's marks: tiles, and a grid of cells
   const LOOK_MAP = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="1.5" y="2" width="5.5" height="12" rx="1.6"/><rect x="8.5" y="2" width="6" height="6.5" rx="1.6"/><rect x="8.5" y="10" width="6" height="4" rx="1.4"/></svg>';
@@ -341,7 +339,7 @@
     // area, and a part laid in a long row beside large ones met it as a
     // strip (49 tokens of memory beside 70K: 190×4px, under the tiles' 3px
     // gap, so it was hidden; AIGCFREE on Discord). One too thin has its
-    // value raised by as much and the parts are laid again.
+    // value raised by as much and the parts are laid again
     const partVals = floored(parts.map((x) => ({ v: x.tokens, x })), ur[2] * ur[3]);
     let partRects = squarify(partVals, ...ur);
     for (let n = 0; n < 8; n++) {
@@ -836,11 +834,10 @@
       const known = cache && p.counted !== false ? cache : null;
       if (known || cacheShown || lastCache) {
         // once shown, the cache keeps its place, so nothing under it moves
-        // up and back down. A request under way has read no cache yet:
-        // the last request's stays, dimmed and named as the last one's,
-        // until this one's answer says (dumplings on Discord: each new
-        // request flashed it to "—" and an empty bar, the dash against
-        // 命中). Nothing to show is said in words, with no bar
+        // up and back down. A request under way has read no cache yet: the
+        // last one's stays, dimmed and named as the last one's, until this
+        // one's answer says (dumplings on Discord: each new request flashed
+        // it to "—" and an empty bar). Nothing to show is said in words
         const shown = known || (live ? lastCache : null);
         const c = el("div", "ctx-stat ctx-cache" + (known ? "" : shown ? " was" : " none"));
         c.append(el("div", "ctx-k", t("Prompt cache")));
@@ -963,7 +960,7 @@
   }
   window.ctxCard = ctxCard;
 
-  // clickable makes e a button for the keyboard too, its handlers set as
+  // clickable makes e a button for the keyboard too, handlers set as
   // properties, so a morphed card keeps them
   function clickable(e, go) {
     e.setAttribute("role", "button");
@@ -977,24 +974,23 @@
     };
   }
 
-  // ---------- the text of a part (masaka on Discord) ----------
+  // the text of a part (masaka on Discord)
 
   // A part of the card clicked opens what the request sent there, read
-  // from the request's body: an item alone (a tool, a file, a turn), or
-  // the part's items, each opened to its text (ctxtext.js, loaded then)
+  // from its body: an item alone (a tool, a file, a turn), or the part's
+  // items, each opened to its text (ctxtext.js, loaded then)
   const openCtxText = (...a) => import("./ctxtext.js").then((m) => m.open({ fmtK, partName, itemName, itemLabel, tagOf }, ...a)).catch(statusErr);
   window.openCtxText = openCtxText;
   window.ctxFmt = fmtK;
 
-  // ---------- the Usage page's Context tab ----------
+  // the Usage page's Context tab
 
   const CTX_RANGES = [["1", "Today"], ["7", "7 days"], ["30", "30 days"]];
   let ctxDays = "7";
   try { const d = localStorage.getItem("magpie.ctxDays"); if (CTX_RANGES.some(([id]) => id === d)) ctxDays = d; } catch {}
   let ctxData = null, ctxJSON = "", ctxRead = 0, ctxOpen = "", ctxAgent = "all";
-  // the days the pane shows "Reading…" for: a second read before the history
-  // answers (the page opened, then the first state's refresh) leaves it be,
-  // so the advice drawn meanwhile keeps its entrance
+  // the days the pane shows "Reading…" for: a second read before the
+  // history answers leaves the advice drawn meanwhile keep its entrance
   let ctxWaiting = "";
 
   const SCORE_NAMES = { cache: "Cache", lean: "Lean start", pace: "Pace", reliable: "Reliability" };
@@ -1167,7 +1163,7 @@
   window.ctxSpark = spark;
   window.ctxHealth = health;
 
-  // ---------- tuned for you: the settings that would have spent the fewest tokens ----------
+  // tuned for you: the settings that would have spent the fewest tokens
 
   let tuneData = null, tuneJSON = "", tuneRead = 0, tuneBusy = "";
   // whether the last draw showed the history and the advice: what was on
@@ -1490,18 +1486,20 @@
       return;
     }
     const shown = tuneData.agents.filter((a) => a.advice.length);
-    if (!shown.length) {
-      pane.append(el("p", "usage-note", t("Not enough calls in this range to tune on")));
-      return;
-    }
+    // why an agent has no card: its files unread, or no setting of tune's (#5627)
+    const blanks = (tuneData.unread || []).map((n) => t("{agent}'s session history isn't being read: Settings › Privacy turns it on", { agent: agentLabel(n) }))
+      .concat((tuneData.others || []).map((n) => t("{agent} has no setting to tune on", { agent: agentLabel(n) })));
     const grid = el("div", "ctx-agents ctx-tunes");
     for (const a of shown) grid.append(tuneCard(a));
-    pane.append(grid);
+    if (shown.length) pane.append(grid);
+    else if (!blanks.length) blanks.push(t("Not enough calls in this range to tune on"));
+    for (const b of blanks) pane.append(el("p", "usage-note", b));
   }
 
   // what this page can draw: another version's reply can hold other rows
   // (Linka on Discord: a page from before few rows threw on one, "r.cost")
   const obj = (r) => !!r && typeof r == "object", objs = (l) => Array.isArray(l) ? l.filter(obj) : [];
+  const strs = (l) => Array.isArray(l) ? l.filter((s) => typeof s == "string") : [];
 
   async function loadTune(force) {
     const read = ++tuneRead, days = ctxDays;
@@ -1510,7 +1508,7 @@
     if (read !== tuneRead) return;
     const json = JSON.stringify(data);
     if (!force && tuneData && json === tuneJSON) return;
-    tuneData = { days: +data.days || +days, gateway: !!data?.gateway, agents: objs(data?.agents).map((a) => ({ ...a, advice: objs(a.advice).filter((r) => obj(r.compact) || obj(r.ttl) || r.few).map((r) => ({ ...r, setting: obj(r.setting) ? r.setting : {} })) })) }, tuneJSON = json;
+    tuneData = { days: +data.days || +days, gateway: !!data?.gateway, agents: objs(data?.agents).map((a) => ({ ...a, advice: objs(a.advice).filter((r) => obj(r.compact) || obj(r.ttl) || r.few).map((r) => ({ ...r, setting: obj(r.setting) ? r.setting : {} })) })), others: strs(data?.others), unread: strs(data?.unread) }, tuneJSON = json;
     renderContext();
   }
 
@@ -1571,10 +1569,9 @@
     const data = await api("context?days=" + days);
     if (read !== ctxRead) return;
     // the auto refresh redraws only what changed: the same answer keeps the
-    // pane (and what the pointer is on), and a new one comes in without its
-    // entrance animations. What it is drawn with counts too: the agents'
-    // names and icons come with the state, which can answer after a first
-    // history, drawn by the agents' ids until then
+    // pane, and a new one comes in without its entrance animations. What it
+    // is drawn with counts too: the agents' names and icons come with the
+    // state, which can answer after a first history, drawn by ids until then
     const json = JSON.stringify([data, (state.clients || state.agents || []).map((a) => [a.id, a.name, a.icon])]);
     if (ctxData && json === ctxJSON) return;
     ctxData = data, ctxJSON = json;

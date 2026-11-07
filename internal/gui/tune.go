@@ -8,6 +8,7 @@ package gui
 import (
 	"encoding/json"
 	"hash/fnv"
+	"maps"
 	"net/http"
 	"slices"
 	"sort"
@@ -101,24 +102,41 @@ type tuneState struct {
 	// (linkaww on Discord: a Docker magpie's Claude Code card said 0
 	// calls beside the requests it routed); the page leaves the card out
 	Gateway bool `json:"gateway,omitempty"`
+	// Others are the agents of the range whose files magpie read that
+	// have no setting of tune's (qoder and its kin): the pane names them,
+	// so their blank is not told as "not enough calls", which for them is
+	// not why (#5627)
+	Others []string `json:"others,omitempty"`
+	// Unread are the agents with a setting of tune's whose session files
+	// magpie may not read here: their calls are missing for that, not for
+	// being few (#5627)
+	Unread []string `json:"unread,omitempty"`
 }
 
-// tuneOf works the advice out of the calls the agents' files hold.
+// tuneOf works the advice out of the calls the agents' files hold. An
+// agent with no setting of tune's is named in the state, not dropped
+// silently (#5627).
 func tuneOf(cs []sessions.Call, days int, home string) tuneState {
 	by := map[string][]tune.Call{}
+	others := map[string]bool{}
 	for _, c := range cs {
-		if c.Agent == "claude" || c.Agent == "codex" {
+		if agent.Tunable(c.Agent) {
 			by[c.Agent] = append(by[c.Agent], tune.FromCalls([]sessions.Call{c})...)
+		} else {
+			others[c.Agent] = true
 		}
 	}
-	return adviseOf(by, days, home)
+	return adviseOf(by, slices.Sorted(maps.Keys(others)), days, home)
 }
 
-// adviseOf is tuneOf from each agent's calls made tune's already.
-func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
-	out := tuneState{Days: days, Agents: []tuneAgent{}}
+// adviseOf is tuneOf from each agent's calls made tune's already; others
+// are the agents of the range with no setting of tune's, named in the
+// state so the pane can say why they are blank (#5627).
+func adviseOf(by map[string][]tune.Call, others []string, days int, home string) tuneState {
+	out := tuneState{Days: days, Agents: []tuneAgent{}, Others: others}
+	found := sessions.Found()
 	weigh := pricedWeights(settings.Load())
-	for _, name := range []string{"claude", "codex"} {
+	for _, name := range agent.TuneAgents() {
 		calls := by[name]
 		kept := agent.TuneKept(home, name)
 		if name == "claude" {
@@ -133,6 +151,9 @@ func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
 			kept = here
 		}
 		if len(calls) == 0 && len(kept) == 0 {
+			if !sessions.Reads(name) && slices.Contains(found, name) {
+				out.Unread = append(out.Unread, name)
+			}
 			continue
 		}
 		ta := tuneAgent{Agent: name, Calls: len(calls), Advice: []tuneAdvice{}}
@@ -461,7 +482,7 @@ func tuneFor(days int) tuneState {
 	if tuneAnswer.days == days && time.Since(tuneAnswer.at) < ctxAgain {
 		return tuneAnswer.out
 	}
-	out := adviseOf(tuneCallsSince(time.Now().AddDate(0, 0, -days)), days, "")
+	out := adviseOf(tuneCallsSince(time.Now().AddDate(0, 0, -days)), othersOf(time.Now().AddDate(0, 0, -days)), days, "")
 	tuneAnswer.days, tuneAnswer.at, tuneAnswer.out = days, time.Now(), out
 	return out
 }
@@ -484,12 +505,13 @@ func msgHash(s string) uint64 {
 	return h.Sum64() | 1
 }
 
-// tuneCallsSince is each agent's calls since, as sessions.Calls has them:
-// a message a resumed Claude Code session copied is the earlier file's.
+// tuneCallsSince is each tunable agent's calls since, as sessions.Calls
+// has them: a message a resumed Claude Code session copied is the earlier
+// file's.
 func tuneCallsSince(since time.Time) map[string][]tune.Call {
 	var srcs []sessions.CallSource
 	for _, s := range sessions.CallSources() {
-		if (s.Agent == "claude" || s.Agent == "codex") && !s.Modified.Before(since) {
+		if agent.Tunable(s.Agent) && !s.Modified.Before(since) {
 			srcs = append(srcs, s)
 		}
 	}
@@ -548,6 +570,23 @@ func tuneCallsSince(since time.Time) map[string][]tune.Call {
 		slices.SortStableFunc(cs, func(a, b tune.Call) int { return b.Time.Compare(a.Time) })
 	}
 	return by
+}
+
+// othersOf names the agents of the range tune has no card for: a session
+// file of theirs was touched in it, and they have no setting of tune's
+// (#5627). The listing is the sessions page's, which reaches further than
+// the calls pipeline does — Qoder's files, for one, are nowhere in
+// callSources.
+func othersOf(since time.Time) []string {
+	touched := sessions.TouchedSince(since)
+	names := make([]string, 0, len(touched))
+	for name := range touched {
+		if !agent.Tunable(name) {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
 }
 
 // claudeCacheJSON is one of Claude Code's prompt-cache lifetimes: its

@@ -1513,6 +1513,9 @@ func copilotProvider(app copilotApp, plan string) Provider {
 		for k, v := range s.headers() {
 			req.Header.Set(k, v)
 		}
+		if copilotFusion(ctx) || bodyModel(body) == CopilotFusion {
+			req.Header.Set("X-GitHub-Api-Version", copilotAutoV2Version)
+		}
 		req.Header.Set("Openai-Intent", "conversation-panel")
 		// a turn the user typed is billed as one; a tool's reply is not
 		req.Header.Set("X-Initiator", "agent")
@@ -1841,6 +1844,9 @@ func copilotModels(ctx context.Context, app copilotApp) ([]catalog.Model, error)
 	// it lists, and the only choice a Student plan has: an account whose
 	// list leaves it nothing to pick by hand still has it
 	out = append(out, copilotAutoModel)
+	if copilotHasFusion(ctx, app, s) {
+		out = append(out, catalog.Model{ID: CopilotFusion, Name: "Copilot Fusion Standard"})
+	}
 	slices.SortStableFunc(picks, func(a, b string) int { return rank[a] - rank[b] })
 	copilotTermsMu.Lock()
 	copilotTerms[app.Token] = waiting

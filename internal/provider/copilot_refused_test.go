@@ -57,6 +57,8 @@ func (c *student371) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch r.URL.Path {
+	case "/meta":
+		w.WriteHeader(404)
 	case "/models":
 		io.WriteString(w, copilot371Models())
 	case "/models/gpt-5.6-sol/policy", "/models/gpt-5.6-terra/policy":

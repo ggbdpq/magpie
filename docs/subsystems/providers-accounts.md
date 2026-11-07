@@ -162,6 +162,30 @@ Account discovery can be turned off (#1535): Settings → Privacy → *Subscript
 
 A signed-in account's model list exists only at its vendor (the ChatGPT backend's `/models` for a Codex sign-in, …), so `FetchNew` asks for the lists not fetched yet. Every front end calls it at start: the window (`startBackend`, then `FetchNewSoon` behind `/api/state`), the TUI (`fetchModelsCmd` in `Init`) and `magpie serve` (#1789, reyoung: the terminal and a headless gateway had offered the built-in Cursor's fallback `auto` alone until the list was fetched by hand). Listing the accounts asks a CLI who is signed in, and a look waits `firstAsk` (3s) for that; `cursor-agent about` asks Cursor's servers and can take longer, so `FetchNew` waits for each CLI asked for the first time (`awaitIdentities` in [`cli_identity.go`](../../internal/provider/cli_identity.go)) and lists the accounts again. It reports whether an account was left without its list (failed, or waiting `newFetchRetry` after a failure): the TUI then asks again a minute later (`modelsRetry`) and `serve` loops the same way, while the window asks again from its pages. A TUI model picker open when the list arrives is filled in place (`relist`), keeping its filter and the model under the cursor. `TestFetchNewAccount` and the TUI's `TestTUIFetchesSubscriptionModels` / `TestTUIAsksAgainForAMissingList` cover it. A list fetched once is not left as it was: the magpie serving the gateway looks every hour ([`KeepAccountsListed`](../../internal/provider/account_relist.go), first two minutes after it starts) and fetches again each signed-in built-in account's list that is 45 minutes old (`accountListAge`, `relistAccounts`), so a model the vendor adds to the plan is served without Refresh or a magpie release (cliff_26651 on Discord: GPT-6.1 Terra, served to ChatGPT accounts from 10-26, missing from Codex through a magpie whose Codex list was fetched on 10-12). A plugin's accounts are `KeepPluginsListed`'s, one switched off isn't asked, and a fetch that fails keeps the list there was. `TestAccountListFollowsTheVendor` and `TestKeepAccountsListedAsks` cover it. The saved ChatGPT accounts behind the one Codex is signed in to are listed with that fetch (`codexFetchSaved`), but not each time: one with no list yet is asked at once, the others once a day (`codexSavedListAge`) and one a look (`codexSavedAtOnce`), the one asked longest ago first, and one that failed waits its day too (`codexSavedAsked`). Asking every switched-on saved account each hour was a burst of `/codex/models` calls from one address for accounts no Codex used (`TestSavedCodexListsOnceADay`). Every call magpie makes about a ChatGPT account, not only `/codex/models` and `/responses` (`codexSign`), carries Codex's `originator` and User-Agent (`codexClientHeaders`, codex-rs `default_headers`): `/wham/usage`, the reset credits and their use (`codexAccountHeaders`), and the token endpoint's refresh and sign-in exchange. The refresh's body is codex-rs's: `client_id`, `grant_type`, `refresh_token` and a `refresh_reason` (`proactive_expiry`, `scheduled` from the keep-alive, `unauthorized_recovery` after a 401, `forced`), with no `scope` (`TestCodexAccountCallsGoAsCodex`, `TestCodexRefreshSaysWhy`).
 
+## Copilot Fusion Standard
+
+Copilot's model list includes `copilot/fusion` (Copilot Fusion Standard)
+when `/meta`, at API version `2026-09-21`, advertises an enabled, visible
+`balance` tier with `tier_level: "standard"`. Failed or older metadata
+leaves it out without removing legacy Auto or the account's other models
+([`copilot_fusion.go`](../../internal/provider/copilot_fusion.go)).
+
+The gateway resolves this selection through `/auto` at `2026-08-01`, with
+the user's prompt, `tier: "balance"` and `fusion: true`, as Copilot CLI
+1.0.107 does. Inference names the selected model on its advertised API and
+carries `Copilot-Session-Token` at the same API version. Its sessions and
+model refusals are separate from legacy `copilot/auto`, which sends no Fusion flag. A
+refused or unavailable Fusion selection fails explicitly; it never falls
+back to legacy Auto or an ordinary model without Fusion billing context
+([`copilot_auto.go`](../../internal/provider/copilot_auto.go)).
+
+GitHub controls the promotion and billing; no permanent discount is saved
+as a model price. Fusion High and Max require the official client's
+multi-model orchestration and are not exposed as direct model endpoints.
+`TestCopilotFusionStandard` checks the catalog, billing flag, isolated
+sessions and failure behavior; `TestCopilotFusionThroughGateway` checks
+Chat, Responses and Anthropic clients.
+
 ## Runtime path
 
 1. **Add.** The Providers page adds a key provider through `Add` or `Save`, or an account through `StartSignIn`. An agent signed in on its own is found by `Accounts` with no step from the user.

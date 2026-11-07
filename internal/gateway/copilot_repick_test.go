@@ -25,7 +25,13 @@ func copilotFake(t *testing.T, gh string, api http.HandlerFunc) {
 	os.WriteFile(filepath.Join(cfg, "github-copilot", "apps.json"), mustJSON(map[string]any{
 		"github.com:Iv1.x": map[string]any{"user": "student", "oauth_token": gh},
 	}), 0o600)
-	up := httptest.NewServer(api)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/meta" {
+			w.WriteHeader(404) // legacy Auto fixture
+			return
+		}
+		api(w, r)
+	}))
 	t.Cleanup(up.Close)
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/token") {

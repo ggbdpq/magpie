@@ -193,6 +193,46 @@ func TestClaudeTurnWithItsImagesTakenOutGoesOnInItsRun(t *testing.T) {
 	}
 }
 
+// A client that takes the images of EARLIER turns out between turns
+// (WorkBuddy, #5612) sends a conversation whose key no run had: its next
+// turn was told to a new Claude Code whole, all of it written to the
+// prompt cache again, cache_read back to the system prompt's size
+// (previous_message_not_found). It goes on in the run that had the
+// conversation, told the new turn alone, the run's Claude Code holding
+// the images still. A conversation whose words changed starts anew.
+func TestClaudeTurnAfterTheImagesOfEarlierTurnsTakenOutGoesOnInItsRun(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		was, now string // the first turn's user message as sent, then as sent back
+		runs     int
+	}{
+		{"an image taken out",
+			piUserParts(piText("这是什么"), piImage()),
+			piUser("这是什么"), 1},
+		{"an image replaced by the line",
+			piUserParts(piText("这是什么"), piImage()),
+			piUserParts(piText("这是什么"), piText(hanaImageGone)), 1},
+		{"the user's words changed",
+			piUserParts(piText("这是什么"), piImage()),
+			piUser("这是谁"), 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newReplyHarness(t, "一只猫")
+			h.sendChat(c.was)
+			h.sendChat([]string{c.now, piSays("一只猫"), piUser("第二个问题"), piSays("好的"), piUser("more")}...)
+			if n := len(h.runs()); n != c.runs {
+				t.Fatalf("runs: %d, want %d", n, c.runs)
+			}
+			if c.runs == 1 {
+				told := h.toldLast()
+				if !strings.Contains(told, "more") || strings.Contains(told, "这是什么") || strings.Contains(told, "第二个") {
+					t.Fatalf("the run was told more than the turn:\n%s", told)
+				}
+			}
+		})
+	}
+}
+
 // Tool results after a step that read an image, sent by Hana with the
 // image taken out (#1382), are the run's that read it: it goes on, where
 // it was let go and the conversation told to a new one. A conversation

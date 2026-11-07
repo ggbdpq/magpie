@@ -2154,7 +2154,23 @@ func passing(status int, header http.Header, body []byte, again int) (time.Durat
 // patience's rounds sent the whole request again eight times in 38s, each
 // one drawing on the bucket it waited for. The next account is asked, or
 // the agent has the error at once.
-var wallCodes = map[string]bool{"user_model_rate_limited": true}
+//
+// ZCode's 1302 is the same bucket ("您的账户已达到速率限制，请您控制请求频率",
+// the 429 zhipuCodeStatus gives codes 1302–1399): rested and retried, the
+// 429 came back (#5406, erlinerd), and two further accounts sat there
+// while magpie kept asking (yetone on two Discord reports, v0.1.3216).
+// Zhipu reads the same code as "并发数过高" on /api/monitor's plan-card
+// read (planquota's keepLast, which never reaches here); on the chat path
+// every 1302 on record is the account-wide rate limit these words say.
+var wallCodes = map[string]bool{"user_model_rate_limited": true, "1302": true}
+
+// zcodeRateWall matches the ZCode plugin's own naming of that refusal in
+// the message it shows, when the body carries the code in no field for
+// walled to read: the vendor's three-part label `[1302][<its words>][<its
+// request id>]`, its words whole — the shape the two log lines of #5406
+// show. The words and the id together are the label's own, not words
+// anywhere in the body a prompt may quote.
+var zcodeRateWall = regexp.MustCompile(`\[1302\]\[您的账户已达到速率限制[^\]]*\]\[[0-9a-fA-F]{16,}\]`)
 
 // walled says whether body is a refusal whose error.code is one of
 // wallCodes: the code where the vendor puts it, not the words anywhere in
@@ -2165,11 +2181,14 @@ func walled(body []byte) bool {
 			Code json.RawMessage `json:"code"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(body, &e) != nil {
+	if err := json.Unmarshal(body, &e); err != nil {
 		return false
 	}
 	var code string
-	return json.Unmarshal(e.Error.Code, &code) == nil && wallCodes[code]
+	if json.Unmarshal(e.Error.Code, &code) == nil && wallCodes[code] {
+		return true
+	}
+	return zcodeRateWall.Match(wordsOf(body))
 }
 
 // withRoom is, of the candidates left, those another member than c's may

@@ -24268,6 +24268,13 @@ window.noteAccounts = noteAccounts;
       if (q.alias && !q.named && q.alias !== q.seat) all.add(q.alias.trim());
     }
     for (const a of state?.agents || []) for (const n of [a.id, a.name]) if (n) not.add(String(n).toLowerCase());
+    // a name that is both an account's and a provider's is the account's
+    // to hide (#5606, v5tech: a provider named like the account left the
+    // account in the clear): the card labels it could sit on have their
+    // own exemptions (.plan, .subscription-head > b, .acct-plan,
+    // .model-value), while the words in NOT_ACCOUNTS stay put (#3656)
+    const mine = new Set([...all].map((n) => String(n).toLowerCase().replace(/ \(\d+\)$/, "")));
+    for (const n of [...not]) if (!NOT_ACCOUNTS.has(n) && mine.has(n)) not.delete(n);
     return [...all].filter((n) => nameLike(n) && !IS_EMAIL.test(n) && !not.has(n.toLowerCase().replace(/ \(\d+\)$/, ""))).sort((a, b) => b.length - a.length);
   }
   let findKey = null, find = EMAIL;

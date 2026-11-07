@@ -892,6 +892,12 @@ func orEmpty[V any](m map[string]V) map[string]V {
 	return m
 }
 
+// emptyHashes is hashes of a bundle with nothing in it. A part of a
+// server's file reading as one of these is a part the folder never had —
+// its first writer may have had no setup of its own — not one a computer
+// removed (#5642).
+var emptyHashes = hashes(backup.Bundle{})
+
 // take puts from's part in to. The merged bundle is a sync one (BundleVersion):
 // its per-part markers, not the whole-bundle Keys bit, say which part
 // carries credentials, so a keyed providers upload no longer tells a reader
@@ -1288,9 +1294,20 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 			if first && p == "settings" {
 				keepUnseenGatewayKeys(&remote, local)
 			}
-			bringIn = append(bringIn, p)
-			if first {
-				here = append(here, p)
+			// A part that reads as empty in a file this computer is
+			// joining is the folder never having had one, not a
+			// removal: what this computer has goes up, not the empty
+			// part down (#5642). After the joining, an empty part is
+			// what a computer made of it, and goes everywhere as
+			// before.
+			if first && L[p] != emptyHashes[p] && R[p] == emptyHashes[p] {
+				take(&merged, local, p)
+				there = append(there, p)
+			} else {
+				bringIn = append(bringIn, p)
+				if first {
+					here = append(here, p)
+				}
 			}
 		case lc && rc: // both: the newer stays
 			if changed(p, c.Keys).After(remote.Created) {

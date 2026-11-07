@@ -100,6 +100,12 @@ func handOver(l *Library, found *[]FoundSkill, ts []*Target, name string) (left 
 		if i < 0 || (*found)[i].Shared == "" && !within((*found)[i].real, sh) {
 			return "", fmt.Errorf("no skill called %s in %s", name, sharedSkillsDir())
 		}
+		// the entry is checked before anything is touched: importing first
+		// makes the library's link and takes the agents' stray links, and
+		// only then finding no entry to take would leave all that (#5588)
+		if _, err := os.Lstat(filepath.Join(sharedSkillsDir(), name)); err != nil {
+			return "", fmt.Errorf("%s isn't kept in %s", name, sharedSkillsDir())
+		}
 		if err := importSkill(l, *found, name); err != nil {
 			return "", err
 		}

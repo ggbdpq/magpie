@@ -233,6 +233,39 @@ func TestHandOverWithGoose(t *testing.T) {
 	}
 }
 
+// A symlink in ~/.agents/skills handed over while an agent whose own
+// folder is the shared one (Goose) is here (xqh-jason, #5588): the
+// import's stray-link sweep used to take the shared entry itself — for
+// such an agent that entry is not a stray, it is the entry hand-over is
+// there to take — and hand-over then found no entry and failed, after the
+// library's link was made: a folder the library didn't list was left in
+// its folder, the agents' entry was gone, and no CLI way back. Now the
+// sweep leaves the shared entry alone and hand-over succeeds.
+func TestHandOverSharedLinkWithGoose(t *testing.T) {
+	h := sandbox(t)
+	shared := filepath.Join(h, ".agents/skills")
+	ext := filepath.Join(h, "aimer-skills/grilling")
+	skill(t, ext, "grilling", "Grill")
+	symlink(t, ext, filepath.Join(shared, "grilling"))
+	ok(t)(HandOverSkills([]string{"grilling"}))
+	if read(t, filepath.Join(ext, "SKILL.md")) == "" {
+		t.Fatal("the folder elsewhere went")
+	}
+	lib := skillDir("grilling")
+	if !linked(lib) || realDir(lib) != realDir(ext) {
+		t.Fatal("the library doesn't link to the folder")
+	}
+	// the entry is the library's now, as goose's own link to it (the
+	// user's link to the folder elsewhere was taken)
+	if !ours(filepath.Join(shared, "grilling"), "grilling") {
+		t.Fatal("goose's entry in ~/.agents/skills isn't the library's")
+	}
+	v := offView(t, "grilling")
+	if v.Shared != "" || v.Kind != "folder" || realDir(v.Source) != realDir(ext) || !slices.Contains(v.Agents, "goose") {
+		t.Errorf("after: %+v", v)
+	}
+}
+
 // A skill kept in ~/.agents/skills under another folder's name is still
 // the shared folder's: Goose, whose folder that is, isn't given a second
 // one beside it, and handed over, the folder moves in by the skill's name.

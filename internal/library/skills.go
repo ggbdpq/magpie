@@ -2511,13 +2511,19 @@ func importSkill(l *Library, found []FoundSkill, name string) error {
 		src = nil
 	}
 	for _, id := range f.Agents { // links to what was moved, or to the folder elsewhere
-		if t := targetByID(id); t != nil {
-			p := filepath.Join(t.Skills, name)
-			if linked(p) {
-				os.Remove(p)
-			} else if _, err := os.Lstat(p); err == nil && src == nil && realDir(p) != realDir(skillDir(name)) {
-				setAside(id, p)
-			}
+		t := targetByID(id)
+		// the agent whose own folder is the shared one (Goose, Kimi Code,
+		// Cindy) keeps the entry hand-over is there to take, not a stray
+		// of its own (#5588): taking it here would fail hand-over after
+		// the library's link was made, leaving an entry it doesn't list
+		if t == nil || realDir(t.Skills) == realDir(sharedSkillsDir()) {
+			continue
+		}
+		p := filepath.Join(t.Skills, name)
+		if linked(p) {
+			os.Remove(p)
+		} else if _, err := os.Lstat(p); err == nil && src == nil && realDir(p) != realDir(skillDir(name)) {
+			setAside(id, p)
 		}
 	}
 	// an agent with a copy of the very same gets the library's in its

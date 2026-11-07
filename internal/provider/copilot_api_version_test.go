@@ -31,6 +31,9 @@ func (c *studentAuto) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch r.URL.Path {
+	case "/meta":
+		w.WriteHeader(404)
+		return
 	case "/models":
 		io.WriteString(w, `{"data":[
 		  {"id":"gpt-4.1","name":"GPT-4.1","model_picker_enabled":true,"policy":{"state":"enabled"},"supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat"}},

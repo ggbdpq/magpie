@@ -5689,7 +5689,7 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 	// Copilot's Auto (all a Student plan may pick) is asked which model it
 	// picks, as Copilot's clients do, and the request goes to that model on
 	// the APIs it is served on, with the session's token
-	if model == provider.CopilotAuto && p.Account != nil && p.Account.Agent == "copilot" {
+	if provider.CopilotRoutes(model) && p.Account != nil && p.Account.Agent == "copilot" {
 		r = r.WithContext(provider.WithAutoPrompt(r.Context(), lastUserText(from, body)))
 	}
 	if ctx, m, err := p.ResolveAuto(r.Context(), model); err != nil {
@@ -5869,7 +5869,7 @@ func firstElsewhere(p provider.Provider, model string, from provider.Protocol) b
 
 // autoPicks is whether c is Copilot's Auto, which picks the model itself.
 func autoPicks(c candidate) bool {
-	return c.model == provider.CopilotAuto && c.p.Account != nil && c.p.Account.Agent == "copilot"
+	return provider.CopilotRoutes(c.model) && c.p.Account != nil && c.p.Account.Agent == "copilot"
 }
 
 // lastUserText is what the user said last (userSaid), which Copilot's Auto

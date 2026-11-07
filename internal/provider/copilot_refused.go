@@ -42,12 +42,13 @@ var copilotSessionGone = lazyre.New(`(?i)not available for session`)
 // then picks another.
 func copilotRefused(ctx context.Context, app copilotApp, model string, status int, body []byte) bool {
 	a, ok := ctx.Value(copilotAutoKey{}).(copilotAutoSession)
+	key := copilotAutoCacheKey(app.Token, a.Fusion || model == CopilotFusion)
 	if status == 400 && copilotSessionGone.Match(body) && ok && a.Model == model && a.Token != "" {
 		// Auto's session isn't taken for its pick any more: it is let
 		// go, and the request sent with one asked anew
 		copilotAutoMu.Lock()
-		if cur, held := copilotAutoSessions[app.Token]; held && cur.Token == a.Token {
-			delete(copilotAutoSessions, app.Token)
+		if cur, held := copilotAutoSessions[key]; held && cur.Token == a.Token {
+			delete(copilotAutoSessions, key)
 		}
 		copilotAutoMu.Unlock()
 		return true
@@ -57,36 +58,36 @@ func copilotRefused(ctx context.Context, app copilotApp, model string, status in
 	}
 	// Auto's: the request the gateway resolved for it, or a model test
 	// asking for "auto" itself
-	auto := ok && a.Model == model || model == CopilotAuto
-	if auto && (model == CopilotAuto || copilotRefuses(app.Token, model)) {
+	auto := ok && a.Model == model || CopilotRoutes(model)
+	if auto && (CopilotRoutes(model) || copilotRefuses(key, model)) {
 		// sent as the pick asked for in its stead (copilotAutoSign)
 		copilotAutoMu.Lock()
-		cur, ok := copilotAutoSessions[app.Token]
+		cur, ok := copilotAutoSessions[key]
 		copilotAutoMu.Unlock()
 		if !ok {
 			return false
 		}
 		model = cur.Model
 	}
-	if model == "" || model == CopilotAuto {
+	if model == "" || CopilotRoutes(model) {
 		return false
 	}
 	if auto {
 		pickRefused(ctx, model, APIError(body, "400"))
 	}
 	copilotRefusedMu.Lock()
-	if copilotRefusedAt[app.Token] == nil {
-		copilotRefusedAt[app.Token] = map[string]time.Time{}
+	if copilotRefusedAt[key] == nil {
+		copilotRefusedAt[key] = map[string]time.Time{}
 	}
-	copilotRefusedAt[app.Token][model] = time.Now()
+	copilotRefusedAt[key][model] = time.Now()
 	copilotRefusedMu.Unlock()
 	if !auto {
 		return false
 	}
 	// Auto's session, or the model standing in for it, is asked anew
 	copilotAutoMu.Lock()
-	if cur, ok := copilotAutoSessions[app.Token]; ok && cur.Model == model {
-		delete(copilotAutoSessions, app.Token)
+	if cur, ok := copilotAutoSessions[key]; ok && cur.Model == model {
+		delete(copilotAutoSessions, key)
 	}
 	copilotAutoMu.Unlock()
 	return true

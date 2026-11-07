@@ -51,6 +51,12 @@ import (
 // CopilotAuto is the model id that has Copilot pick the model.
 const CopilotAuto = "auto"
 
+// CopilotFusion selects Fusion Standard, the single-model Fusion tier.
+const CopilotFusion = "fusion"
+
+// CopilotRoutes reports whether Copilot selects the upstream model.
+func CopilotRoutes(model string) bool { return model == CopilotAuto || model == CopilotFusion }
+
 // copilotAutoVersion is the API version VS Code's Copilot Chat asks for an
 // Auto session with; the Copilot CLI's headers name their own.
 const copilotAutoVersion = "2025-10-01"
@@ -68,6 +74,7 @@ const copilotAutoReuse = time.Hour
 var copilotAutoModel = catalog.Model{ID: CopilotAuto, Name: "Auto"}
 
 type copilotAutoSession struct {
+	Fusion    bool // a Fusion session must never be reused by legacy Auto
 	Token     string
 	Model     string // the model Copilot picked
 	ExpiresAt int64
@@ -164,6 +171,20 @@ type copilotAutoKey struct{}
 
 type copilotAutoPromptKey struct{}
 
+type copilotFusionKey struct{}
+
+func copilotFusion(ctx context.Context) bool {
+	fusion, _ := ctx.Value(copilotFusionKey{}).(bool)
+	return fusion
+}
+
+func copilotAutoCacheKey(token string, fusion bool) string {
+	if fusion {
+		return token + "\x00fusion"
+	}
+	return token
+}
+
 // WithAutoPrompt carries the prompt of the request Copilot's Auto picks a
 // model for: POST /auto picks for a prompt.
 func WithAutoPrompt(ctx context.Context, prompt string) context.Context {
@@ -176,7 +197,8 @@ func WithAutoPrompt(ctx context.Context, prompt string) context.Context {
 func copilotAutoResolve(ctx context.Context, app copilotApp, fresh bool) (copilotAutoSession, error) {
 	copilotAutoMu.Lock()
 	defer copilotAutoMu.Unlock()
-	if a, ok := copilotAutoSessions[app.Token]; ok && !fresh && (a.ExpiresAt == 0 || time.Until(time.Unix(a.ExpiresAt, 0)) > 2*time.Minute) && !copilotRefuses(app.Token, a.Model) {
+	key := copilotAutoCacheKey(app.Token, copilotFusion(ctx))
+	if a, ok := copilotAutoSessions[key]; ok && !fresh && (a.ExpiresAt == 0 || time.Until(time.Unix(a.ExpiresAt, 0)) > 2*time.Minute) && !copilotRefuses(key, a.Model) {
 		return a, nil
 	}
 	s, err := app.session(ctx)
@@ -186,8 +208,13 @@ func copilotAutoResolve(ctx context.Context, app copilotApp, fresh bool) (copilo
 	base := s.apiBase(app.Host)
 	a, why, answered := copilotAutoRoute(ctx, app, s, base)
 	if why == "" {
-		copilotAutoSessions[app.Token] = a
+		copilotAutoSessions[key] = a
 		return a, nil
+	}
+	if copilotFusion(ctx) {
+		// Neither legacy Auto nor a manually picked model carries Fusion's
+		// billing context. An explicit Fusion request must fail instead.
+		return copilotAutoSession{}, errors.New("Copilot Fusion Standard: " + why)
 	}
 	if answered {
 		// /auto answered with a model the account was refused: Copilot
@@ -274,7 +301,11 @@ func copilotAutoRoute(ctx context.Context, app copilotApp, s copilotSession, bas
 	if strings.TrimSpace(prompt) == "" {
 		prompt = "hi" // a model test, or a turn of tool results alone
 	}
-	body, _ := json.Marshal(map[string]string{"prompt": prompt, "tier": "balance"})
+	fields := map[string]any{"prompt": prompt, "tier": "balance"}
+	if copilotFusion(ctx) {
+		fields["fusion"] = true
+	}
+	body, _ := json.Marshal(fields)
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/auto", bytes.NewReader(body))
@@ -306,7 +337,7 @@ func copilotAutoRoute(ctx context.Context, app copilotApp, s copilotSession, bas
 		return copilotAutoSession{}, APIError(b, res.Status), false
 	case json.Unmarshal(b, &v) != nil || v.Token == "" || v.Selected.ID == "":
 		return copilotAutoSession{}, "picked no model: " + clipLine(string(b)), false
-	case copilotRefuses(app.Token, v.Selected.ID):
+	case copilotRefuses(copilotAutoCacheKey(app.Token, copilotFusion(ctx)), v.Selected.ID):
 		return copilotAutoSession{}, "picked " + v.Selected.ID + ", which the account was refused", true
 	}
 	// the pick's endpoints, which the account's list may not give
@@ -319,7 +350,7 @@ func copilotAutoRoute(ctx context.Context, app copilotApp, s copilotSession, bas
 	if v.ExpiresAt > 0 && v.ExpiresAt < exp {
 		exp = v.ExpiresAt
 	}
-	return copilotAutoSession{Token: v.Token, Model: v.Selected.ID, ExpiresAt: exp, Via: "/auto"}, "", true
+	return copilotAutoSession{Token: v.Token, Model: v.Selected.ID, ExpiresAt: exp, Via: "/auto", Fusion: copilotFusion(ctx)}, "", true
 }
 
 // copilotAutoFallback stands in for an Auto session Copilot has none of for
@@ -349,8 +380,11 @@ func copilotAutoFallback(ctx context.Context, app copilotApp, why string) (copil
 // (Copilot's Auto) into one for the model it picked: ctx then carries what
 // the request is signed with. Any other model comes back as it was.
 func (p Provider) ResolveAuto(ctx context.Context, model string) (context.Context, string, error) {
-	if p.Account == nil || p.Account.auto == nil || model != CopilotAuto {
+	if p.Account == nil || p.Account.auto == nil || !CopilotRoutes(model) {
 		return ctx, model, nil
+	}
+	if model == CopilotFusion {
+		ctx = context.WithValue(ctx, copilotFusionKey{}, true)
 	}
 	a, err := p.Account.auto(p.Via(ctx))
 	if err != nil {
@@ -383,9 +417,12 @@ func CopilotRefusal(body []byte) bool { return copilotNotServed.Match(body) }
 // swapped for the one picked.
 func copilotAutoSign(ctx context.Context, app copilotApp, req *http.Request, body []byte) (model string, err error) {
 	model = bodyModel(body)
+	if model == CopilotFusion {
+		ctx = context.WithValue(ctx, copilotFusionKey{}, true)
+	}
 	a, auto := ctx.Value(copilotAutoKey{}).(copilotAutoSession)
 	auto = auto && a.Model == model
-	if auto && !copilotRefuses(app.Token, model) && copilotAutoHeld(app.Token, &a) {
+	if auto && !copilotRefuses(copilotAutoCacheKey(app.Token, a.Fusion), model) && copilotAutoHeld(app.Token, &a) {
 		if a.Token != "" {
 			req.Header.Set("Copilot-Session-Token", a.Token)
 		}
@@ -394,7 +431,7 @@ func copilotAutoSign(ctx context.Context, app copilotApp, req *http.Request, bod
 	}
 	// Auto's pick sent again once the account was refused it
 	// (copilotRefused) goes as Auto's next pick
-	if model != CopilotAuto && !auto {
+	if !CopilotRoutes(model) && !auto {
 		return model, nil
 	}
 	a, err = copilotAutoResolve(ctx, app, false)
@@ -425,7 +462,7 @@ func copilotAutoHeld(token string, a *copilotAutoSession) bool {
 	}
 	copilotAutoMu.Lock()
 	defer copilotAutoMu.Unlock()
-	cur, ok := copilotAutoSessions[token]
+	cur, ok := copilotAutoSessions[copilotAutoCacheKey(token, a.Fusion)]
 	if ok && cur.Model == a.Model {
 		*a = cur
 	}

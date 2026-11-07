@@ -35,6 +35,8 @@ func TestCopilotAutoRefusedThroughGateway(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		switch r.URL.Path {
+		case "/meta":
+			w.WriteHeader(404) // legacy catalog
 		case "/models":
 			io.WriteString(w, `{"data":[
 			  {"id":"claude-haiku-4.5","name":"Claude Haiku 4.5","model_picker_enabled":true,"policy":{"state":"enabled"},"supported_endpoints":["/chat/completions","/v1/messages"],"capabilities":{"type":"chat"}},

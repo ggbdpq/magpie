@@ -68,7 +68,7 @@ func bareModel(m string) string {
 // (RelayRenamed), nor the model at a region's deployment (RegionTail).
 func Swapped(sent, served string) bool {
 	a, b := bareModel(sent), bareModel(served)
-	return a != "" && b != "" && squash(a) != squash(b) && a != "auto" && squash(bareModel(provider.EffortFamily(a))) != squash(b) && !GroupRouted(sent, served) && !ServingName(sent, served) && !RelayRenamed(sent, served) && !VendorAlias(sent, served) && !RegionTail(sent, served)
+	return a != "" && b != "" && squash(a) != squash(b) && !provider.CopilotRoutes(a) && squash(bareModel(provider.EffortFamily(a))) != squash(b) && !GroupRouted(sent, served) && !ServingName(sent, served) && !RelayRenamed(sent, served) && !VendorAlias(sent, served) && !RegionTail(sent, served)
 }
 
 // regionTail is a region a vendor's id names its deployment of a model

@@ -71,6 +71,13 @@ func copilotTwoPlansListing(t *testing.T, extra []string) (tried func() string) 
 			json.NewEncoder(w).Encode(map[string]any{"data": data})
 			return
 		}
+		if r.URL.Path == "/meta" {
+			// the Fusion Standard capability probe (copilotHasFusion,
+			// #5599) asks this once per list fetch; this plan serves no
+			// Fusion tier, and the probe is not a chat try
+			json.NewEncoder(w).Encode(map[string]any{"auto": map[string]any{"tiers": []any{}}})
+			return
+		}
 		var q struct {
 			Model string `json:"model"`
 		}

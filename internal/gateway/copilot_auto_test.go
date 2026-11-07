@@ -36,6 +36,8 @@ func TestCopilotAutoThroughGateway(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		switch r.URL.Path {
+		case "/meta":
+			w.WriteHeader(404) // legacy catalog
 		case "/models":
 			io.WriteString(w, `{"data":[
 			  {"id":"gpt-5-mini","name":"GPT-5 mini","model_picker_enabled":true,"policy":{"state":"disabled"},"supported_endpoints":["/responses"],"capabilities":{"type":"chat"}}]}`)

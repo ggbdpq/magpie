@@ -49,8 +49,9 @@ func fakeCodexResets(t *testing.T, count int, details any) *atomic.Int32 {
 func TestCodexResetsCounted(t *testing.T) {
 	home := signIn(t)
 	dir := home + "/.codex"
-	soon := "2026-10-03T14:30:00Z"
-	later := "2026-11-01T00:00:00Z"
+	soon := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
+	later := time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)
+	gone := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
 	for _, c := range []struct {
 		name    string
 		count   int
@@ -67,7 +68,7 @@ func TestCodexResetsCounted(t *testing.T) {
 		}}, &ResetCredits{Count: 2, Each: []ResetCard{{ID: "a"}, {ID: "b"}}}, 1},
 		{"soonest of those left", 2, map[string]any{"available_count": 2, "credits": []any{
 			map[string]any{"id": "a", "status": "available", "granted_at": "2026-09-01T00:00:00Z", "expires_at": later},
-			map[string]any{"id": "b", "status": "redeemed", "granted_at": "2026-09-01T00:00:00Z", "expires_at": "2026-09-20T00:00:00Z"},
+			map[string]any{"id": "b", "status": "redeemed", "granted_at": "2026-09-01T00:00:00Z", "expires_at": gone},
 			map[string]any{"id": "c", "status": "available", "granted_at": "2026-09-02T00:00:00Z", "expires_at": soon},
 			map[string]any{"id": "d", "status": "available", "granted_at": "2026-09-02T00:00:00Z", "expires_at": nil},
 		}}, &ResetCredits{Count: 2, Until: ptrTime(soon)}, 1},
@@ -75,7 +76,7 @@ func TestCodexResetsCounted(t *testing.T) {
 		// runs out last; the redeemed one isn't
 		{"each of those left", 3, map[string]any{"available_count": 3, "credits": []any{
 			map[string]any{"id": "a", "status": "available", "granted_at": "2026-09-01T00:00:00Z", "expires_at": later},
-			map[string]any{"id": "b", "status": "redeemed", "granted_at": "2026-09-01T00:00:00Z", "expires_at": "2026-09-20T00:00:00Z"},
+			map[string]any{"id": "b", "status": "redeemed", "granted_at": "2026-09-01T00:00:00Z", "expires_at": gone},
 			map[string]any{"id": "d", "status": "available", "granted_at": "2026-09-02T00:00:00Z", "expires_at": nil},
 			map[string]any{"id": "c", "status": "available", "granted_at": "2026-09-02T00:00:00Z", "expires_at": soon},
 		}}, &ResetCredits{Count: 3, Until: ptrTime(soon), Each: []ResetCard{{Until: ptrTime(soon), ID: "c"}, {Until: ptrTime(later), ID: "a"}, {ID: "d"}}}, 1},
@@ -179,9 +180,9 @@ func TestUseCodexReset(t *testing.T) {
 	var spent atomic.Value
 	credits := map[string]any{"available_count": 3, "credits": []any{
 		map[string]any{"id": "never", "status": "available", "expires_at": nil},
-		map[string]any{"id": "late", "status": "available", "expires_at": "2026-12-01T00:00:00Z"},
-		map[string]any{"id": "used", "status": "redeemed", "expires_at": "2026-10-01T00:00:00Z"},
-		map[string]any{"id": "soon", "status": "available", "expires_at": "2026-10-05T00:00:00Z"},
+		map[string]any{"id": "late", "status": "available", "expires_at": time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)},
+		map[string]any{"id": "used", "status": "redeemed", "expires_at": time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)},
+		map[string]any{"id": "soon", "status": "available", "expires_at": time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)},
 	}}
 	listed := true
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -257,6 +258,60 @@ func TestUseCodexReset(t *testing.T) {
 	}
 }
 
+// TestCodexResetsRanOutSkipped: a credit that ran out stays on the list
+// until the vendor takes it off, and is the soonest of those left then —
+// taken for when the account's resets run out (Until), it keeps every one
+// still to run out from being used by itself (#5568: "before one expires"
+// never spent a thing, and the cards ran out unused), and taken for the
+// one that runs out first, it is spent in the live one's place. The
+// soonest of those left is the soonest still to run out.
+func TestCodexResetsRanOutSkipped(t *testing.T) {
+	home := signIn(t)
+	dir := home + "/.codex"
+	gone := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	live := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	asked := fakeCodexResets(t, 2, map[string]any{"available_count": 2, "credits": []any{
+		map[string]any{"id": "gone", "status": "available", "granted_at": gone, "expires_at": gone},
+		map[string]any{"id": "live", "status": "available", "granted_at": gone, "expires_at": live},
+	}})
+	q := codexSubscriptionUsage(context.Background(), dir)
+	if q.Error != "" || len(q.Windows) != 1 {
+		t.Fatalf("quota %+v", q)
+	}
+	if !sameTime(q.Resets.Until, ptrTime(live)) {
+		t.Fatalf("until %v, want the live credit's %s", q.Resets.Until, live)
+	}
+	if asked.Load() != 1 {
+		t.Fatalf("details asked %d times, want 1", asked.Load())
+	}
+
+	var spent []string
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/backend-api/wham/rate-limit-reset-credits":
+			json.NewEncoder(w).Encode(map[string]any{"available_count": 2, "credits": []any{
+				map[string]any{"id": "gone", "status": "available", "expires_at": gone},
+				map[string]any{"id": "live", "status": "available", "expires_at": live},
+			}})
+		case "/backend-api/wham/rate-limit-reset-credits/consume":
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			spent = append(spent, body["credit_id"])
+			json.NewEncoder(w).Encode(map[string]any{"code": "reset", "windows_reset": 2})
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer fake.Close()
+	old := CodexBase
+	CodexBase = fake.URL + "/backend-api/codex"
+	t.Cleanup(func() { CodexBase = old })
+	out, err := UseCodexReset(context.Background(), "me@example.com")
+	if err != nil || out.Code != "reset" || len(spent) != 1 || spent[0] != "live" {
+		t.Fatalf("spent %v, %+v %v, want live", spent, out, err)
+	}
+}
+
 // UseCodexResetCard spends the reset the user chose, not the one that
 // runs out first (01huadalang on Discord), and only while the account still
 // holds it: one used meanwhile, or never the account's, spends none, nor
@@ -264,11 +319,15 @@ func TestUseCodexReset(t *testing.T) {
 func TestUseCodexResetCard(t *testing.T) {
 	signIn(t)
 	var spent []string
-	credits := map[string]any{"available_count": 3, "credits": []any{
+	soon := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
+	late := time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)
+	gone := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	credits := map[string]any{"available_count": 4, "credits": []any{
+		map[string]any{"id": "gone", "status": "available", "expires_at": gone},
 		map[string]any{"id": "never", "status": "available", "expires_at": nil},
-		map[string]any{"id": "late", "status": "available", "expires_at": "2026-12-01T00:00:00Z"},
-		map[string]any{"id": "used", "status": "redeemed", "expires_at": "2026-10-01T00:00:00Z"},
-		map[string]any{"id": "soon", "status": "available", "expires_at": "2026-10-05T00:00:00Z"},
+		map[string]any{"id": "late", "status": "available", "expires_at": late},
+		map[string]any{"id": "used", "status": "redeemed", "expires_at": gone},
+		map[string]any{"id": "soon", "status": "available", "expires_at": soon},
 	}}
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

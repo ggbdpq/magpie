@@ -51,6 +51,20 @@ func TestFastestOrdersBySpeedLately(t *testing.T) {
 			seats: []Seat{{Key: "a"}, {Key: "b"}, {Key: "c"}},
 			want:  []int{0, 1, 2},
 		},
+		{
+			// b answered without streaming: no first token was told, but its
+			// pace was, and it counts — ahead of a, unmeasured (#5575)
+			name:  "a pace without a first token counts, ahead of the unmeasured",
+			seats: []Seat{{Key: "a"}, {Key: "b", TPS: 100}},
+			want:  []int{1, 0},
+		},
+		{
+			// b's 200 tokens at 100/s = 2s; a's first token 1500ms, then the
+			// middle pace (b's 100) for 200 more = 3.5s
+			name:  "a first token alone weighs against a told pace",
+			seats: []Seat{{Key: "a", TTFT: 1500}, {Key: "b", TPS: 100}},
+			want:  []int{1, 0},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

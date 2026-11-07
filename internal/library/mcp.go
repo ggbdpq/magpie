@@ -1486,12 +1486,16 @@ func (f *mcpFile) merged(s *Server, old map[string]any) ordered {
 // other kind, goes when magpie writes the entry; the user's keys of s's
 // own transport stay (codex-rs/config/src/mcp_types.rs, TryFrom
 // RawMcpServerConfig). bearer_token, which Codex refuses for both, is the
-// user's to take out.
+// user's to take out. type goes from either: Codex's config takes no type
+// at all (RawMcpServerConfig has no such field, and Codex's own rewrite of
+// config.toml drops it), so a type left from the entry's former shape only
+// names the transport the entry no longer is — a url entry read as "stdio"
+// (#5631).
 func codexRefused(s *Server) []string {
 	if s.Remote() {
-		return []string{"args", "env", "env_vars", "cwd"}
+		return []string{"args", "env", "env_vars", "cwd", "type"}
 	}
-	return []string{"url", "bearer_token_env_var", "http_headers", "env_http_headers", "http_headers_helper", "oauth", "oauth_resource", "auth"}
+	return []string{"url", "bearer_token_env_var", "http_headers", "env_http_headers", "http_headers_helper", "oauth", "oauth_resource", "auth", "type"}
 }
 
 // put writes the server into the file, in place of one by its name.

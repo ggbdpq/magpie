@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/yetone/magpie/internal/agent"
 )
 
 // codexLoads fails the test when Codex would refuse the entry: a key of
@@ -112,6 +114,71 @@ func TestCodexEntryWithOtherTransportKeysRepaired(t *testing.T) {
 	l := codexLoads(t, cfg, "local")
 	if got, _ := l["env_vars"].([]any); len(got) != 1 || got[0] != "MINE" {
 		t.Errorf("the user's env_vars on a command went: %v\n%s", l["env_vars"], read(t, cfg))
+	}
+}
+
+// The reporter's shape (#5631, Phoenix0531-sudo): Codex's config took the
+// user's hand-written stdio entry, then the library gave the server to
+// Codex on magpie as the gateway's url and kept the entry's type =
+// "stdio" beside it. Codex reads no type at all (codex-rs/config/src/
+// mcp_types.rs has no such field; codex's own rewrite of config.toml drops
+// it), and one left from the entry's former shape names the transport the
+// entry no longer is — the reporter's codex read the url entry as stdio.
+func TestRunCodexEntryLeavesStaleType(t *testing.T) {
+	h := sandbox(t)
+	resetRuns(t)
+	runOn = true
+	was := runWired
+	runWired = func(a *agent.Agent) bool { return true }
+	t.Cleanup(func() { runOn, runWired = false, was })
+	cfg := filepath.Join(h, ".codex/config.toml")
+	write(t, cfg, "[mcp_servers.ms]\ntype = \"stdio\"\ncommand = \"ms.exe\"\nargs = [\"mcp\", \"serve\"]\n")
+	if _, err := SaveServer("", Server{Name: "ms", Transport: "stdio", Command: "ms.exe", Args: []string{"mcp", "serve"}, Agents: []string{"codex"}}); err != nil {
+		t.Fatal(err)
+	}
+	e := codexEntry(t, cfg, "ms")
+	if e == nil || e["url"] == nil || e["command"] != nil {
+		t.Fatalf("not the gateway's url entry:\n%s", read(t, cfg))
+	}
+	if e["type"] != nil {
+		t.Errorf("the stdio type stayed beside the url:\n%s", read(t, cfg))
+	}
+	// and the shape holds on the next sync
+	if _, err := Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if e = codexEntry(t, cfg, "ms"); e["url"] == nil || e["type"] != nil {
+		t.Errorf("the next sync wrote the type back:\n%s", read(t, cfg))
+	}
+}
+
+// An entry already holding the stale type — the reporter's config.toml
+// after an older sync — is written again without it, though the server
+// itself reads as unchanged; the converse (a type naming a url transport
+// beside a command) too, and the user's own keys stay.
+func TestCodexEntryWithStaleTypeRepaired(t *testing.T) {
+	h := sandbox(t)
+	cfg := filepath.Join(h, ".codex/config.toml")
+	ok(t)(SaveServer("", Server{Name: "remote", Transport: "http", URL: "https://r.example/mcp", Agents: []string{"codex"}}))
+	ok(t)(SaveServer("", Server{Name: "local", Transport: "stdio", Command: "npx", Args: []string{"-y", "l"}, Agents: []string{"codex"}}))
+	s := read(t, cfg)
+	s = strings.Replace(s, "url = ", "type = \"stdio\"\ntool_timeout_sec = 90\nurl = ", 1)
+	s = strings.Replace(s, "command = ", "type = \"streamable_http\"\ncommand = ", 1)
+	write(t, cfg, s)
+
+	ok(t)(Sync())
+	if r := codexEntry(t, cfg, "remote"); r["url"] == nil {
+		t.Fatalf("not the url entry:\n%s", read(t, cfg))
+	} else if r["type"] != nil {
+		t.Errorf("the stale stdio type stayed beside the url:\n%s", read(t, cfg))
+	}
+	if r := codexEntry(t, cfg, "remote"); !isNumber(r["tool_timeout_sec"], 90) {
+		t.Errorf("the user's tool_timeout_sec went:\n%s", read(t, cfg))
+	}
+	if l := codexEntry(t, cfg, "local"); l["command"] != "npx" {
+		t.Fatalf("not the command entry:\n%s", read(t, cfg))
+	} else if l["type"] != nil {
+		t.Errorf("the stale http type stayed beside the command:\n%s", read(t, cfg))
 	}
 }
 

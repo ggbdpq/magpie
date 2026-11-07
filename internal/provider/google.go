@@ -610,6 +610,7 @@ func (g googleAccount) antigravityTiers(ctx context.Context, p googleProject) go
 	var load loadCodeAssistReply
 	body := map[string]any{"metadata": map[string]any{"ideType": "ANTIGRAVITY"}}
 	if err := g.call(ctx, g.app.loadBase, "loadCodeAssist", body, &load, nil); err != nil {
+		g.suspended(err) // Google's own refusal of the account rests it at the gateway (#5478)
 		log.Printf("antigravity %s: loadCodeAssist at %s: %v; naming the tiers it gave before (current %q, paid %q)", g.user, g.app.loadBase, err, p.tier, p.paid)
 	} else if cur, paid := load.tiers(); cur != "" || paid != "" {
 		if cur != p.tier || paid != p.paid {
@@ -717,6 +718,7 @@ func (g googleAccount) geminiProject(ctx context.Context) (googleProject, error)
 	}
 	var load loadCodeAssistReply
 	if err := g.call(ctx, g.app.loadBase, "loadCodeAssist", body, &load, nil); err != nil {
+		g.suspended(err) // Google's own refusal of the account rests it at the gateway (#5478)
 		return googleProject{}, err
 	}
 	if load.CurrentTier != nil {
@@ -777,12 +779,19 @@ func (g googleAccount) antigravityProject(ctx context.Context) (googleProject, e
 	var load loadCodeAssistReply
 	body := map[string]any{"metadata": map[string]any{"ideType": "ANTIGRAVITY"}}
 	err := g.call(ctx, g.app.loadBase, "loadCodeAssist", body, &load, nil)
+	suspended := err != nil && g.suspended(err)
 	if err == nil {
 		log.Printf("antigravity %s: loadCodeAssist at %s: %s", g.user, g.app.loadBase, load.describe())
 	}
 	cur, paid := load.tiers()
 	if g.auth.Project != "" {
 		if err != nil {
+			if suspended {
+				// Google refused the account itself: the gateway rests it
+				// restricted, and the account isn't served from the project
+				// kept with the sign-in as if it were well (#5478)
+				return googleProject{}, err
+			}
 			log.Printf("antigravity %s: loadCodeAssist: %v; using the project kept with the sign-in, its tier not known", g.user, err)
 			return googleProject{id: g.auth.Project}, nil
 		}
@@ -1028,6 +1037,12 @@ type googleModelInfo struct {
 
 // modelInfo asks Code Assist which models the account has.
 func (g googleAccount) modelInfo(ctx context.Context) ([]googleModelInfo, error) {
+	if said := discoveryHeld(g.app.agent, g.user); said != "" {
+		// the account rests as one its vendor restricted: Google is sent
+		// nothing for it — its list, its tiers, its quota — until the rest
+		// ends or is lifted (#5478)
+		return nil, errors.New(said)
+	}
 	p, err := g.project(ctx)
 	if err != nil {
 		return nil, err
@@ -1035,6 +1050,12 @@ func (g googleAccount) modelInfo(ctx context.Context) ([]googleModelInfo, error)
 	var out []googleModelInfo
 	if g.app.agent == "antigravity" {
 		p = g.antigravityTiers(ctx, p)
+		if said := discoveryHeld(g.app.agent, g.user); said != "" {
+			// loadCodeAssist refused the account itself while its tiers
+			// were asked for: the gateway rests it, and Google is sent
+			// nothing more for it (#5478)
+			return nil, errors.New(said)
+		}
 		var res struct {
 			Models map[string]struct {
 				DisplayName     string `json:"displayName"`
@@ -1077,6 +1098,12 @@ func (g googleAccount) modelInfo(ctx context.Context) ([]googleModelInfo, error)
 				break
 			}
 			if ctx.Err() != nil {
+				return nil, err
+			}
+			if g.suspended(err) {
+				// Google refused the account itself: it rests at the
+				// gateway, and its models aren't asked for again while it
+				// does (#5478)
 				return nil, err
 			}
 			if t != "" && codeAssistStatus(err) == http.StatusBadRequest {

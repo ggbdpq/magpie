@@ -26,11 +26,19 @@ import (
 // alone can hide models another enabled account already has. Keep each
 // account's list for routing, and offer the union in account order.
 func antigravityPoolModels(ctx context.Context) ([]catalog.Model, error) {
-	var accounts []googleLogin
+	var accounts, rested []googleLogin
 	for _, l := range googleLogins("antigravity") {
-		if l.On {
-			accounts = append(accounts, l)
+		if !l.On {
+			continue
 		}
+		if discoveryHeld("antigravity", l.User) != "" {
+			// the account rests as one its vendor restricted: Google is
+			// sent nothing for it (#5478), and it lists what it listed
+			// before, as one whose fetch failed does
+			rested = append(rested, l)
+			continue
+		}
+		accounts = append(accounts, l)
 	}
 	type result struct {
 		models []catalog.Model
@@ -71,6 +79,10 @@ func antigravityPoolModels(ctx context.Context) ([]catalog.Model, error) {
 		} else if err := catalog.SaveLive(key, l.acct.app.base, ms); err != nil {
 			return nil, err
 		}
+		out = mergeAntigravityModels(out, ms)
+	}
+	for _, l := range rested {
+		ms, _, _ := catalog.Live(accountModels("antigravity", l.User))
 		out = mergeAntigravityModels(out, ms)
 	}
 	if len(out) == 0 {

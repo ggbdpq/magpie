@@ -107,6 +107,55 @@ func TestAntigravitySuspendedAloneRests(t *testing.T) {
 	}
 }
 
+// Discovery — the account's model list, asked again by the magpie serving
+// the gateway once it is an hour old, its tiers with it — is outside the
+// request path, and the refusal it sees rests the account at the same
+// write point one of the gateway's own refusals rests it at
+// (restAfterMarked): the Routing page shows it and lifts it the same way,
+// a request while it rests is answered with the vendor's words
+// (restrictedHeld), and discovery holds its asks of the vendor while it
+// stands (#5478).
+func TestDiscoveryRefusalRestsAsRestricted(t *testing.T) {
+	s, _ := antigravityGroupFor(t, []string{"u1@example.com"}, "gemini-3.8-flash", func(w http.ResponseWriter, r *http.Request) {
+		t.Error("the account's upstream was asked")
+	})
+	said := "Antigravity: This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product."
+
+	// discovery saw Google refuse the account itself
+	s.discoveryRefused("antigravity", "u1@example.com", http.StatusForbidden, said)
+	r, ok := restOf("antigravity@u1@example.com")
+	if !ok || r.Why != failRestricted || r.By != "restricted" || !strings.Contains(r.said, "violation of Terms of Service") {
+		t.Fatalf("the account doesn't rest restricted from discovery's telling: %+v, %v", r, ok)
+	}
+	if d := time.Until(r.Until); d > restrictedRest || d < restrictedRest-time.Minute {
+		t.Fatalf("it rests %v, not the %v a restricted account takes", d, restrictedRest)
+	}
+	if held := discoveryHeld("antigravity", "u1@example.com"); !strings.Contains(held, "violation of Terms of Service") {
+		t.Fatalf("discovery isn't held from asking with Google's words: %q", held)
+	}
+	if held := discoveryHeld("antigravity", "nobody@example.com"); held != "" {
+		t.Fatalf("an account that rests nothing is held with %q", held)
+	}
+
+	// a telling while a longer rest stands doesn't shorten it
+	restingUntil.Lock()
+	longer := time.Now().Add(3 * time.Hour)
+	restingUntil.m["antigravity@u1@example.com"] = longer
+	restingUntil.Unlock()
+	s.discoveryRefused("antigravity", "u1@example.com", http.StatusForbidden, said)
+	if until := restingUntil.m["antigravity@u1@example.com"]; !until.Equal(longer) {
+		t.Fatalf("a refusal discovery saw shortened a longer rest to %v", time.Until(until))
+	}
+
+	// lifted by hand (the appeal went through), the ask holds no more
+	if !s.Unrest("antigravity@u1@example.com") {
+		t.Fatal("the rest wasn't lifted")
+	}
+	if held := discoveryHeld("antigravity", "u1@example.com"); held != "" {
+		t.Fatalf("a lifted rest still holds the ask with %q", held)
+	}
+}
+
 // Only Google's suspension of a Google sign-in is read so: another 403 from
 // Antigravity, and the same words from a key's relay, fail as before.
 func TestAntigravitySuspendedIsGooglesAlone(t *testing.T) {

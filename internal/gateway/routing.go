@@ -744,26 +744,19 @@ func restrictedRefused(p provider.Provider, status int, body []byte) bool {
 	return isWorkBuddy(p) && provider.WBRestricted(status, wordsOf(body)) || googleSuspended(p, status, body)
 }
 
-// googleToS is Google's 403 PERMISSION_DENIED for a Code Assist account it
-// suspended: "This service has been disabled in this account for violation
-// of Terms of Service. Please submit an appeal to continue using this
-// product." (bestony on Discord, an Antigravity account, 11-06).
-var googleToS = lazyre.New(`(?i)disabled in this account for violation of Terms of Service`)
-
 // googleSuspended says Google suspended p, an account signed in to
-// Antigravity or Gemini CLI, for its terms (googleToS): the account, not
-// the model or the request, until an appeal goes through. Read as any
-// failure, it rested a minute, doubling to ten, and was asked again, and
-// refused, every ten minutes for good. Another vendor's same words are its
-// own, and aren't read so.
+// Antigravity or Gemini CLI, for its terms (provider.GoogleSuspended):
+// the account, not the model or the request, until an appeal goes through.
+// Read as any failure, it rested a minute, doubling to ten, and was asked
+// again, and refused, every ten minutes for good. Another vendor's same
+// words are its own, and aren't read so. The judgment is the provider's,
+// which discovery reads the vendor's answers to its own asks by
+// (discoveryRefused), so both paths tell one suspension alike (#5478).
 func googleSuspended(p provider.Provider, status int, body []byte) bool {
-	if status != http.StatusForbidden {
-		return false
-	}
 	if a := accountAgent(p); a != "antigravity" && a != "gemini" {
 		return false
 	}
-	return googleToS.Match(wordsOf(body))
+	return provider.GoogleSuspended(status, string(wordsOf(body)))
 }
 
 // isWorkBuddy is whether p is a WorkBuddy account, either build's: the
@@ -1099,6 +1092,47 @@ func restrictedHeld(c candidate) (int, string, bool) {
 		status = http.StatusForbidden
 	}
 	return status, r.said, true
+}
+
+// The gateway's side of discovery's telling and ask
+// (provider.DiscoveryRefused, provider.DiscoveryHeld): an account its
+// vendor refused outside the request path rests as one of the gateway's
+// own refusals, and discovery holds its asks while the rest stands
+// (#5478).
+
+// discoveryRefused rests the account agent, user as one its vendor
+// restricted, for discovery saw the vendor refuse the account itself —
+// Google's 403 for an account suspended for its terms, answered to
+// loadCodeAssist or fetchAvailableModels (#5478). It rests by what the
+// request path rests by (restKey), through the write point the gateway's
+// own refusals go through (restAfterMarked): the Routing page shows it and
+// lifts it the same way, restrictedHeld gives the vendor's words to a
+// request while it rests, and a longer rest standing isn't shortened. The
+// vendor's words go in the shape its answer carries them, so the refusal
+// is read as one of the gateway's own.
+func (s *Server) discoveryRefused(agent, user string, status int, said string) {
+	for _, p := range provider.All() {
+		if p.Account == nil || p.Account.Agent != agent || !strings.EqualFold(p.Account.User, user) {
+			continue
+		}
+		body, err := json.Marshal(map[string]any{"error": map[string]any{"message": said}})
+		if err != nil {
+			return
+		}
+		s.restAfter(candidate{p: p, rest: p.ID}, status, http.Header{}, body)
+		return
+	}
+}
+
+// discoveryHeld is what the account agent, user rests as one its vendor
+// restricted with — the vendor's words, while the rest stands, "" while it
+// doesn't — for discovery to hold its asks of the vendor while it does.
+func discoveryHeld(agent, user string) string {
+	r, ok := restOf(agent + "@" + strings.ToLower(user))
+	if !ok || r.Why != failRestricted || r.said == "" {
+		return ""
+	}
+	return r.said
 }
 
 // resetsIn is how long until a used-up ChatGPT account is back, as its

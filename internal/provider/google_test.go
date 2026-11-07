@@ -29,11 +29,14 @@ type fakeGoogle struct {
 	loads     []map[string]any
 	onboards  []map[string]any
 	load      string // loadCodeAssist's reply
-	onboard   string // onboardUser's reply
-	quota     string // retrieveUserQuota's reply
-	flags     string // listExperiments' reply
-	models    string // fetchAvailableModels' reply
-	summary   string // retrieveUserQuotaSummary's reply
+	// loadCodeAssist's status and reply for the body asked, in place of
+	// load
+	loadFor func(body map[string]any) (int, string)
+	onboard string // onboardUser's reply
+	quota   string // retrieveUserQuota's reply
+	flags   string // listExperiments' reply
+	models  string // fetchAvailableModels' reply
+	summary string // retrieveUserQuotaSummary's reply
 	// fetchAvailableModels' status and reply for the body asked, in place
 	// of models
 	modelsFor func(body map[string]any) (int, string)
@@ -63,7 +66,13 @@ func (f *fakeGoogle) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"access_token":"fresh-token","expires_in":3600}`)
 	case strings.HasSuffix(r.URL.Path, ":loadCodeAssist"):
 		f.loads = append(f.loads, body)
-		io.WriteString(w, f.load)
+		if f.loadFor != nil {
+			code, reply := f.loadFor(body)
+			w.WriteHeader(code)
+			io.WriteString(w, reply)
+		} else {
+			io.WriteString(w, f.load)
+		}
 	case strings.HasSuffix(r.URL.Path, ":onboardUser"):
 		f.onboards = append(f.onboards, body)
 		io.WriteString(w, f.onboard)

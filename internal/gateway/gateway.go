@@ -907,6 +907,11 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	go provider.KeepPluginsSignedIn(ctx)
 	// and those a signed-in account's vendor adds (a ChatGPT plan's new GPT)
 	go provider.KeepAccountsListed(ctx)
+	// and discovery — an account's list, its tiers, its quota — tells this
+	// gateway what the vendor said of an account it refused itself, and
+	// asks whether an account rests so before asking again (#5478)
+	provider.DiscoveryRefused = s.discoveryRefused
+	provider.DiscoveryHeld = discoveryHeld
 	// and fetches the lists of the providers the user asked to keep fresh (#2135)
 	go provider.KeepListsFresh(ctx)
 	// and follows a Remote magpie's list as it changes there (KaCli)

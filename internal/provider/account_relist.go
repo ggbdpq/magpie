@@ -44,12 +44,18 @@ func KeepAccountsListed(ctx context.Context) {
 // relistAccounts fetches the list of each account whose list is older than
 // accountListAge at now, and answers the ids it asked. An account with no
 // list yet is FetchNew's; a plugin's is listed by KeepPluginsListed; one
-// switched off isn't asked. A fetch that fails keeps the list there was
-// (the fetch saves only what it got), and is tried at the next look.
+// switched off isn't asked, and nor one resting as its vendor restricted
+// (#5478). A fetch that fails keeps the list there was (the fetch saves
+// only what it got), and is tried at the next look.
 func relistAccounts(ctx context.Context, now time.Time) []string {
 	var asked []string
 	for _, p := range All() {
 		if p.Off || p.Account == nil || p.Account.fetch == nil || p.IsPlugin() || !p.Ready() {
+			continue
+		}
+		if discoveryHeld(p.Account.Agent, p.Account.User) != "" {
+			// the account rests as one its vendor restricted: the vendor is
+			// sent nothing for it until the rest ends or is lifted (#5478)
 			continue
 		}
 		at, ok := p.Fetched()

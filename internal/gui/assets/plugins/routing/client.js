@@ -956,15 +956,19 @@ function routingPage(part) {
       }
       case "fast": {
         // Speed first (routes.Fastest): its time to the first token and
-        // pace lately, as the gateway measured them (Weighed.lateTtft)
-        if (f.lateTtft) {
-          const secs = (f.lateTtft / 1000).toFixed(1);
-          const pace = f.lateTps ? t("first token in {s}s, {n} tokens a second", { s: secs, n: Math.round(f.lateTps) })
-            : t("first token in {s}s", { s: secs });
+        // pace lately, as the gateway measured them (Weighed.lateTtft).
+        // An answer that wasn't streamed tells no first token, and its
+        // pace is its whole reply's alone (lateTps with no lateTtft,
+        // #5575): measured all the same, and said so.
+        if (f.lateTtft || f.lateTps) {
+          const secs = f.lateTtft ? (f.lateTtft / 1000).toFixed(1) : null;
+          const pace = f.lateTtft ? (f.lateTps ? t("first token in {s}s, {n} tokens a second", { s: secs, n: Math.round(f.lateTps) })
+            : t("first token in {s}s", { s: secs }))
+            : t("{n} tokens a second over the whole reply", { n: Math.round(f.lateTps) });
           return restedTo(t("it answered fastest lately — {pace}.", { pace }))
             || t("Speed first: {who} answered {model} fastest lately — {pace}.", { who: w, model: f.model, pace });
         }
-        if (r.order.some((x) => x !== f && !x.fallback && !x.rest && x.lateTtft))
+        if (r.order.some((x) => x !== f && !x.fallback && !x.rest && (x.lateTtft || x.lateTps)))
           return t("Speed first: {who} hasn't answered {model} lately, so it takes this request to be measured — one request in five goes to one not measured.", { who: w, model: f.model });
         return t("Speed first: none has answered {model} lately, so {who}, first in the list, goes first and its answer measures it.", { who: w, model: f.model });
       }

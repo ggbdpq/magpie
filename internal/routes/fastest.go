@@ -10,23 +10,26 @@ import (
 // (a user comparing API channels by hand asked for it, X joeliu96872540).
 //
 // What "fast" is: the gateway keeps, for each account or key and model, a
-// decayed average of how long its streamed answers took to their first
-// token and how fast they wrote after it (gateway speed.go), and hands
-// the strategy those of the last hour or so as Seat.TTFT and Seat.TPS. A
-// seat is ranked by the time it would take to a short reply of
-// RefTokens: its first token, then RefTokens at its pace. Those within a
-// tenth of the fastest of their band count as alike and keep their
-// listed order, so two channels a few milliseconds apart don't trade
-// places on every request.
+// decayed average of how long its answers took to their first token and
+// how fast they wrote after it (gateway speed.go), and hands the strategy
+// those of the last hour or so as Seat.TTFT and Seat.TPS. An answer that
+// wasn't streamed tells no first token, and is weighed at its pace alone
+// (#5575): a caller that streams nothing would else keep every key of its
+// pool unmeasured for good, and Speed first would always send the first
+// in the list. A seat is ranked by the time it would take to a short
+// reply of RefTokens: its first token, then RefTokens at its pace. Those
+// within a tenth of the fastest of their band count as alike and keep
+// their listed order, so two channels a few milliseconds apart don't
+// trade places on every request.
 //
 // One not measured lately isn't starved: kept behind those measured, it
 // would never answer and never be measured, and one that got slower an
 // hour ago would never be found faster again. So one request in
 // ProbeEvery, of those the pool has with both kinds awake, puts one not
 // measured lately first: the probe's turn goes round them, so a seat
-// that answers without telling its speed (a reply that isn't streamed)
-// doesn't hold the turn from the others. When none is measured, they go
-// in their order, and the first's answer measures it.
+// that answers without telling its speed doesn't hold the turn from the
+// others. When none is measured, they go in their order, and the first's
+// answer measures it.
 //
 // Speed only orders the awake: one resting after a failure goes behind
 // them, in its listed order, and one all but used up (UsedShare) behind
@@ -65,7 +68,9 @@ var Fastest = Strategy{BySpeed: true, Order: func(pool string, seats []Seat) []i
 			resting = append(resting, i)
 		case seatTier(s) == 2:
 			spent = append(spent, i)
-		case s.TTFT > 0:
+		case s.TTFT > 0 || s.TPS > 0:
+			// measured: a first token, or, from an answer that wasn't
+			// streamed, a pace alone (#5575)
 			fast = append(fast, i)
 		default:
 			unmeasured = append(unmeasured, i)

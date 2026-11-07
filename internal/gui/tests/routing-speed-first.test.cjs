@@ -24,6 +24,12 @@ const scenes = {
   noPace: { order: [key("relay-a", { lateTtft: 1450 }), key("relay-b", { lateTtft: 3000 })] },
   // c not measured lately took the probe's turn ahead of the measured a
   probe: { order: [key("relay-c"), key("relay-a", { lateTtft: 900 })] },
+  // a answered without streaming: its whole reply's pace alone told it,
+  // and that is what it is first by (#5575)
+  paceOnly: { order: [key("relay-a", { lateTps: 55 }), key("relay-b")] },
+  // a's whole-reply pace alone, beside b's streamed measurement: a is
+  // first by its pace all the same
+  paceOnlyBesideMeasured: { order: [key("relay-a", { lateTps: 55 }), key("relay-b", { lateTtft: 900, lateTps: 40 })] },
   // none measured: the list's first
   none: { order: [key("relay-a"), key("relay-b")] },
 };
@@ -92,6 +98,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     test(`${engine} ${lang}: no pace lately, its first token alone`, async (t) => {
       const { errors, say, why } = await open(t, engine, lang, "noPace");
       const pace = await say("first token in {s}s", { s: "1.4" });
+      assert.equal(await why(), await say("Speed first: {who} answered {model} fastest lately — {pace}.", { who: "relay-a", model: "deepseek-v4", pace }));
+      assert.deepEqual(errors, []);
+    });
+
+    test(`${engine} ${lang}: a pace without a first token says its whole reply's pace`, async (t) => {
+      const { errors, say, why } = await open(t, engine, lang, "paceOnly");
+      const pace = await say("{n} tokens a second over the whole reply", { n: "55" });
+      assert.equal(await why(), await say("Speed first: {who} answered {model} fastest lately — {pace}.", { who: "relay-a", model: "deepseek-v4", pace }));
+      assert.deepEqual(errors, []);
+    });
+
+    test(`${engine} ${lang}: a pace without a first token counts beside a streamed one`, async (t) => {
+      const { errors, say, why } = await open(t, engine, lang, "paceOnlyBesideMeasured");
+      const pace = await say("{n} tokens a second over the whole reply", { n: "55" });
       assert.equal(await why(), await say("Speed first: {who} answered {model} fastest lately — {pace}.", { who: "relay-a", model: "deepseek-v4", pace }));
       assert.deepEqual(errors, []);
     });

@@ -1413,6 +1413,15 @@ type aUsage struct {
 	// reads from Claude Code. A vendor that leaves it out is told by its
 	// stream (hidesReasoning, #4545)
 	OutputTokensDetails *aOutputDetails `json:"output_tokens_details,omitempty"`
+	// ServerToolUse says how many searches the model ran with the
+	// provider's own web-search tool, as Anthropic tells them, so a
+	// gateway in front of magpie can bill them (#5448, aabbccgg); none
+	// run, no field
+	ServerToolUse *aServerToolUse `json:"server_tool_use,omitempty"`
+}
+
+type aServerToolUse struct {
+	WebSearchRequests int `json:"web_search_requests"`
 }
 
 type aCacheCreation struct {
@@ -1449,6 +1458,9 @@ func (u Usage) anthropic() aUsage {
 	}
 	if u.Reasoning > 0 {
 		out.OutputTokensDetails = &aOutputDetails{ThinkingTokens: u.Reasoning}
+	}
+	if u.searches > 0 {
+		out.ServerToolUse = &aServerToolUse{WebSearchRequests: u.searches}
 	}
 	return out
 }

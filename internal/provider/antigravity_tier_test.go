@@ -412,7 +412,7 @@ func TestAntigravityTierAskedAgainAfterUpgrade(t *testing.T) {
 	googleSandbox(t, f)
 	buf := captureLog(t)
 	auth := googleAuth{AccessToken: "tok", RefreshToken: "rt-ultra", Expiry: time.Now().Add(time.Hour).UnixMilli()}
-	if err := addGoogleLogin("antigravity", "ultra@example.com", "", auth); err != nil {
+	if err := addGoogleLogin("antigravity", "ultra@example.com", "Antigravity", auth); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := antigravityModelIDs(t, "antigravity"), []string{"gemini-3.8-flash-high"}; !slices.Equal(got, want) {
@@ -452,8 +452,8 @@ func TestAntigravityTierAskedAgainAfterUpgrade(t *testing.T) {
 	if w := `paid tier g1-ultra-tier (Google AI Ultra), project "aicode-consumers" (was current tier "free-tier", paid tier "")`; !strings.Contains(buf.String(), w) {
 		t.Errorf("log lacks %q:\n%s", w, buf.String())
 	}
-	if q := googleLogins("antigravity")[0].acct.quota(context.Background(), ""); q.Plan != "Google AI Ultra" {
-		t.Errorf("plan %q", q.Plan)
+	if q := googleLoginQuota(context.Background(), googleLoginList("antigravity")[0]); q.Error != "" || q.Plan != "Google AI Ultra" {
+		t.Errorf("quota after upgrade: plan %q, error %q", q.Plan, q.Error)
 	}
 
 	// loadCodeAssist failing keeps the tiers it gave
@@ -468,5 +468,8 @@ func TestAntigravityTierAskedAgainAfterUpgrade(t *testing.T) {
 	googleState.Unlock()
 	if got := antigravityModelIDs(t, "antigravity"); !slices.Contains(got, "gemini-4-argon") {
 		t.Fatalf("tiers lost on a failed loadCodeAssist: %v", got)
+	}
+	if q := googleLoginQuota(context.Background(), googleLoginList("antigravity")[0]); q.Error != "" || q.Plan != "Google AI Ultra" {
+		t.Errorf("quota after failed loadCodeAssist: plan %q, error %q", q.Plan, q.Error)
 	}
 }

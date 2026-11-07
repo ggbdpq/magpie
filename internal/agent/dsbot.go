@@ -12,9 +12,6 @@ package agent
 // start in agent-default-model (dshOn).
 
 import (
-	"encoding/json"
-	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -36,55 +33,11 @@ func dsbotFile(dir string) string {
 	return filepath.Join(dir, "profiles", dsbotProfile, "cordis.patch.yml")
 }
 
-// dsbotHome is the app's data folder, the DSH_HOME its DSH runs on, and
-// whether it is known. chooseLocations (app/src/first-run.mjs) takes it
-// from DS_BOT_HOME, which runs the app on throwaway folders, else from
-// locations.json's dataDir in the app's Electron userData (DS_BOT_SHELL_DATA
-// when set, else <appData>/DS Bot, or <appData>/DeepSeek Bot, its name
-// before, while that one is there and DS Bot's has no locations.json:
-// configureIdentity in app/src/legacy.mjs), else ~/.ds-bot, the folder its
-// first run saves when the user keeps the default. A locations.json that
-// can't be read or names no folder is unknown: never taken for the default,
-// where magpie would wire a folder the app doesn't run on.
-func dsbotHome() (string, bool) {
-	if dir := appdir.Getenv("DS_BOT_HOME"); dir != "" {
-		return dir, true
-	}
-	userData := appdir.Getenv("DS_BOT_SHELL_DATA")
-	if userData == "" {
-		cfg, err := os.UserConfigDir()
-		if err != nil {
-			return "", false
-		}
-		userData = filepath.Join(cfg, "DS Bot")
-		if legacy := filepath.Join(cfg, "DeepSeek Bot"); !isFile(filepath.Join(userData, "locations.json")) && isDir(legacy) {
-			userData = legacy
-		}
-	}
-	b, err := os.ReadFile(filepath.Join(userData, "locations.json"))
-	if errors.Is(err, os.ErrNotExist) {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", false
-		}
-		return filepath.Join(home, ".ds-bot"), true
-	}
-	if err != nil {
-		return "", false
-	}
-	var places struct {
-		DataDir string `json:"dataDir"`
-	}
-	if json.Unmarshal(b, &places) != nil || strings.TrimSpace(places.DataDir) == "" {
-		return "", false
-	}
-	return places.DataDir, true
-}
-
-// dsbotDataDir is dsbotHome, "" when it is unknown, with the folder noted
-// as DS Bot's (dshApps): the routes written there are DS Bot's models.
+// dsbotDataDir is DS Bot's data folder (appdir.DsbotHome), "" when it is
+// unknown, with the folder noted as DS Bot's (dshApps): the routes written
+// there are DS Bot's models.
 func dsbotDataDir() string {
-	dir, ok := dsbotHome()
+	dir, ok := appdir.DsbotHome()
 	if !ok {
 		return ""
 	}

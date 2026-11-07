@@ -1229,6 +1229,21 @@ func codexAccountID(a codexAuth) string {
 	return claimString(jwtClaims(a.Tokens.IDToken), "https://api.openai.com/auth", "chatgpt_account_id")
 }
 
+// codexPlan is the ChatGPT plan a sign-in's tokens name ("free", "plus",
+// "pro" …), as the ID token says it and the access token beside it, ""
+// when neither does. A plan can change behind magpie's back while the
+// saved sign-in is kept as it was: a refresh answered for an upgraded
+// account carries the plan it is now, and the saved one follows it the
+// way the ChatGPT API's refresh does (siwcFresh) (#5593).
+func codexPlan(a codexAuth) string {
+	for _, tok := range []string{a.Tokens.IDToken, a.Tokens.AccessToken} {
+		if p := claimString(jwtClaims(tok), "https://api.openai.com/auth", "chatgpt_plan_type"); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
 // Why a ChatGPT sign-in is refreshed, in the words codex-rs sends with
 // its own refresh (refresh_reason, login/src/oauth/client.rs).
 const (

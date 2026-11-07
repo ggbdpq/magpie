@@ -15990,7 +15990,8 @@ function renderQuotas(lazy) {
       // "Every model" by the account, or the card's name: where the click
       // was, whichever way the meters under it grow or shrink
       const brief = several && !usageAcctOpen(sub, subs);
-      const history = !brief && quotaHistoryView(sub);
+      // the fold doesn't move a picked cycle's meters back to this week's (#5590)
+      const history = quotaHistoryView(sub);
       const shownSub = history ? quotaHistoryCard(sub, history) : sub;
       const [meters, every] = history ? [quotaWindows(shownSub), null] : familyQuota(sub);
       if (sub.user) {

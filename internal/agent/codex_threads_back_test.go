@@ -146,3 +146,107 @@ func TestCodexThreadsComeBackOffMagpie(t *testing.T) {
 		}
 	})
 }
+
+// #5494: a takeover of a provider of the user's (CC Switch's "custom")
+// stashes it as the source, and bringOver moves its threads onto magpie.
+// The switch back to it can land after magpie is already off the config —
+// a hand edit, another CC Switch pick, this very sync — and bringBack then
+// read where Codex was on *now*: no model_provider key, Codex's default,
+// openai. Every thread was filed there — custom → magpie → openai — and
+// the user's own provider no longer listed them ("This chat uses openai,
+// but your current provider is custom"). The stashed source is where they
+// go back; the config keeps answering for a move magpie has no stash of.
+func TestCodexThreadsBackToTheirSource(t *testing.T) {
+	const moved = "019a0000-0000-7000-8000-0000000000c1"
+	home, _ := codexHome(t, "", `model = "gpt-5.4"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+`)
+	dir := filepath.Join(home, ".codex")
+	path := filepath.Join(dir, "config.toml")
+	cx := codex(home)
+	// the takeover names magpie and stashes custom, the provider Codex was on
+	if err := cx.Fields[0].Set("fake/m1"); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := edit.GetTOMLTop(path, "model_provider"); p != "magpie" {
+		t.Fatalf("provider %q, want magpie", p)
+	}
+	// a thread started on custom before the takeover follows onto magpie
+	// (bringOver), as the reporter's 242 + 1,626 did
+	codexThreadOn(t, dir, moved, "custom")
+	if err := cx.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if p := codexRowOn(t, dir, moved); p != "magpie" {
+		t.Fatalf("thread on %q, want magpie after bringOver", p)
+	}
+	// magpie is already off the config when the threads move back: the
+	// switch back to custom comes after this sync (a hand edit here), so
+	// the config names no provider and Codex reads its default, openai.
+	// The model goes with it — the user is back on their relay's models —
+	// or Sync would wire magpie in again for the magpie model it still
+	// names (#322's self-heal).
+	if err := edit.DelTOMLTop(path, "model_provider"); err != nil {
+		t.Fatal(err)
+	}
+	if err := edit.SetTOMLTop(path, edit.KV{Path: "model", Value: "zcode/GLM-5.3-Flash"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cx.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if p := codexRowOn(t, dir, moved); p != "custom" {
+		t.Fatalf("thread on %q, want custom, the provider stashed before the takeover — not the openai the config fell back to", p)
+	}
+	// the takeover's own wire comes down with the threads: left in, it
+	// reads as a live beside wiring and bringBeside would file the
+	// threads just given back onto OpenAI
+	if u, _ := edit.GetTOMLTop(path, "openai_base_url"); u != "" {
+		t.Fatalf("openai_base_url %q stayed, the takeover's own write — a live beside wiring to bringBeside", u)
+	}
+}
+
+// The maintainer's probe of the first patch: a user's own openai_base_url
+// pointing at magpie (#856's usage — theirs, by hand, to have Codex's own
+// models go through magpie), beside an expired codex.provider stash from a
+// takeover long gone. The patch took the stash for a live takeover, moved
+// the threads to it and took the user's base URL down with them ("sync 0
+// took the user's base URL away"); main never touched either. The
+// takeover's own mark (codex.took_base) is what puts a base URL in
+// magpie's keeping: a stash without it is an expired one, and moves
+// nothing.
+func TestCodexKeepsTheUsersBaseURL(t *testing.T) {
+	const moved = "019a0000-0000-7000-8000-0000000000e1"
+	home, read := codexHome(t, "", "")
+	dir := filepath.Join(home, ".codex")
+	path := filepath.Join(dir, "config.toml")
+	// the user's own wiring, written by hand: no provider of magpie's
+	// anywhere, just their base URL
+	cfg := "model = \"gpt-5.4\"\nopenai_base_url = \"" + here(home).codexURL() + "\"\n"
+	if err := edit.WriteAtomic(path, []byte(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	// an expired codex.provider stash: a takeover's, every other half of
+	// which is long gone — a takeover still to give back would have its
+	// base URL marked
+	stash(map[string]string{"codex.provider": "custom"})
+	codexThreadOn(t, dir, moved, "magpie")
+	cx := codex(home)
+	if err := cx.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if u, _ := edit.GetTOMLTop(path, "openai_base_url"); strings.TrimSuffix(u, "/") != here(home).codexURL() {
+		t.Fatalf("sync 0 took the user's base URL away: openai_base_url = %q, want the user's own:\n%s", u, read())
+	}
+	if p := codexRowOn(t, dir, moved); p != "openai" {
+		t.Errorf("thread on %q, want openai — an expired stash is no takeover to give back to", p)
+	}
+	if s := stashShared()["codex.provider"]; s != "" {
+		t.Errorf("the expired stash stayed (%q), to drive every sync after", s)
+	}
+}

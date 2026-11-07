@@ -764,6 +764,48 @@ func codexIn(at place) *Agent {
 		if to == magpieID {
 			return
 		}
+		// where the threads belong: the provider Codex was on before magpie
+		// took it over (stash codex.provider, bringOver's source, kept for
+		// Unwire to put back). The config reads where Codex is on *now*, and
+		// the switch back to the user's own can land after magpie is already
+		// off it — a hand edit, another CC Switch pick, this sync's own
+		// defer — so "now" can be a channel the threads never belonged to:
+		// they were filed there, and the provider they came from no longer
+		// lists them (#5494: custom → magpie → openai, wanted back on
+		// custom). The stashed source is where they go; the config keeps
+		// answering for a move magpie has no stash of. A live beside wiring
+		// keeps out: joined or beside the sign-in, the threads Codex
+		// resumes are the ones bringBeside moved onto OpenAI, and they go
+		// back to their provider at the Disconnect (giveBeside), not here.
+		if src := stashShared()[at.key("codex.provider")]; src != "" && src != magpieID && src != ccSwitchOfficial && !joined() && !beside() {
+			if viaBase() && stashShared()[at.key("codex.took_base")] != "1" {
+				// the base URL is the user's own, by hand (#856) — no mark
+				// of magpie's stands behind it — so the stash beside it is
+				// an expired one: a takeover long since re-wired away by
+				// hand, whose give-back would have unstashed it (unroute).
+				// Forgotten, it moves nothing, here or at any sync after;
+				// the config answers where the threads go, as it did
+				// before.
+				forget(at.key("codex.provider"))
+			} else if to != src {
+				to = src
+				// the takeover's other wire comes down with it: the base
+				// URL the takeover wrote beside model_provider, marked
+				// (codex.took_base), is left in the config when the switch
+				// back missed the Disconnect, and reads there as a live
+				// beside wiring — bringBeside would file the threads just
+				// given back onto OpenAI (#5494). Codex is not being
+				// served through it: the takeover named magpie its
+				// provider, never the base URL. One the user wrote by
+				// hand carries no mark and stays (#856).
+				if viaBase() {
+					forget(at.key("codex.failover"), at.key("codex.took_base"))
+					if err := edit.DelTOMLTop(path, "openai_base_url"); err != nil {
+						log.Println("codex: dropping the base URL the takeover left:", err)
+					}
+				}
+			}
+		}
 		// in place first where it can be (bringOver's, and those started
 		// on magpie that Codex hasn't packed): no copy of each, no rewrite
 		if len(to) == len(magpieID) {
@@ -1373,7 +1415,7 @@ func codexIn(at place) *Agent {
 	// account than leave its ChatGPT state
 	out := func() bool { return stashShared()[at.key("codex.login")] != "chatgpt" && codexUsedUp() }
 	dropBase := func() error {
-		forget(at.key("codex.failover"))
+		forget(at.key("codex.failover"), at.key("codex.took_base"))
 		if !viaBase() {
 			return nil
 		}
@@ -1875,11 +1917,21 @@ func codexIn(at place) *Agent {
 				{Path: "model_catalog_json", Value: catalogRef},
 				{Path: "model", Value: v},
 			}
+			tookBase := false
 			if u := get("openai_base_url"); u == "" || viaBase() {
 				kv = append(kv, edit.KV{Path: "openai_base_url", Value: at.codexURL()})
+				// a base URL magpie introduces here is the takeover's own,
+				// marked (codex.took_base) for bringBack to take down with
+				// the takeover when the switch back missed the Disconnect.
+				// One already there is the user's own, by hand (#856): it
+				// stays, never magpie's to take.
+				tookBase = u == ""
 			}
 			if err := edit.SetTOMLTop(path, kv...); err != nil {
 				return err
+			}
+			if tookBase {
+				stash(map[string]string{at.key("codex.took_base"): "1"})
 			}
 			if err := takeTables(); err != nil {
 				return err

@@ -62,7 +62,11 @@ func notesPlaceholders(p provider.Provider, from provider.Protocol, body []byte)
 // the end of Chat's first system (or developer) message, a part after
 // Gemini's systemInstruction's. Otherwise the earliest message with one
 // says it, after what it has: a text block or part of its own, or a line
-// at the end of a message that is one string. Responses' instructions are
+// at the end of a message that is one string — or, when the message ends
+// with a tool_use, before its first tool_use: the call's tool_result must
+// come immediately after, and a note between the two has strict
+// Anthropic-protocol upstreams (DeepSeek) turn the request away (#5447).
+// Responses' instructions are
 // never changed (Codex's base_instructions): a developer message of its
 // own goes first in its input, or after the earliest item with one and
 // the tool outputs beside it. On a later turn the same message is the
@@ -125,6 +129,9 @@ func withNoteAnthropic(body []byte) []byte {
 		blocks := noteJSON([]any{map[string]any{"type": "text", "text": c.String()}, map[string]any{"type": "text", "text": noteBlock}})
 		return spliced(body, c, blocks)
 	case c.IsArray():
+		if b, ok := beforeToolUse(c); ok {
+			return inserted(body, b, textPart("text"))
+		}
 		return appended(body, c, textPart("text"))
 	}
 	return body
@@ -280,6 +287,35 @@ func prepended(body []byte, r gjson.Result, item []byte) []byte {
 		sep = ""
 	}
 	return insertAt(body, r.Index+1, string(item)+sep)
+}
+
+// inserted is body with item put in the array just before its element r.
+func inserted(body []byte, r gjson.Result, item []byte) []byte {
+	if !at(body, r) {
+		return body
+	}
+	return insertAt(body, r.Index, string(item)+",")
+}
+
+// beforeToolUse reports r's first tool_use block when the last block of
+// the message content r is a tool_use too: the matching tool_result must
+// come immediately after the tool_use, in the next message's first
+// blocks, so a note appended at the end would sit between the two and a
+// strict Anthropic-protocol upstream (DeepSeek) turns the request away
+// with "tool_use ids were found without tool_result blocks immediately
+// after" (#5447). The note goes before the call instead. A message whose
+// last block is anything else is told by appended, as it was.
+func beforeToolUse(r gjson.Result) (gjson.Result, bool) {
+	blocks := r.Array()
+	if len(blocks) == 0 || blocks[len(blocks)-1].Get("type").String() != "tool_use" {
+		return gjson.Result{}, false
+	}
+	for _, b := range blocks {
+		if b.Get("type").String() == "tool_use" {
+			return b, true
+		}
+	}
+	return gjson.Result{}, false
 }
 
 // withTopField is the object body with a field it doesn't have added

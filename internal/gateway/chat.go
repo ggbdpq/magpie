@@ -489,6 +489,9 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 			case Text:
 				content = append(content, map[string]any{"type": "text", "text": p.Text})
 			case File:
+				// told of, not carried: Chat upstreams' file support is
+				// uneven, and a 400 here loses the whole turn (#934) — the
+				// Responses and Messages tongues carry it whole (#5452)
 				content = append(content, map[string]any{"type": "text", "text": attachmentText(p)})
 			case Image:
 				plain = false

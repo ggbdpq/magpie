@@ -7492,8 +7492,27 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		i := bytes.LastIndexByte(pending, '\n')
 		var err error
 		if i >= 0 {
-			_, err = w.Write(pending[:i+1])
-			pending = pending[i+1:]
+			// an event: name whose data has not come is held back: written
+			// at once, an upstream that dies between the name and the data
+			// would leave the client an event with no data, and the openai
+			// Node SDK ends the turn on that empty data before the relay's
+			// error is reached ("malformed server-sent event JSON",
+			// DDDFXYqiming on #3197, Codex Responses). It goes out when its
+			// data does; a name the upstream never follows with data goes
+			// as the upstream sent it (unheld, a stream ended short)
+			end := i + 1
+			if t := bytes.LastIndexByte(pending[:i], '\n'); t >= 0 {
+				t++
+				if bytes.HasPrefix(pending[t:], []byte("event:")) {
+					end = t
+				}
+			} else if bytes.HasPrefix(pending, []byte("event:")) {
+				end = 0
+			}
+			if end > 0 {
+				_, err = w.Write(pending[:end])
+				pending = pending[end:]
+			}
 			atLine = true
 		}
 		return len(b), err

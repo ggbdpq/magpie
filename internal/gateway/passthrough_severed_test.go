@@ -353,3 +353,88 @@ func TestChatStreamCutAfterWholeEventKeepsIt(t *testing.T) {
 		t.Fatalf("the last whole event was dropped: %q", body)
 	}
 }
+
+// severedResponses is severed for an upstream the client speaks Responses
+// to, as Codex does its /responses backend.
+func severedResponses(t *testing.T, events ...string) {
+	t.Helper()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			panic("no hijacker")
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			panic(err)
+		}
+		defer conn.Close()
+		body := strings.Join(events, "")
+		fmt.Fprintf(buf, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\n\r\n", len(body)+100)
+		io.WriteString(buf, body)
+		buf.Flush()
+	}))
+	t.Cleanup(up.Close)
+	p := provider.Provider{ID: "up", Name: "UP", Key: "k", Models: []string{"m"}, Responses: up.URL + "/v1"}
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// noEmptyEvent fails when the client's stream holds an event block with a
+// name and no data: the openai Node SDK parses that empty data as JSON and
+// ends the turn with "malformed server-sent event JSON" (DDDFXYqiming on
+// #3197, Codex Responses).
+func noEmptyEvent(t *testing.T, body string) {
+	t.Helper()
+	for _, block := range strings.Split(body, "\n\n") {
+		var name, data bool
+		for _, line := range strings.Split(block, "\n") {
+			switch {
+			case strings.HasPrefix(line, "event:"):
+				name = true
+			case strings.HasPrefix(line, "data:"):
+				data = true
+			}
+		}
+		if name && !data {
+			t.Fatalf("an event went out with a name and no data: %q", block)
+		}
+	}
+}
+
+// A Responses stream the upstream severs right after an event name, before
+// its data line began: the name alone used to go out, and the blank line
+// the relay's ending writes closed it as an event with no data, which is
+// where the openai SDK died before the error was reached (#3197).
+func TestPassthroughResponsesSeveredAfterEventName(t *testing.T) {
+	fresh(t)
+	severedResponses(t,
+		`event: response.created`+"\n"+`data: {"type":"response.created","response":{"id":"r1"}}`+"\n\n",
+		`event: response.output_text.delta`+"\n")
+	code, body := post(t, "/v1/responses", `{"model":"up/m","stream":true,"input":"hi"}`)
+	if code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", code, body)
+	}
+	noEmptyEvent(t, body)
+	if !strings.Contains(body, "connection lost mid-reply") {
+		t.Fatalf("the severed stream ended without the failure said: %s", body)
+	}
+}
+
+// One severed inside the data line after the name went out is the same:
+// the half data is dropped, and the held name goes with it.
+func TestPassthroughResponsesSeveredMidData(t *testing.T) {
+	fresh(t)
+	severedResponses(t,
+		`event: response.created`+"\n"+`data: {"type":"response.created","response":{"id":"r1"}}`+"\n\n",
+		`event: response.output_text.delta`+"\n"+`data: {"type":"response.output_te`)
+	code, body := post(t, "/v1/responses", `{"model":"up/m","stream":true,"input":"hi"}`)
+	if code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", code, body)
+	}
+	noEmptyEvent(t, body)
+	if !strings.Contains(body, "connection lost mid-reply") {
+		t.Fatalf("the severed stream ended without the failure said: %s", body)
+	}
+}

@@ -33,6 +33,8 @@ type Info struct {
 	Stream   bool   `json:"stream"`
 	Path     string `json:"path"`
 	Agent    string `json:"agent,omitempty"`
+	Key      string `json:"key,omitempty"`     // the calling gateway key's id, never its secret; "" when there is none
+	KeyName  string `json:"keyName,omitempty"` // the calling gateway key's name
 }
 
 // Reject is a request a middleware turned away: the agent gets Status with

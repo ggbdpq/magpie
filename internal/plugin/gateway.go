@@ -88,6 +88,8 @@ type GatewayContext struct {
 	Path     string `json:"path"`
 	Agent    string `json:"agent"`
 	Session  string `json:"session"`
+	Key      string `json:"key,omitempty"`     // the calling gateway key's id, never its secret; "" when there is none
+	KeyName  string `json:"keyName,omitempty"` // the calling gateway key's name
 	Cwd      string `json:"cwd"`
 	Query    string `json:"query"`
 	// Kind is "subagent" for a request an agent's subagent made, as the

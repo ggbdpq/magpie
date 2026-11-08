@@ -51,6 +51,8 @@ func (s *Server) serveAgent(w http.ResponseWriter, r *http.Request, from provide
 		return
 	}
 	info := gwmw.Info{Protocol: string(from), Model: modelOf(body), Stream: streamOf(body), Path: r.URL.Path, Agent: agentOf(r)}
+	who := access.Caller(r.Context())
+	info.Key, info.KeyName = who.KeyID, who.KeyName
 	var runs mwRuns
 	for _, a := range agents {
 		// the user's middleware runs before a route is begun: a wait
@@ -161,7 +163,8 @@ func gatewayHooks(w http.ResponseWriter, r *http.Request, from provider.Protocol
 	if !plugin.HasGateway() {
 		return w, body, func() {}
 	}
-	info := plugin.GatewayContext{Origin: gatewayOrigin(r), Protocol: string(from), Model: modelOf(body), Stream: streamOf(body), Path: r.URL.Path, Agent: agentOf(r), Session: sessionOf(r.Header), Kind: hookKind(r, agentOf(r))}
+	who := access.Caller(r.Context())
+	info := plugin.GatewayContext{Origin: gatewayOrigin(r), Protocol: string(from), Model: modelOf(body), Stream: streamOf(body), Path: r.URL.Path, Agent: agentOf(r), Session: sessionOf(r.Header), Key: who.KeyID, KeyName: who.KeyName, Kind: hookKind(r, agentOf(r))}
 	if req, err := parse(from, body); err == nil {
 		info.Cwd = workDir(req)
 		info.Query = gatewayQuery(req)

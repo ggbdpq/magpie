@@ -1557,7 +1557,10 @@ about to go to (`account.ref` is an anonymous id, stable per install and
 per middleware; `{skip: true}` passes the account over for that request),
 `onEvent(event, ctx)` each
 event of a streamed reply and `onResponse(body, ctx)` a whole one, all in
-the agent's own API. A hook returns the changed object, or nothing to
+the agent's own API. `ctx.key` and `ctx.keyName` are the calling gateway
+key's id and name, never its secret; empty when the request came with no
+gateway key, so a middleware can route by the key. A hook returns the
+changed object, or nothing to
 leave it; `onEvent` returns `null` to drop an event, and
 `ctx.reject(status, message)` turns a request away. Declare it with
 `"magpie": { "middleware": "./mw.js" }` in `package.json`, or add a single

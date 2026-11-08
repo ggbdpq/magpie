@@ -25,6 +25,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -2599,6 +2600,12 @@ type holdWriter struct {
 	// buffered: the vendor said it holds the reply back for safety checks,
 	// which may end in a refusal: held longer (holdBuffered)
 	buffered bool
+	// spent is the words a whole reply of a success status is read by
+	// (the provider's failWords, the user's own opt-in): a relay that
+	// answers a spent plan with a 200 and a pitch of its own fails as the
+	// words stand for, asked of the next, the account rested (#5692).
+	// nil reads nothing, as no provider has any by default
+	spent *regexp.Regexp
 	// thinking: the reply has reasoned but said nothing yet, which a
 	// refusal may still end: held longer (holdThinking)
 	thinking bool
@@ -3540,6 +3547,13 @@ func (h *holdWriter) settle() {
 		// would (errorReply): asked again, or of the next, not handed on
 		// as an answer
 		if status, msg, ok := errorReply(h.held.Bytes()); ok {
+			h.failure, h.failMsg = status, msg
+			return
+		}
+		// a 200 that says one of the provider's failWords (the user's own
+		// opt-in for a vendor that answers a spent plan with a pitch of
+		// its own) fails as the words stand for, the same way (#5692)
+		if status, msg, ok := pitchSaid(h.spent, h.held.Bytes()); ok {
 			h.failure, h.failMsg = status, msg
 			return
 		}

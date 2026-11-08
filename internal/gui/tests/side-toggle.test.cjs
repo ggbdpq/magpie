@@ -202,7 +202,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // what plays, read as the button is clicked: the old drawn, the new laid out
       const playing = () => page.evaluate(() => new Promise((r) => {
         const at = () => document.getAnimations().map((a) => a.effect?.pseudoElement).filter(Boolean);
-        requestAnimationFrame(() => requestAnimationFrame(() => r({ anims: at(), morph: document.documentElement.classList.contains("nav-morph") })));
+        const named = () => [...document.querySelectorAll("#nav button[data-view]")].map((b) => [b.dataset.view, getComputedStyle(b).viewTransitionName]);
+        requestAnimationFrame(() => requestAnimationFrame(() => r({ anims: at(), names: named(), morph: document.documentElement.classList.contains("nav-morph") })));
       }));
       await page.locator("#sideToggle").click();
       let p = await playing();
@@ -210,6 +211,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.ok(p.anims.includes("::view-transition-old(side)"), `the sidebar slides away: ${p.anims}`);
       assert.ok(p.anims.includes("::view-transition-group(nav-usage)"), "each tab flies to the header");
       assert.ok(p.anims.includes("::view-transition-group(page)"), "the page moves over");
+      // every tab in the nav flies with the others, the masking one too
+      // (#5434): the groups and masking tabs came to the nav after the morph
+      // and had no view-transition-name of their own, so while the rest flew
+      // they only faded with the whole sidebar
+      const seen = Object.fromEntries(p.names);
+      const views = await page.evaluate(() => [...document.querySelectorAll("#nav button[data-view]")].map((b) => b.dataset.view));
+      for (const v of views) assert.ok(seen[v] && seen[v] !== "none", `the ${v} tab has a view-transition-name of its own (${seen[v] || "none"})`);
+      assert.equal(new Set(Object.values(seen)).size, views.length, "the tabs' names are all different");
+      assert.ok(p.anims.includes("::view-transition-group(nav-masking)"), "the masking tab flies too");
       // off from rest and settling, in a third of a second, as a Mac's
       // sidebar: a curve leaving at speed made a frame the webview drops at
       // the start a visible jerk (wangye1644294 on X), and every piece, the

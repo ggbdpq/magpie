@@ -534,21 +534,40 @@ func strictOnly(cs []candidate, pl planned, at int) ([]candidate, planned) {
 }
 
 // stickKey is the conversation a stick is kept for: scope's, by the
-// conversation's id, and a Claude Code subagent's apart from its lead's.
-// Claude Code sends its session's id with every request of the session,
-// its subagents' too, which say only by x-claude-code-agent-id that they
-// are one (subagentOf). Under the session's key, a subagent's answer took
-// the lead's stick over: the lead's next turn was judged by the cache of
-// the subagent's conversation, moved to another account as "no-cache" or
-// "cold" or to wherever the subagent had gone, and the lead's whole
-// conversation written to that account's cache again (slkassinthehood on
-// X: two Pro accounts' 5 hours spent in ten minutes). The lead's key is
-// the session's as before, so what is kept of it, and Codex's leadFirst,
-// which reads a lead's stick by its thread id, are as they were.
+// conversation's id, and a subagent's apart from its lead's. Claude Code
+// sends its session's id with every request of the session, its subagents'
+// too, which say only by x-claude-code-agent-id that they are one
+// (subagentOf) — theirs ends "|agent:", and withSession keeps such a one
+// with its session's account (withLead). Codex's session_id is the root
+// thread's, its subagents' too, and a subagent's own thread id is in its
+// turn metadata — so a Codex subagent is kept apart by that thread
+// (codexSubagentThread), when the thread it names is not the session's
+// own, on a key of its own that ends "|thread:" (Foreverrainy on #5698:
+// twelve requests of a chat and its six subagents over three accounts
+// shared the parent session's one stick, and the second round read
+// kept=true, why=session, all six onto the one account that had written
+// it last). Its suffix is its own, not Claude Code's, so a Codex
+// subagent's first turn still spreads over the accounts as a session of
+// its own does (spreadsSessions), instead of withLead's taking it to the
+// account its session is on. Under the session's key, a subagent's answer
+// took the lead's stick over: the lead's next turn was judged by the
+// cache of the subagent's conversation, moved to another account as
+// "no-cache" or "cold" or to wherever the subagent had gone, and the
+// lead's whole conversation written to that account's cache again
+// (slkassinthehood on X: two Pro accounts' 5 hours spent in ten minutes).
+// The lead's key is the session's as before, so what is kept of it, and
+// Codex's leadFirst, which reads a lead's stick by its thread id, are as
+// they were.
 func stickKey(scope string, in http.Header, body []byte) string {
-	key := scope + "|" + affinityID(in, body)
+	id := affinityID(in, body)
+	key := scope + "|" + id
 	if sub := subOf(in); sub != "" {
 		key += "|agent:" + sub
+	} else if fromCodex(in) {
+		// the turn metadata is Codex's own; no other agent sends it
+		if thread := codexSubagentThread(in, requestSessionMetadata(in, body)); thread != "" && thread != id {
+			key += "|thread:" + thread
+		}
 	}
 	return key
 }

@@ -212,6 +212,14 @@ type Provider struct {
 	// removes it. For a local model that exists only here (treydtw on X).
 	ThisDevice bool `json:"thisDevice,omitempty"`
 
+	// plainList, on a Remote magpie, is a fetch asking its plain model
+	// list: without the X-Magpie-* headers, whose answer is the extended
+	// catalog — a far bigger body, which a slow link cuts before it ends,
+	// while the plain list comes through (#5457). Set for the one fetch
+	// that asks the plain list after the catalog's fetch failed; it is not
+	// saved, and the next fetch asks the catalog as always.
+	plainList bool
+
 	// MaxConcurrency is how many requests may be out at the vendor at once
 	// on each of its keys or accounts (Discord, Lemon: a Codex account is
 	// risk-controlled past five or six at once); the rest wait their turn,

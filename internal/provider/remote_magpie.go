@@ -125,6 +125,12 @@ func (p Provider) listHeaders() map[string]string {
 			delete(h, k)
 		}
 	}
+	// the plain list (plainList) is asked without the four headers below:
+	// their answer is the extended catalog, the far bigger body a slow
+	// link cuts before it ends (#5457)
+	if p.plainList {
+		return h
+	}
 	h[DrawersHeader] = "1"
 	h[VideomakersHeader] = "1"
 	h[PricesHeader] = "1"

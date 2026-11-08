@@ -789,7 +789,18 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 			return nil, nil, err
 		}
 		defer res.Body.Close()
-		b, _ := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+		b, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+		if err != nil {
+			// the read was cut (a deadline, a reset): what arrived is not
+			// a body of the wrong shape, and saying so of it sends the user
+			// looking at the JSON when the body was fine, only short (#5457)
+			return nil, nil, fmt.Errorf("%s: incomplete response: %w", url, err)
+		}
+		if n := res.ContentLength; n > int64(len(b)) {
+			// the connection closed before the body it declared arrived:
+			// the read ended cleanly, so only the count tells the cut
+			return nil, nil, fmt.Errorf("%s: incomplete response: %d of %d bytes", url, len(b), n)
+		}
 		return res, b, nil
 	}
 	res, b, err := ask(auth.only)

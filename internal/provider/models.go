@@ -829,6 +829,22 @@ type fetched struct {
 	answered map[string]bool
 }
 
+// fetchPlainAgain is a remote magpie's plain model list asked after its
+// extended catalog's fetch failed: without the X-Magpie-* headers the
+// answer is the plain list, whose body is small enough to come through
+// whole where the catalog's was cut (a slow link, #5457) — the models,
+// without the prices, drawers and decision models, which the next whole
+// fetch brings back. It says whether the plain list answered.
+func (p Provider) fetchPlainAgain(ctx context.Context) (fetched, bool) {
+	if !p.IsRemoteMagpie() || p.plainList {
+		return fetched{}, false
+	}
+	plain := p
+	plain.plainList = true
+	pl, err := plain.fetchOne(ctx)
+	return pl, err == nil
+}
+
 // fetchOne asks every endpoint the provider speaks with p's key, and merges
 // the lists (#904): a vendor serves its models on several protocols, and
 // each protocol's base lists its own (Kimi's Claude models at its Anthropic
@@ -846,6 +862,11 @@ func (p Provider) fetchOne(ctx context.Context) (fetched, error) {
 		}
 		ms, err := catalog.FetchURL(ctx, u, p.Key, anthropic, p.listHeadersAt(u))
 		if err != nil {
+			// a remote magpie whose catalog is cut is asked for its plain
+			// list before the fetch is given up on (#5457)
+			if pl, ok := p.fetchPlainAgain(ctx); ok {
+				return pl, nil
+			}
 			return fetched{}, err
 		}
 		return fetched{catalog.WithDrawers(p.planModels(ms), catalog.PublicDrawers(ctx, u)), u, nil, nil}, nil
@@ -1002,6 +1023,11 @@ func (p Provider) fetchOne(ctx context.Context) (fetched, error) {
 	if base == "" {
 		if len(errs) == 0 {
 			return fetched{}, errorf("%s has no endpoint to ask", p.Name)
+		}
+		// a remote magpie whose catalog is cut at every endpoint is asked
+		// for its plain list before the fetch is given up on (#5457)
+		if pl, ok := p.fetchPlainAgain(ctx); ok {
+			return pl, nil
 		}
 		// the endpoints are kept as they were: a vendor with no list (or one
 		// that wants what the key can't give) still serves the models typed in

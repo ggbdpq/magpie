@@ -3847,7 +3847,7 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
 		local = lateSummary()
 		rec, res, err = &recorder{header: http.Header{}, status: 200}, compactResult{}, nil
 	} else if first := rec.status; lacksEndpoint(first) || itemNotFound(rec) || inputKindRefused(rec, err) || roleRefused(rec, err) || protectionRefused(first, rec.body.Bytes()) ||
-		summaryTooLarge(rec) || err != nil && protectionWords.MatchString(err.Error()) {
+		summaryTooLarge(rec) || tooLargeSaid(err) || err != nil && protectionWords.MatchString(err.Error()) {
 		who, msg := compactFailure(body, rec)
 		if err != nil {
 			msg = "broken off: " + err.Error()
@@ -4097,6 +4097,20 @@ var systemRefusedWords = lazyre.New(`(?i)system messages are not allowed`)
 // too.
 func summaryTooLarge(rec *recorder) bool {
 	return rec.status == http.StatusRequestEntityTooLarge || overflowed(rec.status, rec.body.Bytes())
+}
+
+// tooLargeSaid is the same refusal arriving after the reply began: a
+// summary request too big to start inside keepHeldAfter has its stream's
+// 200 said by the keepalive, and the overflow comes in it as a
+// response.failed (#5686) — compactReply says it in err, and the
+// recorder's status stays 200, where summaryTooLarge looks for a 413 or
+// a 400/413/422 saying it. So the summary was never asked again as text,
+// the failure counted toward the guard, and Codex asked the same
+// oversized summary over until the conversation was held. The words an
+// overflow goes by are the refusal's, read as a 400's would be
+// (tooLong); a failure saying nothing of size is no answer to this.
+func tooLargeSaid(err error) bool {
+	return err != nil && tooLong(http.StatusBadRequest, err.Error())
 }
 
 // itemNotFound is a 400 refusing an item of the input by its id, as Azure

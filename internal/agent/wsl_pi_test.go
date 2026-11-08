@@ -228,3 +228,112 @@ func TestWSLPiStopped(t *testing.T) {
 		t.Fatal(v)
 	}
 }
+
+// linkedPiDistro is a running distro whose ~/.pi/agent/settings.json and
+// models.json are links into a dotfiles repo (#5465), with the real files
+// where the links lead. As through \\wsl.localhost, where a link the
+// distro has can't be followed, the path as it is spelt can't be opened
+// here: the links read as broken until magpie opens them where they lead.
+// The probe's word of where they lead is handed in, as readlink -f there
+// would have said it.
+func linkedPiDistro(t *testing.T, where string, onDrive bool) (home, repo string) {
+	t.Helper()
+	syncHome(t)
+	root, drive := t.TempDir(), t.TempDir()
+	home = filepath.Join(root, "home", "me")
+	agent := filepath.Join(home, ".pi", "agent")
+	if err := os.MkdirAll(agent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if onDrive {
+		repo = filepath.Join(drive, "Users", "me", "pi-config", "agent")
+	} else {
+		repo = filepath.Join(root, filepath.FromSlash(where))
+	}
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "settings.json"), []byte(`{"packages":["pkg-a"],"defaultProvider":"xai","defaultModel":"grok-4.6"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "models.json"), []byte(`{"providers":{"custom":{"baseUrl":"https://example.com"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"settings.json", "models.json"} {
+		if err := os.Symlink(where+"/"+f, filepath.Join(agent, f)); err != nil {
+			t.Skip("no symlinks here:", err)
+		}
+	}
+	probe := "home:/home/me\ndir:.pi\n" +
+		"link:.pi/agent/settings.json " + where + "/settings.json\n" +
+		"link:.pi/agent/models.json " + where + "/models.json\n"
+	if onDrive {
+		probe += "win:/mnt/c C:\n"
+		t.Cleanup(FakeWSLDrives(map[string]string{"C:": drive}))
+	}
+	t.Cleanup(FakeWSL(map[string]string{"Ubuntu": probe}, map[string]string{"Ubuntu": root}))
+	return home, repo
+}
+
+// Pi wired into a distro whose settings.json and models.json are links
+// into a dotfiles repo (Temp0jd's #5465): the pick goes into what the
+// links hold, keeping the links, the user's packages and other providers,
+// and the row reads as wired — where the links lead on one of Windows'
+// drives, and where they lead inside the distro.
+func TestWSLPiLinkedConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, where string
+		onDrive     bool
+	}{
+		{"on a Windows drive", "/mnt/c/Users/me/pi-config/agent", true},
+		{"in the distro", "/data/pi-config/agent", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, repo := linkedPiDistro(t, tc.where, tc.onDrive)
+			if err := provider.Save(provider.Provider{ID: "anth", Name: "Anth", Key: "k", Anthropic: "http://127.0.0.1:1",
+				Models: []string{"claude-sonnet-5"}}); err != nil {
+				t.Fatal(err)
+			}
+			a := wslAgentByID(t, "pi@wsl:Ubuntu")
+			if a.Unreached() != nil {
+				t.Fatalf("unreached: %v", a.Unreached())
+			}
+			if a.Path != filepath.Join(repo, "settings.json") {
+				t.Fatalf("Pi's settings read at %q", a.Path)
+			}
+			if err := a.Pick("model", "magpie/relay/glm-4.6"); err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range []string{"settings.json", "models.json"} {
+				fi, err := os.Lstat(filepath.Join(home, ".pi", "agent", f))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if fi.Mode()&os.ModeSymlink == 0 {
+					t.Fatalf("%s was replaced by a regular file", f)
+				}
+			}
+			if p, _ := edit.GetJSON(filepath.Join(repo, "settings.json"), "defaultProvider"); p != "magpie" {
+				t.Fatalf("settings:\n%s", readFile(filepath.Join(repo, "settings.json")))
+			}
+			if m, _ := edit.GetJSON(filepath.Join(repo, "settings.json"), "defaultModel"); m != "relay/glm-4.6" {
+				t.Fatalf("settings:\n%s", readFile(filepath.Join(repo, "settings.json")))
+			}
+			if !strings.Contains(readFile(filepath.Join(repo, "settings.json")), `"pkg-a"`) {
+				t.Fatalf("the user's packages were wiped:\n%s", readFile(filepath.Join(repo, "settings.json")))
+			}
+			if b, _ := edit.GetJSON(filepath.Join(repo, "models.json"), "providers.custom.baseUrl"); b != "https://example.com" {
+				t.Fatalf("the user's own provider was wiped:\n%s", readFile(filepath.Join(repo, "models.json")))
+			}
+			if _, has := edit.GetJSON(filepath.Join(repo, "models.json"), "providers.magpie"); !has {
+				t.Fatalf("no magpie in models.json:\n%s", readFile(filepath.Join(repo, "models.json")))
+			}
+			if !a.Wired() {
+				t.Fatal("the row reads as not wired")
+			}
+			if gone := unstash("pi@wsl:Ubuntu.before.absent"); gone != "" {
+				t.Fatalf("the links were recorded as absent: %q", gone)
+			}
+		})
+	}
+}

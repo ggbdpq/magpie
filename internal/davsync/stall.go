@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,6 +90,24 @@ func (t stallTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		r.Body = &watched{ReadCloser: req.Body, w: w, ctx: ctx}
 	}
 	res, err := t.base.RoundTrip(r)
+	if err != nil && handshakeTimeout(err) && replayable(r) {
+		// the handshake never finished, so nothing of the request reached
+		// the server (#5424: InfiniCLOUD times handshakes out often
+		// enough that sync said "TLS handshake timeout" while the backup
+		// itself had gone up fine): it goes again on a fresh connection,
+		// with its whole time back
+		if req.GetBody != nil {
+			b, e := req.GetBody()
+			if e != nil {
+				return nil, cause(ctx, err)
+			}
+			r.Body = &watched{ReadCloser: b, w: w, ctx: ctx}
+		}
+		w.mu.Lock()
+		w.timer.Reset(after)
+		w.mu.Unlock()
+		res, err = t.base.RoundTrip(r)
+	}
 	if err != nil {
 		done()
 		return nil, cause(ctx, err)
@@ -95,6 +115,20 @@ func (t stallTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	w.moved() // the answer's head came
 	res.Body = &watched{ReadCloser: res.Body, w: w, ctx: ctx, done: done}
 	return res, nil
+}
+
+// replayable is whether r is sent again whole: a request with no body, or
+// one whose body can be had again.
+func replayable(r *http.Request) bool {
+	return r.Body == nil || r.Body == http.NoBody || r.GetBody != nil
+}
+
+// handshakeTimeout is whether err is Go's TLS handshake timing out
+// (transport's TLSHandshakeTimeout): net's timing out on the handshake
+// itself, before the request was written.
+func handshakeTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout() && strings.Contains(ne.Error(), "TLS handshake")
 }
 
 // cause is err, or why ctx was ended when the watchdog ended it.

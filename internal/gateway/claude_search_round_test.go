@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -213,23 +214,105 @@ func TestClaudeThinkingAroundMagpieSearchGoesBackAsWritten(t *testing.T) {
 }
 
 // A search beside no thinking of Claude's (another model's turn, a reply
-// without signed thinking) is left out, as before: no call is made up for
-// it.
-func TestSearchWithoutClaudeThinkingStaysOut(t *testing.T) {
+// without signed thinking) keeps the query it asked and the pages it
+// found, as the client sent them (#5713), as text: no call is made up for
+// it that no result would answer, and what the pages said was never kept,
+// so none is written.
+func TestSearchWithoutClaudeThinkingGoesBackAsText(t *testing.T) {
 	body := `{"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"q"}]},` +
 		`{"type":"reasoning","summary":[{"type":"summary_text","text":"thought"}]},` +
-		`{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"latest go"}},` +
+		`{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"latest go","sources":[{"type":"url","url":"https://go.dev/doc/devel/release"}]}},` +
 		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Go 1.27.1."}]}]}`
 	r, err := parseResponses([]byte(body))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Messages) != 2 || r.Messages[1].Role != "assistant" || len(r.Messages[1].Parts) != 2 {
+	if len(r.Messages) != 2 || r.Messages[1].Role != "assistant" || len(r.Messages[1].Parts) != 3 {
 		t.Fatalf("messages %+v", r.Messages)
 	}
 	for _, p := range r.Messages[1].Parts {
 		if p.Kind == ToolCall || p.Kind == Search {
 			t.Fatalf("made up %+v", p)
 		}
+	}
+	if said := text(r.Messages[1].Parts); !strings.Contains(said, "Searched the web for: latest go") || !strings.Contains(said, "https://go.dev/doc/devel/release") {
+		t.Fatalf("the query or the pages it found were lost: %q", said)
+	}
+}
+
+// A client's search history reaches a Chat upstream (#5713, wudilyy999):
+// Codex sends the searches of its turns back as web_search_call items, a
+// provider on Chat read none of them, and the model searched the same
+// things again and again. The query and the pages found go as text, the
+// function calls and their outputs keep their pairing, and no search call
+// is made up that no result would answer.
+func TestSearchHistoryReachesAChatUpstream(t *testing.T) {
+	f := &fake{t: t, reply: sse(
+		`data: {"id":"c1","model":"m1","choices":[{"delta":{"role":"assistant","content":"done"}}]}`,
+		`data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`)}
+	setup(t, provider.Chat, f)
+	body := `{"model":"fake/m1","stream":true,"tools":[{"type":"function","name":"noop","parameters":{"type":"object","properties":{}}}],"input":[` +
+		`{"type":"message","role":"user","content":"Find the evidence and use the tool."},` +
+		`{"type":"web_search_call","id":"ws_diag","status":"completed","action":{"type":"search","query":"UNIQUE_SEARCH_QUERY_X718","sources":[{"type":"url","url":"https://example.invalid/UNIQUE_SEARCH_RESULT_X718"}]}},` +
+		`{"type":"function_call","id":"fc_diag","call_id":"call_diag","name":"noop","arguments":"{}"},` +
+		`{"type":"function_call_output","call_id":"call_diag","output":"UNIQUE_TOOL_RESULT_X718"},` +
+		`{"type":"message","role":"user","content":"Continue with the evidence already found."}]}`
+	if code, body := post(t, "/v1/responses", body); code != 200 || !strings.Contains(body, "response.completed") {
+		t.Fatalf("status %d: %s", code, body)
+	}
+	var q struct {
+		Messages []struct {
+			Role      string `json:"role"`
+			Content   any    `json:"content"`
+			ToolCalls []struct {
+				ID       string `json:"id"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+			ToolCallID string `json:"tool_call_id"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(f.got, &q); err != nil {
+		t.Fatalf("%v: %s", err, f.got)
+	}
+	said := ""
+	calls, answered := 0, map[string]bool{}
+	for _, m := range q.Messages {
+		switch c := m.Content.(type) {
+		case string:
+			said += c
+		case []any:
+			for _, p := range c {
+				if o, ok := p.(map[string]any); ok {
+					said += fmt.Sprint(o["text"])
+				}
+			}
+		}
+		for _, c := range m.ToolCalls {
+			calls++
+			answered[c.ID] = false
+			if c.Function.Name != "noop" || c.Function.Arguments != "{}" {
+				t.Fatalf("made up a call for the search: %+v", c)
+			}
+		}
+		if m.ToolCallID != "" {
+			answered[m.ToolCallID] = true
+		}
+		if !strings.Contains(string(f.got), "UNIQUE_TOOL_RESULT_X718") {
+			t.Fatalf("the tool's output was lost: %s", f.got)
+		}
+	}
+	for id, ok := range answered {
+		if !ok {
+			t.Fatalf("the call %s has no result to answer it: %s", id, f.got)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("made %d calls, want the one the client sent: %s", calls, f.got)
+	}
+	if !strings.Contains(said, "UNIQUE_SEARCH_QUERY_X718") || !strings.Contains(said, "https://example.invalid/UNIQUE_SEARCH_RESULT_X718") {
+		t.Fatalf("the search's query or the pages it found never reached the chat upstream: %q\n%s", said, f.got)
 	}
 }

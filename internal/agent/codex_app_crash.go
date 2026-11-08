@@ -12,9 +12,10 @@ import (
 	"time"
 )
 
-// The Codex app's own logs, read for the page it shows when it can't go on
-// after magpie restarted its app-server (provider.CodexAppCrashed, see
-// provider/codex_app_crash.go). The app writes them as its file logger
+// The Codex app's own logs, read for what it logs when it can't take the
+// app-server magpie restarted: the page it shows then, and the resume of
+// the chat it had open failing (codexCrashLines below; provider.
+// CodexAppCrashed, see provider/codex_app_crash.go). The app writes them as its file logger
 // does in 26.1021 (file-based-logger: macOS ~/Library/Logs/<bundle id>,
 // Windows %LOCALAPPDATA%\Codex\Logs, Linux $XDG_STATE_HOME/codex/logs,
 // each with a YYYY/MM/DD folder for the UTC day a file was opened), one
@@ -60,21 +61,39 @@ const codexLogDays = 7
 // codexLogTail is how much of the end of a log file is read.
 const codexLogTail = 512 << 10
 
-// codexFatalLine is what the app's AppServerConnection logs as it shows the
-// page (broadcastFatalError).
-const codexFatalLine = " [AppServerConnection] fatal_error_broadcasted"
+// codexCrashLines are the lines the app logs when it can't take the
+// app-server magpie restarted, each with all its parts on one line: the
+// page (broadcastFatalError), and the reconnect thread's resume of the
+// chat it had open failing on the same identity not ready — the page's
+// error without the page, the chat left disconnected till the app is quit
+// and opened again (ZeroP27, #5476). A resume failed for another reason
+// (a connection lost) is none of them.
+var codexCrashLines = [][]string{
+	{" [AppServerConnection] fatal_error_broadcasted"},
+	{"websocket_reconnect_thread_resume_failed", "Hosted AppServerManager identity is not ready"},
+}
 
-// codexAppCrashed is provider.CodexAppCrashed: the first page the app
-// logged at or after since (less a second for the clock's grain), read in
-// the files written to since then. known is false when no root can be
-// read; a root that isn't there is the app never having run on it.
+// crashLine is whether a log line is one of codexCrashLines.
+func crashLine(line []byte) bool {
+	for _, parts := range codexCrashLines {
+		if !slices.ContainsFunc(parts, func(s string) bool { return !bytes.Contains(line, []byte(s)) }) {
+			return true
+		}
+	}
+	return false
+}
+
+// codexAppCrashed is provider.CodexAppCrashed: the first of those lines
+// the app logged at or after since (less a second for the clock's grain),
+// read in the files written to since then. known is false when no root
+// can be read; a root that isn't there is the app never having run on it.
 func codexAppCrashed(since time.Time) (at time.Time, crashed, known bool) {
 	from := since.Add(-time.Second)
 	for _, root := range codexAppLogRoots() {
 		files, ok := codexLogFiles(root, from)
 		known = known || ok
 		for _, f := range files {
-			if t, ok := codexFatalIn(f, from); ok && (!crashed || t.Before(at)) {
+			if t, ok := codexCrashIn(f, from); ok && (!crashed || t.Before(at)) {
 				at, crashed = t, true
 			}
 		}
@@ -134,11 +153,11 @@ func codexLogDirs(dir string) []string {
 	return out
 }
 
-// codexFatalIn is the time of the first page logged in the file at path
-// at or after from, read in its last codexLogTail bytes. A line the app
-// is still writing (no newline yet) and the part line the tail cuts into
-// are left out.
-func codexFatalIn(path string, from time.Time) (time.Time, bool) {
+// codexCrashIn is the time of the first of codexCrashLines logged in the
+// file at path at or after from, read in its last codexLogTail bytes. A
+// line the app is still writing (no newline yet) and the part line the
+// tail cuts into are left out.
+func codexCrashIn(path string, from time.Time) (time.Time, bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return time.Time{}, false
@@ -166,7 +185,7 @@ func codexFatalIn(path string, from time.Time) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	for line := range bytes.Lines(b) {
-		if !bytes.Contains(line, []byte(codexFatalLine)) {
+		if !crashLine(line) {
 			continue
 		}
 		stamp, _, _ := bytes.Cut(line, []byte(" "))

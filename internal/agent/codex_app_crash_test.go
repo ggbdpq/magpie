@@ -39,6 +39,14 @@ func fatalLine(at time.Time) string {
 	return at.UTC().Format("2006-01-02T15:04:05.000Z") + " error [AppServerConnection] fatal_error_broadcasted initialized=true listenerCount=2 pendingRequestCount=0 transportKind=stdio\n"
 }
 
+// the line as the app writes it when the reconnect thread fails to resume
+// the chat it had open on the same identity not ready (ZeroP27's #5476:
+// `websocket_reconnect_thread_resume_failed: Hosted AppServerManager
+// identity is not ready`), and one failed for another reason
+func resumeFailedLine(at time.Time, err string) string {
+	return at.UTC().Format("2006-01-02T15:04:05.000Z") + " error [WebSocketManager] websocket_reconnect_thread_resume_failed error=" + err + "\n"
+}
+
 // The page the Codex app shows when it can't go on after magpie restarted
 // its app-server (ysm119 on Discord) is read from the app's own logs: a
 // complete fatal_error_broadcasted line at or after the end, in a file
@@ -190,6 +198,44 @@ func TestCodexAppCrashedReadsEachSystemsFolder(t *testing.T) {
 				t.Fatalf("at %v, crashed %v, known %v", at, crashed, known)
 			}
 		})
+	}
+}
+
+// The same identity error surfaces without the page, as the app's
+// reconnect thread failing to resume the chat it had open: the chat is
+// left disconnected, no page shows, and the app comes only to be quit and
+// opened again (ZeroP27's #5476). The line counts as the app not taking
+// the restart; a resume failed for another reason is none of it.
+func TestCodexAppCrashedReadsTheChatItsReconnectFailedToResume(t *testing.T) {
+	home := restartSandbox(t)
+	restartOnMac = true
+	root := filepath.Join(home, "Library", "Logs", "com.openai.codex")
+	since := time.Date(2026, 11, 6, 6, 29, 58, 0, time.UTC)
+
+	p := codexLog(t, root, since.Add(-2*time.Hour), exitedLine(since.Add(time.Second)), since.Add(time.Second))
+	if _, crashed, _ := codexAppCrashed(since); crashed {
+		t.Fatal("the clean exit read as the app not taking it")
+	}
+	// the resume failed for another reason
+	os.WriteFile(p, []byte(exitedLine(since.Add(time.Second))+resumeFailedLine(since.Add(2*time.Second), "connection closed")), 0o644)
+	os.Chtimes(p, since.Add(2*time.Second), since.Add(2*time.Second))
+	if _, crashed, _ := codexAppCrashed(since); crashed {
+		t.Fatal("a resume failed for another reason read as it")
+	}
+	// failed on the identity not ready, whole, in the file opened the day
+	// before
+	os.WriteFile(p, []byte(exitedLine(since.Add(time.Second))+resumeFailedLine(since.Add(2*time.Second), "Hosted AppServerManager identity is not ready")), 0o644)
+	os.Chtimes(p, since.Add(2*time.Second), since.Add(2*time.Second))
+	at, crashed, known := codexAppCrashed(since)
+	if !crashed || !known || !at.Equal(since.Add(2*time.Second)) {
+		t.Fatalf("the failed resume: at %v, crashed %v, known %v", at, crashed, known)
+	}
+	// one from before the end (past the stamp's second of slack) is none
+	// of it
+	os.WriteFile(p, []byte(exitedLine(since.Add(time.Second))+resumeFailedLine(since.Add(-2*time.Second), "Hosted AppServerManager identity is not ready")), 0o644)
+	os.Chtimes(p, since.Add(2*time.Second), since.Add(2*time.Second))
+	if _, crashed, _ := codexAppCrashed(since); crashed {
+		t.Fatal("a resume failed before the end read as it")
 	}
 }
 

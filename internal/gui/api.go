@@ -251,8 +251,9 @@ type agentJSON struct {
 	// was its provider, which shows no account or usage till it restarts
 	// (provider.CodexAppBack), for the row's Restart
 	AppBack bool `json:"appBack,omitempty"`
-	// AppSnag: the Codex app showed its error page after magpie restarted
-	// its app-server and magpie couldn't reopen it (provider.CodexAppSnagged)
+	// AppSnag: the Codex app couldn't take the app-server magpie restarted
+	// (its error page, or the resume of the chat it had open failed) and
+	// magpie couldn't reopen it (provider.CodexAppSnagged)
 	AppSnag bool `json:"appSnag,omitempty"`
 	// Failover: not connected, yet its requests go through magpie for
 	// account failover alone (agent.Agent.FailingOver, #1385)

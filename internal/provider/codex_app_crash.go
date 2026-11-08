@@ -12,43 +12,47 @@ import (
 // app-server magpie ended: the one it starts in its place answers its
 // handshake, and then the app's own Hosted AppServerManager finds the
 // account it had cached cleared with the old connection ("Hosted
-// AppServerManager identity is not ready"), logs fatal_error_broadcasted
-// and shows "ChatGPT hit a snag / Please try again" over the whole window
-// till it is quit and opened again (ysm119 on Discord, #4550: sljdxde,
-// wang9262, Indekkusu545). That is in the app, out of magpie's reach; the
+// AppServerManager identity is not ready"). Mostly that has the app log
+// fatal_error_broadcasted and show "ChatGPT hit a snag / Please try
+// again" over the whole window till it is quit and opened again (ysm119
+// on Discord, #4550: sljdxde, wang9262, Indekkusu545); sometimes it has
+// the app's reconnect thread fail to resume the chat it had open instead,
+// no page, the chat left disconnected till the app is quit and opened
+// again (ZeroP27, #5476). Both are in the app, out of magpie's reach; the
 // app-server's own exit is clean (code 0, which it counts expected).
 //
 // So for codexAppCrashWait after magpie ends an app-server, its logs are
-// read for that line (CodexAppCrashed, the agent package's: the app's own
-// log folder, a line stamped after the end). When the app shows the page
-// and no Codex turn has started since nor a request gone through magpie
-// (the page has no composer: one that ran means it came back), magpie
-// quits the app and opens it again, once (CodexAppRelaunch: ⌘Q's quit on
-// macOS, never forced; the Agents row's Restart on Windows). After an end
-// for a used-up account (crashSpent) that follows magpie's account switch
-// itself, with nothing to turn on: the page is all the window shows, the
-// switch is what the user asked magpie for, and only a quit and open
-// clears it (RealZeroP27 on X: "只能通过手动重启 codex 解决"). After any
-// other end it needs the user's "Restart the Codex app" (RestartApp):
-// unasked, a quit of a working app read as magpie force-restarting it
-// (Michael25651150 on X). Where it is off or can't be done, or the app
+// read for a line of either (CodexAppCrashed, the agent package's: the
+// app's own log folder, a line stamped after the end). When one shows and
+// no Codex turn has started since nor a request gone through magpie (one
+// that ran means the app came back), magpie quits the app and opens it
+// again, once (CodexAppRelaunch: ⌘Q's quit on macOS, never forced; the
+// Agents row's Restart on Windows). After an end for a used-up account
+// (crashSpent) that follows magpie's account switch itself, with nothing
+// to turn on: the page is all the window shows, the switch is what the
+// user asked magpie for, and only a quit and open clears it (RealZeroP27
+// on X: "只能通过手动重启 codex 解决"). After any other end it needs the
+// user's "Restart the Codex app" (RestartApp): unasked, a quit of a
+// working app read as magpie force-restarting it (Michael25651150 on X).
+// Where it is off or can't be done, or the app
 // didn't quit, the Agents row says to (snag, CodexAppSnagged) until the
 // app-servers seen then are gone.
 
 // CodexAppCrashed and CodexAppRelaunch are set by the agent package.
-// CodexAppCrashed says whether the Codex app logged the page it shows
-// when it can't go on (fatal_error_broadcasted) at or after since, and
-// when; known false when its logs can't be read. CodexAppRelaunch quits
-// the app and opens it again, erring where it can't.
+// CodexAppCrashed says whether the Codex app logged one of the lines of
+// an app that can't go on (the error page's, or the resume of its open
+// chat failed, codexCrashLines) at or after since, and when; known false
+// when its logs can't be read. CodexAppRelaunch quits the app and opens
+// it again, erring where it can't.
 var (
 	CodexAppCrashed  func(since time.Time) (at time.Time, crashed, known bool)
 	CodexAppRelaunch func(ctx context.Context) error
 	// codexAppCrashWait is how long after an end the logs are read: the
-	// app logs the page within seconds of the new app-server's start
+	// app logs either within seconds of the new app-server's start
 	codexAppCrashWait = 60 * time.Second
 )
 
-// watchCodexAppCrash starts reading the app's logs for the page, from
+// watchCodexAppCrash starts reading the app's logs for those lines, from
 // now, or carries a watch already running on to now's window.
 func watchCodexAppCrash(now time.Time) {
 	c := &codexApp
@@ -65,8 +69,8 @@ func watchCodexAppCrashLocked(now time.Time) {
 	c.crashBy = now.Add(codexAppCrashWait)
 }
 
-// CodexAppSnagged is whether the Codex app showed the page it shows when
-// it can't go on after magpie restarted its app-server, and magpie
+// CodexAppSnagged is whether the Codex app logged one of the lines of an
+// app that can't go on after magpie restarted its app-server, and magpie
 // couldn't reopen it: the user quits it and opens it again.
 func CodexAppSnagged() bool {
 	c := &codexApp
@@ -76,8 +80,9 @@ func CodexAppSnagged() bool {
 }
 
 // codexAppCrashStep is codexAppStep's look at the app after an end: it
-// reads the logs while a watch runs, reopens the app that shows the page,
-// and forgets a snag once the app-servers running at it are gone.
+// reads the logs while a watch runs, reopens an app that logged one of
+// the lines, and forgets a snag once the app-servers running at it are
+// gone.
 func codexAppCrashStep(ctx context.Context, now time.Time, busy func() (int, time.Time)) {
 	c := &codexApp
 	c.Lock()
@@ -108,8 +113,8 @@ func codexAppCrashStep(ctx context.Context, now time.Time, busy func() (int, tim
 	}
 	at, crashed, _ := CodexAppCrashed(since)
 	if !crashed {
-		// a page not seen in the window, or logs that can't be read, end
-		// the watch: an unread log never reopens the app
+		// no line of the two seen in the window, or logs that can't be
+		// read, end the watch: an unread log never reopens the app
 		if !now.Before(by) {
 			c.Lock()
 			if c.crashBy.Equal(by) {
@@ -122,16 +127,17 @@ func codexAppCrashStep(ctx context.Context, now time.Time, busy func() (int, tim
 	c.Lock()
 	c.crashSince, c.crashBy, c.crashSpent = time.Time{}, time.Time{}, false
 	c.Unlock()
-	// the page has no composer: a request or a turn since means the app
-	// came back (its Try again) and is in use, never cut short
+	// the page has no composer and a failed resume leaves the chat quiet:
+	// a request or a turn since means the app came back and is in use,
+	// never cut short
 	if busy != nil {
 		if n, last := busy(); n > 0 || last.After(at) {
-			log.Printf("codex: the Codex app showed its error page after magpie restarted its app-server, and has sent since; left as it is")
+			log.Printf("codex: the Codex app couldn't take the app-server magpie restarted (its error page, or the resume of the chat it had open failed), and has sent since; left as it is")
 			return
 		}
 	}
 	if codexTurnRunning(home, now, at) {
-		log.Printf("codex: the Codex app showed its error page after magpie restarted its app-server, and a Codex turn runs since; left as it is")
+		log.Printf("codex: the Codex app couldn't take the app-server magpie restarted (its error page, or the resume of the chat it had open failed), and a Codex turn runs since; left as it is")
 		return
 	}
 	lctx, cancel := context.WithTimeout(ctx, codexAppListWait)
@@ -149,10 +155,10 @@ func codexAppCrashStep(ctx context.Context, now time.Time, busy func() (int, tim
 		err = CodexAppRelaunch(ctx)
 	}
 	if err == nil {
-		log.Printf("codex: the Codex app showed its error page after magpie restarted its app-server; quit it and opened it again")
+		log.Printf("codex: the Codex app couldn't take the app-server magpie restarted (its error page, or the resume of the chat it had open failed); quit it and opened it again")
 		return
 	}
-	log.Printf("codex: the Codex app showed its error page after magpie restarted its app-server; reopening it: %v", err)
+	log.Printf("codex: the Codex app couldn't take the app-server magpie restarted (its error page, or the resume of the chat it had open failed); reopening it: %v", err)
 	c.Lock()
 	c.snag, c.snagPids = true, pids
 	c.Unlock()

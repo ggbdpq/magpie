@@ -258,7 +258,9 @@ func TestResponsesSearchItemReplayed(t *testing.T) {
 	for _, m := range req.Messages {
 		said = append(said, m.Role+":"+text(m.Parts))
 	}
-	if !reflect.DeepEqual(said, []string{"user:Search the web", "assistant:Found it.", "user:Thanks"}) {
+	if !reflect.DeepEqual(said, []string{"user:Search the web",
+		"assistant:Searched the web for: nerdctl CDI\nPages found:\n- https://github.com/containerd/nerdctl/releases\n\nFound it.",
+		"user:Thanks"}) {
 		t.Fatalf("turn changed by a replayed search item: %q", said)
 	}
 }

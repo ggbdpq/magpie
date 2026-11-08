@@ -633,7 +633,11 @@ func readResponsesFor(body []byte, facts, keepInstructions bool) (*Request, erro
 // stream gave up (oreoft on Discord). An assistant message with Claude's
 // signed thinking is split at each search into the call and its result,
 // the query and the pages found, as what the search said was never kept.
-// A search with no Claude thinking beside it is left out, as before.
+// A search with no Claude thinking beside it goes as text (#5713): the
+// query and the pages found are what the client kept of it, and a chat
+// upstream read none of them while they were dropped, so the model went
+// without and searched the same things again. No call is made up for it,
+// as no result of its own is kept to answer one.
 func searchRoundsBack(msgs []Message, name string) []Message {
 	if !slices.ContainsFunc(msgs, func(m Message) bool { return slices.ContainsFunc(m.Parts, isSearch) }) {
 		return msgs
@@ -646,10 +650,16 @@ func searchRoundsBack(msgs []Message, name string) []Message {
 			continue
 		}
 		if m.Role != "assistant" || !slices.ContainsFunc(m.Parts, claudeSigned) {
-			m.Parts = slices.DeleteFunc(slices.Clone(m.Parts), isSearch)
-			if len(m.Parts) > 0 {
-				out = append(out, m)
+			parts := make([]Part, 0, len(m.Parts))
+			for _, p := range m.Parts {
+				if isSearch(p) {
+					parts = append(parts, Part{Kind: Text, Text: searchSaid(p) + "\n\n"})
+					continue
+				}
+				parts = append(parts, p)
 			}
+			m.Parts = parts
+			out = append(out, m)
 			continue
 		}
 		var cur []Part
@@ -664,16 +674,9 @@ func searchRoundsBack(msgs []Message, name string) []Message {
 				id = fmt.Sprintf("call_search_back_%d", n)
 			}
 			args, _ := json.Marshal(map[string]string{"query": p.Text})
-			result := "Searched the web for: " + p.Text
-			if len(p.Hits) > 0 {
-				result += "\nPages found:"
-				for _, h := range p.Hits {
-					result += "\n- " + h.URL
-				}
-			}
 			cur = append(cur, Part{Kind: ToolCall, ID: id, Name: name, Args: args})
 			out = append(out, Message{Role: "assistant", Parts: cur},
-				Message{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: id, Text: result}}})
+				Message{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: id, Text: searchSaid(p)}}})
 			cur = nil
 		}
 		if len(cur) > 0 {
@@ -681,6 +684,20 @@ func searchRoundsBack(msgs []Message, name string) []Message {
 		}
 	}
 	return mergeTurns(out)
+}
+
+// searchSaid is what a search said as it went: the query it asked and the
+// pages it was found on. What the pages said was never kept, and none is
+// made up.
+func searchSaid(p Part) string {
+	said := "Searched the web for: " + p.Text
+	if len(p.Hits) > 0 {
+		said += "\nPages found:"
+		for _, h := range p.Hits {
+			said += "\n- " + h.URL
+		}
+	}
+	return said
 }
 
 func isSearch(p Part) bool { return p.Kind == Search }

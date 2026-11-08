@@ -115,7 +115,7 @@ func resetGoogleState() {
 	googleState.refused = map[string]time.Time{}
 	googleState.Unlock()
 	antigravityVer.Lock()
-	antigravityVer.v, antigravityVer.at = "", time.Time{}
+	antigravityVer.v, antigravityVer.at, antigravityVer.fresh = "", time.Time{}, false
 	antigravityVer.Unlock()
 }
 
@@ -977,5 +977,142 @@ func TestAntigravityQuotaModelApartFromGroup(t *testing.T) {
 		if a := allowanceOf(q.Windows, time.Now()); len(a) != 5 {
 			t.Errorf("%s: allowance has %d limits, want the 5 models'", c.name, len(a))
 		}
+	}
+}
+
+// antigravityVersion asks the updater for the newest Hub's version and keeps
+// a good answer for six hours. An ask that fails — the updater unreachable,
+// a bad gateway, a manifest with no version — holds the fallback (2.9.1, the
+// version the ask first shipped with) for a minute, then asks again: that
+// fallback is old enough now that Code Assist gates Argon from it, so a
+// silent six-hour stick on it hid the failure and outlived the network
+// (#5679: a Mac whose gateway couldn't reach the updater kept saying 2.9.1
+// across restarts of magpie, while its Windows sibling, which could reach
+// it, said 2.29.0, and Argon worked only there).
+func TestAntigravityVersionFailedAskRetriedSoon(t *testing.T) {
+	var mu sync.Mutex
+	var hits, status int
+	var body string
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		s, b := status, body
+		mu.Unlock()
+		if s != 0 {
+			http.Error(w, b, s)
+			return
+		}
+		io.WriteString(w, b)
+	}))
+	defer live.Close()
+	gone := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	goneURL := gone.URL
+	gone.Close()
+
+	old := antigravityVersionURL
+	t.Cleanup(func() {
+		antigravityVersionURL = old
+		resetGoogleState()
+	})
+	for _, c := range []struct {
+		name   string
+		closed bool // the updater's host refuses connections
+		status int
+		body   string
+		count  bool // the failed ask is countable (a closed host isn't)
+	}{
+		{"bad gateway", false, http.StatusBadGateway, "no", true},
+		{"unreachable", true, 0, "", false},
+		{"no version in the manifest", false, 0, "path: x.zip\n", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			host := live.URL
+			if c.closed {
+				host = goneURL
+			}
+			antigravityVersionURL = host + "/latest-arm64-mac.yml"
+			resetGoogleState()
+			mu.Lock()
+			hits, status, body = 0, c.status, c.body
+			mu.Unlock()
+			if v := antigravityVersion(); v != "2.9.1" {
+				t.Fatalf("version while the ask fails = %q, want the fallback 2.9.1", v)
+			}
+			if c.count {
+				mu.Lock()
+				n := hits
+				mu.Unlock()
+				if n != 1 {
+					t.Fatalf("asked %d times, want once", n)
+				}
+			}
+			// a failed ask holds the fallback for a minute, not the good
+			// answer's six hours
+			antigravityVer.Lock()
+			antigravityVer.at = time.Now().Add(-time.Minute)
+			antigravityVer.Unlock()
+			// and once the updater answers again, the version follows by
+			// itself, carried by the requests magpie sends (the failing Mac
+			// said 2.9.1 across restarts; with the ask alive again it says
+			// the updater's without one)
+			antigravityVersionURL = live.URL + "/latest-arm64-mac.yml"
+			mu.Lock()
+			status, body = 0, "version: 2.29.0\npath: x.zip\n"
+			mu.Unlock()
+			if v := antigravityVersion(); v != "2.29.0" {
+				t.Fatalf("version once the updater answers = %q, want 2.29.0", v)
+			}
+			a, _ := googleAppOf("antigravity")
+			if ua := a.userAgent(""); !strings.HasPrefix(ua, "antigravity/hub/2.29.0 ") {
+				t.Errorf("user agent = %q, want antigravity/hub/2.29.0 …", ua)
+			}
+		})
+	}
+}
+
+// A good answer keeps six hours: within them the updater isn't asked again,
+// past them it is.
+func TestAntigravityVersionGoodAnswerKeptSixHours(t *testing.T) {
+	var mu sync.Mutex
+	hits := 0
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		io.WriteString(w, "version: 2.29.0\npath: x.zip\n")
+	}))
+	defer live.Close()
+
+	old := antigravityVersionURL
+	antigravityVersionURL = live.URL + "/latest-arm64-mac.yml"
+	resetGoogleState()
+	t.Cleanup(func() {
+		antigravityVersionURL = old
+		resetGoogleState()
+	})
+	if v := antigravityVersion(); v != "2.29.0" {
+		t.Fatalf("version = %q, want 2.29.0", v)
+	}
+	antigravityVer.Lock()
+	antigravityVer.at = time.Now().Add(-5 * time.Hour)
+	antigravityVer.Unlock()
+	if v := antigravityVersion(); v != "2.29.0" {
+		t.Fatalf("version = %q, want 2.29.0", v)
+	}
+	mu.Lock()
+	n := hits
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("asked %d times within the six hours, want once", n)
+	}
+	antigravityVer.Lock()
+	antigravityVer.at = time.Now().Add(-7 * time.Hour)
+	antigravityVer.Unlock()
+	antigravityVersion()
+	mu.Lock()
+	n = hits
+	mu.Unlock()
+	if n != 2 {
+		t.Fatalf("not asked again past the six hours (asked %d, want 2)", n)
 	}
 }

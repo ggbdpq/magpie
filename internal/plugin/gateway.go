@@ -199,12 +199,23 @@ func GatewayBegin(ctx context.Context, body []byte, info GatewayContext) *Gatewa
 		return nil
 	}
 	var out struct {
-		ID    string          `json:"id"`
-		Token string          `json:"token"`
-		Body  json.RawMessage `json:"body"`
+		ID        string          `json:"id"`
+		Token     string          `json:"token"`
+		Unchanged bool            `json:"unchanged"`
+		Body      json.RawMessage `json:"body"`
 	}
 	err = h.call(start, "gatewayRequest", map[string]any{"operation": "begin", "body": json.RawMessage(body), "context": info}, &out)
-	if err != nil || out.ID == "" || out.Token == "" || len(out.Body) == 0 || out.Body[0] != '{' || !json.Valid(out.Body) {
+	if err != nil || out.ID == "" || out.Token == "" {
+		return nil
+	}
+	if out.Unchanged {
+		// every hook left the request as it came, so the host sent back the
+		// run's identity only (#5699): the caller's bytes are the body, and a
+		// request no hook touched never echoes itself on a line the host
+		// would read as too long and kill the whole shared host for
+		return &GatewayRun{Body: append(json.RawMessage(nil), body...), h: h, id: out.ID, token: out.Token}
+	}
+	if len(out.Body) == 0 || out.Body[0] != '{' || !json.Valid(out.Body) {
 		return nil
 	}
 	// the run ends when its owner finishes or closes it, never when the

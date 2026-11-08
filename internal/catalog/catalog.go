@@ -1960,7 +1960,9 @@ const (
 // vendors' OpenAI-style lists say no more (text-embedding-3-small,
 // bge-reranker-v2-m3, tts-1, gpt-4o-mini-tts, whisper-1,
 // gpt-4o-transcribe). Voyage AI makes embedding models alone, and names
-// them voyage-* (voyage-4, voyage-code-3), with no "embed" in the id.
+// them voyage-* (voyage-4, voyage-code-3), with no "embed" in the id; so
+// do the gte-*, e5-*, m3e-* and text2vec-* families (#5416). A list that
+// says more than the id is read where it says it (live.go's model_type).
 func ServesOf(id string) string {
 	id = strings.ToLower(id)
 	if i := strings.LastIndex(id, "/"); i >= 0 {
@@ -1969,7 +1971,8 @@ func ServesOf(id string) string {
 	switch {
 	case strings.Contains(id, "rerank"):
 		return ServesRerank
-	case strings.Contains(id, "embed") || strings.HasPrefix(id, "bge-") || strings.HasPrefix(id, "voyage-"):
+	case strings.Contains(id, "embed") || strings.HasPrefix(id, "bge-") || strings.HasPrefix(id, "voyage-") ||
+		strings.HasPrefix(id, "gte-") || strings.HasPrefix(id, "e5-") || strings.HasPrefix(id, "m3e-") || strings.HasPrefix(id, "text2vec-"):
 		return ServesEmbedding
 	case strings.Contains(id, "whisper") || strings.Contains(id, "transcribe"):
 		return ServesTranscription

@@ -695,7 +695,19 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 		// them
 		serves := ""
 		if !drawer && !films && !decision && headers["X-Magpie-Drawers"] == "" {
-			serves = ServesOf(id)
+			// the kind the vendor's own list says of the model
+			// ("model_type", Xinference's) is its word, over what the id
+			// alone says (#5416); a kind no route of magpie's serves ("LLM")
+			// leaves the id's word
+			switch strings.ToLower(r.ModelType) {
+			case "embedding":
+				serves = ServesEmbedding
+			case "rerank":
+				serves = ServesRerank
+			}
+			if serves == "" {
+				serves = ServesOf(id)
+			}
 		}
 		if !drawer && !films && !decision && serves == "" && headers["X-Magpie-Drawers"] == "" && !textModel(md) {
 			continue
@@ -794,6 +806,9 @@ type liveModel struct {
 	// what Volcengine Ark's list says a model is for: "LLM",
 	// "VideoGeneration", "ImageGeneration"…
 	Domain string `json:"domain"`
+	// what Xinference's list says a model is for: "embedding", "rerank"
+	// (#5416)
+	ModelType string `json:"model_type"`
 	// the paths the model is served on, where the vendor says: Command
 	// Code's Claude models on /messages alone, its open ones on
 	// /chat/completions and /responses

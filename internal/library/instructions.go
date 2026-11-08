@@ -228,8 +228,15 @@ func hash(s string) string {
 
 // syncInstructions writes the agent's part as the library has it. A part
 // the user edited in the file is left alone until the library's text for
-// that agent changes; then it is replaced, the file kept aside first.
-func (l *Library) syncInstructions(t *Target, b *backups, res *Result) {
+// that agent changes; then it is replaced, the file kept aside first. An
+// automatic write (auto: a sync, at a start or beside a change) that
+// finds the library with nothing to give leaves a part where it is, and
+// says so: a library reading empty has lost its instructions, not revoked
+// them, and the parts out there are then the only copy left (#5709, where
+// a start-up apply with an empty Library wiped nine agents' files). It is
+// a write of the page — a take-back, made with the library as the user
+// left it — that takes a part out.
+func (l *Library) syncInstructions(t *Target, b *backups, res *Result, auto bool) {
 	if res.unreached(t) {
 		return
 	}
@@ -277,6 +284,23 @@ func (l *Library) syncInstructions(t *Target, b *backups, res *Result) {
 		a.Instructions, a.InstrHash = want != "", hash(want)
 		return
 	}
+	if auto && want == "" && ok && setText(l.sharedPath()) == "" {
+		// An apply with nothing to give takes no part out (#5709): the
+		// library's text itself gone reads empty to every agent at once,
+		// as an upgrade that lost it does, and the parts out there are
+		// then the only copy of the instructions there is. A text the
+		// library still holds with one agent unticked is another thing:
+		// that take-back goes out as usual, and a write of the page — a
+		// take-back, made with the library as the user left it — empties
+		// a part as it goes. Left alone, and said so; the part comes back
+		// with the library's next text.
+		red := ""
+		if a.InstrHash == hash("") {
+			red = "; the last write on record hashes empty, a library reset under the agents"
+		}
+		log.Printf("library: %s: nothing to write, %s still holds magpie's part%s: left alone", id, t.Instructions, red)
+		return
+	}
 	if ok && want != "" && a.InstrHash != "" && hash(have) != a.InstrHash && hash(want) == a.InstrHash {
 		return // edited in the file since, and the library hasn't changed for it
 	}
@@ -286,7 +310,14 @@ func (l *Library) syncInstructions(t *Target, b *backups, res *Result) {
 		return
 	}
 	if strings.TrimSpace(next) == "" && len(raw) > 0 && own(file) == "" {
-		err = edit.Remove(t.Instructions)
+		if auto {
+			// an apply never takes a whole file away (#5709): what it
+			// empties it empties in place, the file staying for the
+			// agent that reads it
+			err = edit.WriteAtomic(t.Instructions, nil)
+		} else {
+			err = edit.Remove(t.Instructions)
+		}
 	} else if next != "" {
 		err = edit.WriteAtomic(t.Instructions, []byte(next))
 	}
@@ -426,7 +457,7 @@ func changeInstructions(f func(l *Library) error) (*Result, error) {
 		b = newBackups()
 	}
 	for _, t := range Targets() {
-		l.syncInstructions(t, b, res)
+		l.syncInstructions(t, b, res, false)
 	}
 	res.Backup = b.dir
 	if b.dir != "" {

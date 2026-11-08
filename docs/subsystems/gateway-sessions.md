@@ -891,7 +891,14 @@ The Antigravity desktop app's stable and Insiders stores are read by
 store. Each conversation takes its title and workspace from the
 `conversation_summaries.db` beside its own store, including later title
 updates. Model calls reuse the app's read-only SQLite/protobuf reader,
-including response folding and gateway matching. Insiders session ids
+including response folding and gateway matching. Each call keeps its
+step's time and first token from the step's metadata (field 1 its start,
+6 its first token, 8 its end; `agAppCall.times`), so the Usage page tells
+its speed under a Codex turn's bounds (`usage.Row.antigravityStep`); a
+step with no end tells no time (`TestAntigravityAppCallTimes`,
+`TestAntigravityAppCallTimesPartial`,
+`TestAntigravityStepMeasuredOnlyOverASecondAndAHundredTokens`,
+`usage-antigravity-speed.test.cjs`). Insiders session ids
 have an `insiders-` prefix in magpie, leaving stable ids unchanged and
 keeping equal UUIDs in the two stores from sharing a session or call id.
 The files themselves are not renamed. Sessions stay read-only with no

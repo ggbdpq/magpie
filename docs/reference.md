@@ -492,7 +492,7 @@ the first token is never under it. Only a reply of 1,000 tokens or more
 written over a second or more shows one; a shorter reply's wait is too much
 of its time to tell anything; a count of tokens bounds that share, a
 duration doesn't (a 5 s reply can be 4 s of wait). Claude Code's, Claude
-Desktop's and Codex's rows show one: Claude's line that asked for a reply is
+Desktop's, Codex's and the Antigravity desktop app's rows show one: Claude's line that asked for a reply is
 written before it is sent, and a Codex call in a turn of several is timed
 from what the model had last been given before the call's first output
 item to its last, never from the output of a tool the call itself ran,
@@ -513,8 +513,12 @@ least it wrote at over the whole turn, the wait for the first token in it
 (`≥120 tok/s` for 1,200 tokens in 10 s), by the same rule as any floor over
 a whole time: 1,000 tokens or more over a second or more. Under that the
 wait is too much of the time to tell anything, so an 11-token answer in
-2.75 s shows none, as an 815-token Claude Code reply does. Gateway rows and other agents' keep their own
-speed. A floor never mixes into a measured speed: the Speed trend and
+2.75 s shows none, as an 815-token Claude Code reply does. A step of the
+Antigravity desktop app is timed by its own database, from the step's start
+through its first token to its end, and is held to the same bounds and
+floors as a Codex turn of one call: Gemini can send a step's tool call
+whole, 599 tokens 0.3 s after a first token at 16.6 s. Gateway rows and
+other agents' keep their own speed. A floor never mixes into a measured speed: the Speed trend and
 `magpie usage` count timed calls only.
 
 A group's speed (a row of the Usage page's ranking, by model, provider or

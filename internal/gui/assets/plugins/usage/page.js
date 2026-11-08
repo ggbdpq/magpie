@@ -2867,7 +2867,7 @@ const ledDecode = (r) => {
   if (r.flow_ms > 0 && r.flow_ms * 4 < w) return null;
   if (ledHeldShort_(w, from)) return null;
   if (think && r.first_text_ms > 0 && n * (r.first_text_ms - r.ttft_ms) > 20 * r.reasoning * w) return null;
-  if (ledCodexTurn(r) && (w < LED_CODEX_WINDOW_MS || n < LED_CODEX_BODY)) return null;
+  if ((ledCodexTurn(r) || ledAntigravityStep(r)) && (w < LED_CODEX_WINDOW_MS || n < LED_CODEX_BODY)) return null;
   return { n, w };
 };
 // a Codex turn of one call read from its session file, its first token
@@ -2878,6 +2878,10 @@ const ledDecode = (r) => {
 // least it wrote at over the whole turn
 const LED_CODEX_WINDOW_MS = 1000, LED_CODEX_BODY = 100;
 const ledCodexTurn = (r) => r.source === "log" && r.agent === "codex" && r.ttft_ms > 0;
+// a step of the Antigravity desktop app read from its database, its first
+// token known: Gemini can send a step's tool call whole, so it is held to the
+// same bounds (usage.Row.antigravityStep)
+const ledAntigravityStep = (r) => r.source === "log" && r.agent === "antigravity" && r.ttft_ms > 0;
 // how fast a reply wrote, in tokens a second: 0 when it can't tell
 const ledRowSpeed = (r) => { const d = ledDecode(r); return d ? d.n / (d.w / 1000) : 0; };
 // the least a reply read from a session file wrote at, in tokens a second:
@@ -2908,7 +2912,7 @@ const ledRowSpeed = (r) => { const d = ledDecode(r); return d ? d.n / (d.w / 100
 // the first token, unless its content came in a burst; else one not streamed,
 // or not timed, its output over its whole time, by the 1,000-token rule.
 // ledFloor_ says the tokens, the ms, and which it is (answer, turn, gateway).
-const LED_FLOOR_AGENTS = new Set(["claude", "claude-desktop", "codex"]);
+const LED_FLOOR_AGENTS = new Set(["claude", "claude-desktop", "codex", "antigravity"]);
 const ledWhole_ = (r) => r.out >= 1000 && r.ms >= 1000 && r.out * 1000 <= 10000 * r.ms;
 const ledFloor_ = (r) => {
   if (ledFailed_(r) || r.canceled || ledRowSpeed(r)) return null;

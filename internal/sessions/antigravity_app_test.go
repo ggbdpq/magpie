@@ -310,3 +310,55 @@ func TestAntigravityAppParseBeforeFolderReadAgain(t *testing.T) {
 		t.Fatal("a parse from before the folder was read is kept")
 	}
 }
+
+// A step's times are read from its own metadata: field 1 its start, 6 its
+// first token, 8 its end, so the Usage page can tell its speed (Antigravity
+// rows showed no tok/s beside Codex's). The figures are yygutn's real rows
+// on #2190; step 1 wrote 621 tokens in the 9 ms after a 10.5 s first token,
+// which the Usage page's bounds leave untold (usage.Row.antigravityStep).
+func TestAntigravityAppCallTimes(t *testing.T) {
+	claude, _ := setup(t)
+	home := filepath.Join(filepath.Dir(claude), "home")
+	antigravityFixture(t, home, "37c3c786-9a11-44be-97df-b8fc1ccebc78")
+
+	var got []Call
+	for _, c := range Calls(time.Time{}) {
+		if c.Agent == "antigravity" {
+			got = append(got, c)
+		}
+	}
+	slices.SortFunc(got, func(a, b Call) int { return a.Time.Compare(b.Time) })
+	want := [][2]int64{{10475, 10466}, {4842, 4837}, {9702, 3800}, {10521, 6055}}
+	if len(got) != len(want) {
+		t.Fatalf("want %d calls, got %d: %+v", len(want), len(got), got)
+	}
+	for i, w := range want {
+		if got[i].Millis != w[0] || got[i].TTFT != w[1] {
+			t.Errorf("call %d: %d ms, first token at %d ms; want %d, %d", i, got[i].Millis, got[i].TTFT, w[0], w[1])
+		}
+	}
+}
+
+// A step with no end, or times out of order, tells no time; one with an end
+// and no first token tells its time alone.
+func TestAntigravityAppCallTimesPartial(t *testing.T) {
+	start := time.Unix(1791860318, 0)
+	s := func(d time.Duration) time.Time { return start.Add(d) }
+	for _, c := range []struct {
+		name       string
+		first, end time.Time
+		ms, ttft   int64
+	}{
+		{"both", s(2 * time.Second), s(5 * time.Second), 5000, 2000},
+		{"no end", s(2 * time.Second), time.Time{}, 0, 0},
+		{"no first token", time.Time{}, s(5 * time.Second), 5000, 0},
+		{"an end before the start", s(2 * time.Second), s(-time.Second), 0, 0},
+		{"a first token after the end", s(6 * time.Second), s(5 * time.Second), 5000, 0},
+		{"a first token before the start", s(-time.Second), s(5 * time.Second), 5000, 0},
+	} {
+		ms, ttft := agAppCall{at: start, first: c.first, end: c.end}.times()
+		if ms != c.ms || ttft != c.ttft {
+			t.Errorf("%s: %d ms, first token at %d; want %d, %d", c.name, ms, ttft, c.ms, c.ttft)
+		}
+	}
+}

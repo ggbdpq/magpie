@@ -31,6 +31,8 @@ import (
 // steps.metadata is a plain protobuf message:
 //
 //	1   the step's start (google.protobuf.Timestamp: 1 seconds, 2 nanos)
+//	6   when the model call's first token came, a Timestamp
+//	8   when the step ended, a Timestamp
 //	9   the model call's usage, on a model's step:
 //	      2 input tokens, less what was read from the cache
 //	      3 output tokens
@@ -135,6 +137,8 @@ func antigravityCallFiles() []file { return antigravityFiles() }
 type agAppCall struct {
 	step     int64
 	at       time.Time
+	first    time.Time // its first token, zero when the step has none
+	end      time.Time // its end, zero when the step has none
 	model    string
 	tokens   Tokens
 	response string
@@ -210,6 +214,14 @@ func agAppStep(b []byte) (c agAppCall, gen int64, ok bool) {
 		case 1:
 			if d != nil {
 				c.at = pbTime(d)
+			}
+		case 6:
+			if d != nil {
+				c.first = pbTime(d)
+			}
+		case 8:
+			if d != nil {
+				c.end = pbTime(d)
 			}
 		case 9:
 			usage = d
@@ -397,10 +409,29 @@ func readAntigravityCalls(f file) (*callFile, bool) {
 		return st, false
 	}
 	for _, c := range calls {
+		ms, ttft := c.times()
 		st.Calls = append(st.Calls, Call{
 			Agent: "antigravity", Time: c.at, Session: st.Session, Model: c.model, Tokens: c.tokens,
+			Millis: ms, TTFT: ttft,
 			Msg: st.str("antigravity:" + st.Session + ":" + strconv.FormatInt(c.step, 10)),
 		})
 	}
 	return st, true
+}
+
+// times is how long the call took, from its step's start to its end, and
+// when its first token came after the start, in ms: what the Usage page
+// tells its speed by. The start is before the model was asked, so the time
+// holds the wait for the first token as a Codex turn's does. A step with
+// no end, or times out of order, tells neither; one with an end and no
+// first token tells its time alone.
+func (c agAppCall) times() (ms, ttft int64) {
+	if c.end.IsZero() || !c.end.After(c.at) {
+		return 0, 0
+	}
+	ms = c.end.Sub(c.at).Milliseconds()
+	if !c.first.IsZero() && c.first.After(c.at) && !c.first.After(c.end) {
+		ttft = max(c.first.Sub(c.at).Milliseconds(), 1)
+	}
+	return ms, ttft
 }

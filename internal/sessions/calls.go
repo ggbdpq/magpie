@@ -44,7 +44,8 @@ type Call struct {
 	UserID    string `json:"user_id,omitempty"`
 	Error     string `json:"error,omitempty"`      // Claude: the API error's kind (rate_limit, server_error …); such a call has no tokens
 	ErrorText string `json:"error_text,omitempty"` // its message, the first 400 characters
-	// Codex: the turn's own figures, set only when the turn made just this call
+	// Codex: the turn's own figures, set only when the turn made just this call;
+	// the Antigravity desktop app: its step's first token, from the step's start
 	TTFT int64 `json:"ttft_ms,omitempty"`
 	// Compaction is Codex's explicit marker that this response compacted the context.
 	Compaction bool `json:"compaction,omitempty"`

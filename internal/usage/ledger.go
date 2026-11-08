@@ -966,10 +966,12 @@ func (t *Totals) plus(d *Totals) {
 // Claude Desktop's from the line that asked, written before it was sent;
 // Codex's call in a turn of several from what the model had last been given
 // before the call's first output item, to its last (sessions' codexTiming).
+// The Antigravity desktop app's calls are timed from their step's start,
+// before the model is asked, to the step's end.
 // Their calls' tokens over that time are a floor of how fast the reply
 // wrote. OpenCode's isn't checked against real sessions, so it tells none.
 // app.js's LED_FLOOR_AGENTS has the same.
-var FloorAgents = map[string]bool{"claude": true, "claude-desktop": true, "codex": true}
+var FloorAgents = map[string]bool{"claude": true, "claude-desktop": true, "codex": true, "antigravity": true}
 
 // A Codex turn of one call read from its session file is timed by the
 // turn's time_to_first_token_ms and its end, and that window can be one
@@ -991,11 +993,20 @@ func (r Row) codexTurn() bool {
 	return r.Source == "log" && r.Agent == "codex" && r.TTFT > 0
 }
 
+// antigravityStep is whether r is a step of the Antigravity desktop app read
+// from its conversation's database, its first token known. Gemini can send a
+// step's tool call whole: a real step wrote 599 tokens 0.3 s after a first
+// token at 16.6 s, and yygutn's on #2190 621 tokens in 9 ms. So its window
+// after the first token is held to the same bounds as a Codex turn's.
+func (r Row) antigravityStep() bool {
+	return r.Source == "log" && r.Agent == "antigravity" && r.TTFT > 0
+}
+
 // Decode is the row's DecodeOf, a Codex turn of one call from its session
-// file held to CodexWindowMs and CodexBodyTokens.
+// file, or an Antigravity step, held to CodexWindowMs and CodexBodyTokens.
 func (r Row) Decode() (tokens int, w int64) {
 	n, w := r.Record.Decode()
-	if w > 0 && r.codexTurn() && (w < CodexWindowMs || n < CodexBodyTokens) {
+	if w > 0 && (r.codexTurn() || r.antigravityStep()) && (w < CodexWindowMs || n < CodexBodyTokens) {
 		return 0, 0
 	}
 	return n, w

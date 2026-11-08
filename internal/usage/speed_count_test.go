@@ -217,3 +217,39 @@ func TestCodexTurnMeasuredOnlyOverASecondAndAHundredTokens(t *testing.T) {
 		t.Fatalf("part: %+v", p)
 	}
 }
+
+// An Antigravity desktop app's step, read from its database with its first
+// token, is held to a Codex turn's bounds: Gemini can send a step's tool
+// call whole (a real step: 599 tokens 0.3 s after a 16.6 s first token), so
+// it is measured only over a second or more and 100 tokens or more after
+// its first token; else it tells the least it wrote at over the whole step,
+// 1,000 tokens or more over a second or more. Its time is from the step's
+// start, before the model is asked, so that is a floor.
+func TestAntigravityStepMeasuredOnlyOverASecondAndAHundredTokens(t *testing.T) {
+	row := func(out int, ms, ttft int64) Row {
+		return Row{Source: "log", Record: Record{Agent: "antigravity", Model: "gemini-4-argon", Output: out, Millis: ms, TTFT: ttft}}
+	}
+	for _, c := range []struct {
+		name    string
+		r       Row
+		dn      int
+		dw      int64
+		floorN  int
+		floorMs int64
+	}{
+		{"a real step, 3,681 tokens over 49.6 s", row(3681, 68760, 19140), 3681, 49620, 0, 0},
+		{"yygutn's step 5, 194 tokens over 5.9 s", row(194, 9702, 3800), 194, 5902, 0, 0},
+		{"yygutn's step 1, 621 tokens in 9 ms", row(621, 10475, 10466), 0, 0, 0, 0},
+		{"400 tokens over 999 ms after a short wait", row(400, 1299, 300), 0, 0, 0, 0},
+		{"60 tokens over 2 s", row(60, 3000, 1000), 0, 0, 0, 0},
+		{"1,200 tokens in one push", row(1200, 10000, 9500), 0, 0, 1200, 10000},
+		{"a step with no first token, 1,500 over 30 s", row(1500, 30000, 0), 0, 0, 1500, 30000},
+	} {
+		if n, w := c.r.Decode(); n != c.dn || w != c.dw {
+			t.Errorf("%s: measured %d/%d ms, want %d/%d", c.name, n, w, c.dn, c.dw)
+		}
+		if n, ms := c.r.Floor(); n != c.floorN || ms != c.floorMs {
+			t.Errorf("%s: floor %d/%d ms, want %d/%d", c.name, n, ms, c.floorN, c.floorMs)
+		}
+	}
+}

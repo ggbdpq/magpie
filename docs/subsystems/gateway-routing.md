@@ -2996,7 +2996,11 @@ included). `previousResponse` in
   lost to a restart) gets OpenAI's 400 `previous_response_not_found`
   (`writePrevNotFound`) on a route that translates, before anything is
   sent. A Responses relay is sent the request as it came, and its own
-  answer reaches the client.
+  answer reaches the client; a relay that refuses the request over the
+  pointer (`prevRefused`, a routing group's other member can't read the
+  one that answered the turn's id, #5477) is asked again once without
+  it, the input a Responses client sends carrying the conversation
+  whole (`TestUnknownPreviousResponseRefusedIsAskedAgainWithoutIt`).
 - Where the provider keeps responses itself (`prevKeeps`: an API key, no
   plugin, on api.openai.com, Azure, or Ark's `/api/v3` pay-as-you-go
   Responses) and it answered the previous turn on the same key

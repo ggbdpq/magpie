@@ -682,8 +682,20 @@ func (l *Library) syncSkills(t *Target, res *Result, all []*Target) {
 		return
 	}
 	id := t.Agent.ID
-	// LiveAgent uses a skill in its folder only once it is picked there
-	defer l.syncLiveAgentPicks(t, res)
+	// each folder on the way to a skill is looked at once for this agent,
+	// as a read of the page is (linkmemo.go): every realDir of every skill
+	// walks the same tree down to its folder, and on Windows with a WSL
+	// distro that tree is a \\wsl.localhost path, where one look costs many
+	// of a local one (#5450, Doeye1997). The memo dies with the call, so
+	// what a sharer of this folder, a later step or the page's next read
+	// sees is never older than what this step wrote.
+	forget := readParts()
+	// LiveAgent uses a skill in its folder only once it is picked there;
+	// what it reads is read after the memo is let go
+	defer func() {
+		forget()
+		l.syncLiveAgentPicks(t, res)
+	}()
 	a := l.applied(id)
 	// another agent may read the very same folder (one linked to the other):
 	// what that agent is to have stays

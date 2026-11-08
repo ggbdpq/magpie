@@ -38,10 +38,11 @@ type partMemo struct {
 var reading atomic.Pointer[partMemo]
 
 // readParts keeps what lookPart finds until the returned func is called.
-// Only a read of the page that holds mu calls it: no change can make or
-// take away a link while it does, since every change holds mu too. A
-// caller without mu meanwhile (a probe of a folder to add) is given what
-// the read found, at most as old as the read.
+// Only a holder of mu calls it: a read of the page, and each agent's
+// skill step of a sync (#5450). No change can make or take away a link
+// while it does, since every change holds mu too. A caller without mu
+// meanwhile (a probe of a folder to add) is given what the holder found,
+// at most as old as its last look.
 func readParts() (done func()) {
 	reading.Store(&partMemo{m: map[string]part{}})
 	return func() { reading.Store(nil) }

@@ -165,6 +165,15 @@ async function sendForFetch(record, msg) {
 // cheap without one frame dwarfing the window.
 const MAX_FRAME = 64 << 10
 
+// WIRE_LINE_MAX is Go's maxWireLine (host.go): the most one line the host
+// reads from this process. A gateway begin once answered with the whole
+// request body on its line, so a body over the cap came back as a line over
+// it — the host read that as a broken child and killed this process, and
+// every plugin's provider went down with it (#5699). An unchanged body is
+// never sent at all; a rewritten one too large to send gives that request's
+// hooks up instead.
+const WIRE_LINE_MAX = 32 << 20
+
 // FRAME_OVERHEAD is what one queued frame costs the window besides its bytes,
 // as Go counts it too: the message struct and the decoded slice behind it. It
 // keeps a producer of tiny frames from filling a window with structs.
@@ -1630,6 +1639,10 @@ async function gatewayBegin(p, signal) {
   run.timer = setTimeout(() => closeGateway(run), GATEWAY_RUN_TTL)
   run.timer.unref()
   let body = p.body
+  // whether any hook left a different body: a hook that returns undefined,
+  // throws or times out keeps the caller's body, whose bytes then never need
+  // the wire at all
+  let changed = false
   // The total budget bounds many installed hooks as well as one slow hook.
   const total = AbortSignal.any([signal, run.controller.signal, AbortSignal.timeout(gatewayBudget())])
   for (const h of gatewayHooks) {
@@ -1657,6 +1670,7 @@ async function gatewayBegin(p, signal) {
         next = JSON.parse(JSON.stringify(result))
         if (!next || typeof next !== "object" || Array.isArray(next)) throw new Error("invalid serialized body")
         if (outcome === "skipped") outcome = "ready"
+        changed = true
       }
       // Context hooks cannot register or change client tools or tool choice,
       // nor the model or streaming: the gateway checked the caller's key
@@ -1687,7 +1701,23 @@ async function gatewayBegin(p, signal) {
     signal.throwIfAborted()
     return null
   }
-  return { id: run.id, token: run.token, body }
+  // No hook rewrote the body: the run's identity is all the caller needs —
+  // it keeps the bytes it already has. Nothing the size of the request
+  // crosses the wire, so a request no hook touched can no longer kill this
+  // process, and the per-request copy that fed the hooks is the only one
+  // made (#5699, and the every-request copy of #5168).
+  if (!changed) return { id: run.id, token: run.token, unchanged: true }
+  const result = { id: run.id, token: run.token, body }
+  // A rewritten body whose line would pass WIRE_LINE_MAX cannot be answered
+  // whole, and frames are for fetch replies only: give this request's hooks
+  // up — keeping the request, as a timed-out hook does — rather than write
+  // the host a line it reads as a broken child and dies on.
+  if (Buffer.byteLength(JSON.stringify(result)) > WIRE_LINE_MAX - (64 << 10)) {
+    if (!signal.aborted) send({ event: "log", level: "warn", message: "gateway: the rewritten request is too large to return through the host; keeping request" })
+    closeGateway(run)
+    return null
+  }
+  return result
 }
 
 async function gatewayFinish(run, p, signal) {

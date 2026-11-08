@@ -69,6 +69,11 @@ func hintsOf(chunks []*rowChunk, rows *chunkRows) []*chunkHints {
 			if id := open.Strings[open.text(p, 11)]; id != "" {
 				h.ids = append(h.ids, uint32(matchHash(id)))
 			}
+			// A Claude call's message id names the gateway's reply (#5674):
+			// a file of such calls is one the reply ids open.
+			if id := open.Strings[open.text(p, rowMsg)]; id != "" {
+				h.ids = append(h.ids, uint32(matchHash(id)))
+			}
 			if p.Tokens[0]+p.Tokens[1]+p.Tokens[2]+p.Tokens[3] == 0 && p.Flags&16 == 0 {
 				continue
 			}

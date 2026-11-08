@@ -130,10 +130,37 @@ func spends(ev Event) bool {
 // stream cut after any of them would read as whole. A chunk with no
 // candidate at all — usage alone, or a prompt blocked — ends it too: such
 // a reply said nothing, and is the empty reply's to answer (#667), not a
-// cut one's.
+// cut one's. So is one whose candidate carries no parts and no
+// finishReason — Code Assist's turn-end when the model has nothing to
+// say, a role alone or an empty object, usage counting no output token,
+// then the stream closes (#5455, JZongf): a candidate that says nothing
+// and names no end is the same silence.
 func geminiEnds(data []byte) bool {
 	if !bodyHas(data, `"finishReason"`) && bodyHas(data, `"candidates"`) {
-		return false
+		type chunk struct {
+			Candidates []struct {
+				Content struct {
+					Parts []json.RawMessage `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+		}
+		var ch struct {
+			chunk
+			Response *chunk `json:"response"`
+		}
+		if json.Unmarshal(data, &ch) != nil {
+			return false
+		}
+		c := ch.chunk
+		if ch.Response != nil {
+			c = *ch.Response
+		}
+		for _, cand := range c.Candidates {
+			if len(cand.Content.Parts) > 0 {
+				return false // said something, its end is a finishReason's to tell
+			}
+		}
+		return true
 	}
 	type chunk struct {
 		Candidates []struct {

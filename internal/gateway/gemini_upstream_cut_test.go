@@ -93,6 +93,11 @@ func TestGeminiEnds(t *testing.T) {
 		`{"usageMetadata":{"promptTokenCount":0}}`:                true,
 		`{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"}}`: true,
 		`{"response":{"usageMetadata":{"promptTokenCount":0}}}`:   true,
+		// a candidate with no parts and no finishReason: the same silence,
+		// Code Assist's turn-end with nothing in it (#5455)
+		`{"candidates":[{"content":{"role":"model"}}],"usageMetadata":{"promptTokenCount":2049,"candidatesTokenCount":0,"thoughtsTokenCount":0,"cachedContentTokenCount":52607}}`: true,
+		`{"candidates":[{}]}`: true,
+		`{"response":{"candidates":[{"content":{"role":"model"}}],"usageMetadata":{"promptTokenCount":2049}}}`: true,
 		`not json`: false,
 	} {
 		if got := geminiEnds([]byte(chunk)); got != want {

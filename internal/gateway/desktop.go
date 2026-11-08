@@ -629,7 +629,6 @@ func desktopMoveTo(asked string, body []byte, byClaudeCode, bySubagent bool) (st
 	}
 	tools := hasTools(body)
 	desktopPicked.Lock()
-	defer desktopPicked.Unlock()
 	loadPicked()
 	picked := desktopPicked.model
 	if asked == picked {
@@ -637,8 +636,17 @@ func desktopMoveTo(asked string, body []byte, byClaudeCode, bySubagent bool) (st
 			// the session goes on on it: newer than a menu changed meanwhile
 			desktopPicked.at = time.Now()
 		}
+		desktopPicked.Unlock()
 		return asked, ""
 	}
+	desktopPicked.Unlock()
+	// The picked fields are all desktopPicked's lock keeps. The ask's
+	// verdict below reads the catalog (the tiers' picks, unserved,
+	// servedBeside, desktopDefault) and a turn's write goes to disk, and
+	// either of those under the lock held every other Desktop request
+	// behind it — 30s of held with no wait magpie knows of (#5430). They
+	// run beside the lock now; the write takes it briefly, to keep the
+	// fields and the file one.
 	aside := small(body)
 	if byClaudeCode {
 		aside = desktopTitle(body)
@@ -684,10 +692,12 @@ func desktopMoveTo(asked string, body []byte, byClaudeCode, bySubagent bool) (st
 		return asked, ""
 	}
 	if tools && !bySubagent {
+		desktopPicked.Lock()
 		desktopPicked.model, desktopPicked.at = asked, time.Now()
 		if os.MkdirAll(settings.Dir(), 0o755) == nil {
 			os.WriteFile(desktopPickedPath(), []byte(asked+"\n"), 0o600)
 		}
+		desktopPicked.Unlock()
 	}
 	return asked, ""
 }

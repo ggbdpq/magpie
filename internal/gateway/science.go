@@ -108,12 +108,16 @@ func sciencePickedPath() string { return filepath.Join(settings.Dir(), "claude-s
 // to it.
 func scienceTurn(asked string, body []byte) string {
 	sciencePicked.Lock()
-	defer sciencePicked.Unlock()
 	if path := sciencePickedPath(); sciencePicked.from != path {
 		b, _ := os.ReadFile(path)
 		sciencePicked.model, sciencePicked.from = strings.TrimSpace(string(b)), path
 	}
 	picked := sciencePicked.model
+	sciencePicked.Unlock()
+	// as desktopTurn's (#5430): the verdict reads the catalog (unserved,
+	// the list to Science) beside the lock, which keeps the picked fields
+	// alone; a turn's write takes it briefly, to keep the field and the
+	// file one
 	if unserved(asked) {
 		if picked != "" && !unserved(picked) {
 			return picked
@@ -124,10 +128,12 @@ func scienceTurn(asked string, body []byte) string {
 		return asked
 	}
 	if asked != picked && hasTools(body) {
+		sciencePicked.Lock()
 		sciencePicked.model = asked
 		if os.MkdirAll(settings.Dir(), 0o755) == nil {
 			os.WriteFile(sciencePickedPath(), []byte(asked+"\n"), 0o600)
 		}
+		sciencePicked.Unlock()
 	}
 	return asked
 }

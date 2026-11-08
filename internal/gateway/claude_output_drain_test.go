@@ -39,7 +39,9 @@ echo '{"type":"stream_event","event":{"type":"message_stop"}}'
 	for i := 0; i < 5; i++ {
 		s := New()
 		p := provider.Provider{ID: "claude", Account: &provider.Account{Agent: "claude", User: "u"}}
-		body := `{"model":"claude-sonnet-5","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"say a lot"}]}`
+		// the cap is one the bridge now holds the reply to itself (replyCap);
+		// the long reply here is what the test reads to the end
+		body := `{"model":"claude-sonnet-5","max_tokens":400000,"stream":true,"messages":[{"role":"user","content":"say a lot"}]}`
 		rec := httptest.NewRecorder()
 		var u Usage
 		s.serveClaudeSubscription(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)), provider.Anthropic, p, "claude-sonnet-5", []byte(body), &u)

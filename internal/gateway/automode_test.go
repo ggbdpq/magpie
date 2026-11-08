@@ -721,7 +721,7 @@ for line in sys.stdin:
 	messages := []map[string]any{{"role": "assistant", "content": "seed"}, {"role": "user", "content": "hi"}}
 	var pid string
 	for i, context := range []string{"first", "second", "", "third", "reject"} {
-		b := map[string]any{"model": "claude-sonnet-5", "max_tokens": 64, "stream": false, "messages": messages}
+		b := map[string]any{"model": "claude-sonnet-5", "max_tokens": 400000, "stream": false, "messages": messages}
 		effort := []string{"high", "low"}[i%2]
 		b["thinking"] = map[string]any{"type": "adaptive"}
 		b["output_config"] = map[string]any{"effort": effort}

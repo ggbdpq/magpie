@@ -187,6 +187,10 @@ type subscriptionRun struct {
 	// schema says the client asked for an answer fitting a JSON schema,
 	// which Claude Code gives as its StructuredOutput call
 	schema bool
+	// replyCap is the reply's token cap the client named (Request.MaxTokens):
+	// the bridge's Claude Code takes no such field, so magpie stops the
+	// reply's words here once their estimate reaches it (#5469)
+	replyCap int
 
 	// the tools its agent was told of, as it started and since
 	tools map[string]bool
@@ -1299,7 +1303,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	}
 	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
 
-	run := &subscriptionRun{bridge: b, token: token, model: model, cmd: cmd, tmp: tmp, schema: len(req.Format.schema()) > 0, pending: map[string]chan mcpToolResult{}, stdin: stdin, effort: req.Effort, sessions: sessions, started: time.Now()}
+	run := &subscriptionRun{bridge: b, token: token, model: model, cmd: cmd, tmp: tmp, schema: len(req.Format.schema()) > 0, pending: map[string]chan mcpToolResult{}, stdin: stdin, effort: req.Effort, sessions: sessions, started: time.Now(), replyCap: req.MaxTokens}
 	run.owner.Store(&owner)
 	run.names = bridgeNames(req.Tools)
 	run.safeguardBeta = req.SafeguardBeta
@@ -4065,8 +4069,36 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 	retold := false      // this reply was told so
 	var pmu sync.Mutex   // held for each line, and by quiet's settle
 	var quiet *time.Timer
+	// The reply cap the client named (replyCap) reaches Claude Code's model
+	// through no field of the bridge's, so the words stop here: once their
+	// estimate — magpie counts a request's tokens as its bytes over four —
+	// uses the cap up, what room is left goes and the reply ends as one cut
+	// at its length, the same incomplete a vendor's own cut is (#5469).
+	// The run itself goes on as it would: a one-off's Claude Code finishes
+	// its attempt, and a kept run is left whole for the turns after.
+	capped := false  // the words stopped, the reply's end said
+	cappedBytes := 0 // what the reply's words have said, in bytes
+	tell := func(s string) string {
+		if capped || s == "" {
+			return ""
+		}
+		if r.replyCap <= 0 {
+			return s
+		}
+		if room := r.replyCap*4 - cappedBytes; len(s) >= room {
+			s = strings.ToValidUTF8(s[:max(room, 0)], "")
+			capped = true
+			log.Printf("claude: the reply's words stopped at the client's cap of %d tokens", r.replyCap)
+			r.emit(Event{Kind: KStop, Stop: "length"})
+		}
+		cappedBytes += len(s)
+		return s
+	}
 	text := func(s string) {
 		if s != "" && !r.schema {
+			if s = tell(s); s == "" {
+				return
+			}
 			shown = true
 			r.emit(Event{Kind: KText, Text: s})
 		}
@@ -4081,6 +4113,12 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 			inside, refused, calls = true, true, textCalls{}
 		} else if why != "" {
 			held, seen := calls.end()
+			if capped {
+				// the reply's end was said where its words stopped; the
+				// attempt's own end and what it held back are not the
+				// client's to hear
+				return
+			}
 			switch {
 			case seen && !theirs && why == "end_turn" && !retold && r.stdin != nil:
 				retell, retold, inside = true, true, true

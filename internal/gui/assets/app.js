@@ -7137,7 +7137,7 @@ function renderArchive() {
   b.setAttribute("aria-checked", a.on ? "true" : "false");
   b.disabled = archiveSaving;
   b.querySelector(".led-arch-name").textContent = t("Request archive");
-  b.title = a.bucket ? t("Keeps each call’s headers and bodies, secrets taken out, in {where}", { where: a.bucket })
+  b.title = a.bucket ? t("Keeps each call’s headers and bodies, secrets taken out, in {where}, the oldest removed past {size}", { where: a.bucket, size: fmtBytes(a.cap || 0) })
     : t("Keeps each call’s headers and bodies, secrets taken out, on this computer in {where}, the oldest removed past {size}", { where: a.folder || "", size: fmtBytes(a.cap || 0) });
   let err = box.querySelector(".led-arch-err");
   if (a.on && a.error) {

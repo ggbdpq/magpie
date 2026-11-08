@@ -204,7 +204,7 @@ func (s *s3) explain(op string, e s3Error) error {
 	case e.Status == http.StatusForbidden:
 		return fmt.Errorf("the S3 server doesn't let this access key write %s (%s): it needs to read and write there", s.where(), e)
 	}
-	verb := map[string]string{"read": "reading", "write": "writing"}[op]
+	verb := map[string]string{"read": "reading", "write": "writing", "remove": "removing"}[op]
 	if e.Message != "" {
 		return fmt.Errorf("%s %s on the S3 server: %s: %s", verb, s.where(), e, e.Message)
 	}
@@ -333,4 +333,19 @@ func (s *s3) head(ctx context.Context) (etag string, there bool, err error) {
 
 func bareETag(e string) string {
 	return strings.Trim(strings.TrimPrefix(strings.TrimSpace(e), "W/"), `"`)
+}
+
+// del removes the object at key. A name with nothing at it is removed all
+// the same: S3 answers a delete of nothing with 204 too.
+func (s *s3) del(ctx context.Context, key string) error {
+	res, err := s.sendTo(ctx, http.MethodDelete, s.urlOf(key), nil, nil)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusNoContent || res.StatusCode == http.StatusOK {
+		io.Copy(io.Discard, io.LimitReader(res.Body, 64<<10))
+		return nil
+	}
+	return s.explain("remove", readError(res))
 }

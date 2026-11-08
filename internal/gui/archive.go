@@ -231,7 +231,7 @@ func archiveState() archiveJSON {
 	s := settings.Load()
 	var a archiveJSON
 	if b, ok := davsync.S3Bucket(); ok {
-		a.On, a.Bucket = s.RequestArchive, b.Where()
+		a.On, a.Bucket, a.Cap = s.RequestArchive, b.Where(), davsync.ArchiveCap()
 	} else {
 		a.On, a.Folder, a.Cap = s.RequestArchiveLocal, tilde(gateway.LocalArchive().Dir), gateway.LocalArchiveCap()
 	}

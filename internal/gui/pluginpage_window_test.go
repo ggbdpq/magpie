@@ -54,7 +54,7 @@ func TestPluginPageWindowPolicy(t *testing.T) {
 						t.Errorf("%s: %s cannot load the page's own files: %s", file, directive, policy)
 					}
 				}
-				for _, directive := range []string{"sandbox allow-scripts", "connect-src 'none'", "frame-src 'none'", "form-action 'none'"} {
+				for _, directive := range []string{"sandbox allow-scripts allow-same-origin", "connect-src 'none'", "frame-src 'none'", "form-action 'none'"} {
 					if !strings.Contains(policy, directive) {
 						t.Errorf("%s: missing %s", file, directive)
 					}

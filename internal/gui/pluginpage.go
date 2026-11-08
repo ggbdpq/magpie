@@ -233,7 +233,13 @@ func pagePolicy(r *http.Request, tok string, hashes ...string) string {
 		own = strings.Join(ownSources(r, pluginPagePrefix+tok+"/"), " ")
 	}
 	return strings.Join([]string{
-		"sandbox allow-scripts",
+		// same origin as the site serving it: without it the page is an
+		// opaque origin, and its scripts die on the storage APIs a
+		// framework touches as it starts (#5630). The page still loads
+		// nothing but its own files, reaches nothing over the network
+		// (connect-src 'none'), and has no way to magpie's /api
+		// (apiFramed); its session cookie is HttpOnly.
+		"sandbox allow-scripts allow-same-origin",
 		"default-src 'none'",
 		"script-src " + strings.Join(append([]string{own}, hashes...), " "),
 		"style-src " + own + " 'unsafe-inline'",

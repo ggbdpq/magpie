@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -167,6 +168,9 @@ func TestPreviousResponseNotFound(t *testing.T) {
 // An id magpie doesn't hold, to a provider on Responses the request is
 // relayed to, goes as it came: a response the provider made before
 // magpie restarted is still its own to find.
+// An id magpie doesn't hold, to a provider on Responses the request is
+// relayed to, goes as it came: a response the provider made before
+// magpie restarted is still its own to find.
 func TestUnknownPreviousResponseRelayedAsSent(t *testing.T) {
 	up := newPrevUp(t, func(int, []byte) (int, string, string) {
 		return 200, "application/json", `{"id":"resp_up","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":3,"output_tokens":1}}`
@@ -175,6 +179,63 @@ func TestUnknownPreviousResponseRelayedAsSent(t *testing.T) {
 	responseID(t, askResponses(t, s, "", `{"model":"fake/m1","previous_response_id":"resp_before","input":"hi"}`))
 	if got := up.last()["previous_response_id"]; got != "resp_before" {
 		t.Fatalf("sent %v", got)
+	}
+}
+
+// A pointer the client names that magpie doesn't hold goes as written, for
+// the provider it names may hold the response — one of a routing group
+// does, the one that answered the turn, and another member refuses the
+// request whole over it, the agent left with that 400 (dorokuma's #5477:
+// the conversation moved from provider A to provider B, and B can't read
+// A's id). Asked again without the pointer: the input a Responses client
+// sends carries the conversation whole (Pi's, omp's, droid's and dsh's
+// do), as the provider's own answer shows. A refusal over something else
+// is the client's, no second ask.
+func TestUnknownPreviousResponseRefusedIsAskedAgainWithoutIt(t *testing.T) {
+	var mode atomic.Value // "ok", "pointer", "other"
+	mode.Store("ok")
+	up := newPrevUp(t, func(n int, body []byte) (int, string, string) {
+		switch mode.Load() {
+		case "pointer":
+			if bytes.Contains(body, []byte("previous_response_id")) {
+				return 400, "application/json", `{"error":{"message":"Previous response with id 'resp_stored1' not found.","type":"invalid_request_error","param":"previous_response_id","code":"previous_response_not_found"}}`
+			}
+		case "other":
+			return 400, "application/json", `{"error":{"message":"Invalid request: this key is not allowed that model.","type":"invalid_request_error"}}`
+		}
+		return 200, "application/json", fmt.Sprintf(`{"id":"resp_stored%d","object":"response","status":"completed","output":[{"type":"message","id":"msg_%d","role":"assistant","content":[{"type":"output_text","text":"answer %d"}]}],"usage":{"input_tokens":3,"output_tokens":1}}`, n, n, n)
+	})
+	s := prevSandbox(t, provider.Provider{ID: "fake", Name: "Fake", Key: "k", Models: []string{"m1"}, Responses: up.srv.URL + "/v1"})
+	// a store false turn magpie keeps nothing of, whose id is the
+	// upstream's own (one that stores past store false)
+	off := responseID(t, askResponses(t, s, "", `{"model":"fake/m1","store":false,"input":"hi"}`))
+	// the next turn names it: refused once over the pointer, asked again
+	// without it, and the answer comes
+	mode.Store("pointer")
+	rec := askResponses(t, s, "", `{"model":"fake/m1","previous_response_id":"`+off+`","input":"and again?"}`)
+	if responseID(t, rec) == "" {
+		t.Fatal(rec.Body.String())
+	}
+	// the store false turn's, the refused one's and the asked-again one's
+	if got := up.calls(); got != 3 {
+		t.Fatalf("asked %d times", got)
+	}
+	q := up.last()
+	if q["previous_response_id"] != nil {
+		t.Fatalf("the pointer went again: %v", q)
+	}
+	if in, _ := json.Marshal(q["input"]); !strings.Contains(string(in), "and again?") {
+		t.Fatalf("the turn's own input lost: %s", in)
+	}
+	// a refusal over something else: once, and the 400 is the client's
+	calls := up.calls()
+	mode.Store("other")
+	rec = askResponses(t, s, "", `{"model":"fake/m1","previous_response_id":"resp_stored2","input":"more"}`)
+	if rec.Code != 400 {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	if got := up.calls(); got != calls+1 {
+		t.Fatalf("a refusal over something else asked %d more times", got-calls)
 	}
 }
 

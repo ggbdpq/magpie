@@ -6821,6 +6821,26 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			}
 		}
 	}
+	// A pointer the client named that magpie doesn't hold went as written,
+	// for the provider it names may hold the response it follows. One
+	// member of a routing group does, the one that answered the turn;
+	// another refuses the request whole over it, the agent left with that
+	// 400 (dorokuma's #5477: the conversation moved from provider A to
+	// provider B, and B can't read A's id). Asked again without the
+	// pointer: the input a Responses client sends carries the conversation
+	// whole (Pi's, omp's, droid's and dsh's do), as a translation would
+	// have inlined it.
+	if !delta && prevLost(r) != "" && (badRequest(res.StatusCode) || res.StatusCode == http.StatusNotFound) {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+		res.Body.Close()
+		res.Body = io.NopCloser(bytes.NewReader(b))
+		if prevRefused(res.StatusCode, b) {
+			body = withoutFields(body, "previous_response_id")
+			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
+				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+			}
+		}
+	}
 	if proto == provider.Responses {
 		route := ""
 		if prevKeptBy(p) && !storeOff(body) {

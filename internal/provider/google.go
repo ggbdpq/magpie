@@ -461,16 +461,27 @@ func (g googleApp) userAgent(model string) string {
 
 var antigravityVer struct {
 	sync.Mutex
-	v  string
-	at time.Time
+	v     string
+	at    time.Time
+	fresh bool // the updater answered the last ask with a version
 }
 
 // antigravityVersion is the newest Antigravity's version, which its
-// requests carry; asked of its updater at most every few hours.
+// requests carry; asked of its updater at most every few hours. An ask
+// that fails — the updater unreachable (a GUI app doesn't ride the
+// shell's proxy, and its host needn't be where Code Assist is), a bad
+// gateway, a manifest without a version — holds the fallback (2.9.1) for
+// a minute, then asks again, saying so in the log: that fallback is old
+// enough now that Code Assist gates Argon from it (#5679), so a silent
+// six-hour stick on it hid the failure and outlived the network.
 func antigravityVersion() string {
 	antigravityVer.Lock()
 	defer antigravityVer.Unlock()
-	if antigravityVer.v != "" && time.Since(antigravityVer.at) < 6*time.Hour {
+	keep := 6 * time.Hour
+	if !antigravityVer.fresh {
+		keep = time.Minute
+	}
+	if antigravityVer.v != "" && time.Since(antigravityVer.at) < keep {
 		return antigravityVer.v
 	}
 	antigravityVer.at = time.Now()
@@ -481,23 +492,35 @@ func antigravityVersion() string {
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, antigravityVersionURL, nil)
 	if err != nil {
+		log.Printf("antigravity: the updater's version ask: %v; staying with %s", err, antigravityVer.v)
 		return antigravityVer.v
 	}
 	req.Header.Set("User-Agent", "electron-builder")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
+		log.Printf("antigravity: the updater's version ask: %v; staying with %s", err, antigravityVer.v)
 		return antigravityVer.v
 	}
 	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		log.Printf("antigravity: the updater's version ask: %s; staying with %s", res.Status, antigravityVer.v)
+		return antigravityVer.v
+	}
 	sc := bufio.NewScanner(io.LimitReader(res.Body, 64<<10))
+	good := ""
 	for sc.Scan() {
 		if v, ok := strings.CutPrefix(sc.Text(), "version:"); ok {
-			v = strings.Trim(strings.TrimSpace(v), `'"`)
-			if v != "" && strings.Trim(v, "0123456789.") == "" {
-				antigravityVer.v = v
+			if v = strings.Trim(strings.TrimSpace(v), `'"`); v != "" && strings.Trim(v, "0123456789.") == "" {
+				good = v
 			}
 			break
 		}
+	}
+	antigravityVer.fresh = good != ""
+	if good != "" {
+		antigravityVer.v = good
+	} else {
+		log.Printf("antigravity: the updater's manifest names no version; staying with %s", antigravityVer.v)
 	}
 	return antigravityVer.v
 }

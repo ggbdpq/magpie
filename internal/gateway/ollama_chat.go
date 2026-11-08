@@ -71,8 +71,11 @@ func (s *Server) ollamaChat(generate bool) http.HandlerFunc {
 			return
 		}
 		var req ollamaRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			ollamaError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+		// decodeRequest, not json.Unmarshal: a raw control byte in one of the
+		// strings is escaped and served, as every route's body is (#5668);
+		// the body routed is ollamaChatBody's rebuild of what this decoded
+		if _, err := decodeRequest(body, &req); err != nil {
+			ollamaError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		req.Model = strings.TrimSpace(req.Model)

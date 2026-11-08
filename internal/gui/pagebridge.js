@@ -100,15 +100,16 @@
   function report(err) {
     parent.postMessage({ magpie: 1, method: "error", params: { message: String(err?.message || err) } }, "*");
   }
-  // a script's error reaches a sandboxed page only as "Script error." (its
-  // files are another origin's to it); the window then says "The page hit
-  // an error" in the reader's language, and the console has the rest
+  // the page has the site's own origin (#5630), so an error reaches the
+  // window whole, with its message; one that still arrives as a bare
+  // "Script error." is masked, and the window says "The page hit an
+  // error" in the reader's language, the console having the rest
   //
   // The size watch below can be told its own "ResizeObserver loop
   // completed with undelivered notifications" when the window resizes the
   // frame in the same frame of drawing; that is no error of the page's,
-  // and WebKit hands it to a sandboxed page as a bare "Script error." with
-  // no file, so one that comes while the watch has just run is let go
+  // and one that comes while the watch has just run with no error and no
+  // file is let go
   let measuring = false;
   addEventListener("error", (e) => {
     if (/ResizeObserver loop/.test(e.message) || (measuring && !e.error && !e.filename)) { e.preventDefault(); return; }

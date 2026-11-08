@@ -43,7 +43,7 @@ func init() {
 				}
 			case "/":
 				w.Header().Set("Content-Type", "text/html")
-				fmt.Fprint(w, `<iframe sandbox="allow-scripts" src="`+pluginPagePrefix+tok+`/index.html"></iframe>
+				fmt.Fprint(w, `<iframe sandbox="allow-scripts allow-same-origin" src="`+pluginPagePrefix+tok+`/index.html"></iframe>
 <script>addEventListener("message", (e) => fetch("/seen?what=" + encodeURIComponent(e.data)));
 setTimeout(() => fetch("/seen?what=nothing"), 8000);</script>`)
 			default:

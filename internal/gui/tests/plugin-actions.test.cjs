@@ -58,7 +58,7 @@ function server(lang, opts) {
       const body = rel === "_magpie/bridge.js" ? await fs.readFile(bridge) : rel === "index.html" ? HTML : rel === "app.js" ? JS : null;
       if (body == null) return route.fulfill({ status: 404, body: "" });
       const type = { ".html": "text/html", ".js": "text/javascript" }[path.extname(rel)];
-      return route.fulfill({ status: 200, headers: { "Content-Security-Policy": "sandbox allow-scripts; connect-src 'none'", "Content-Type": type }, body });
+      return route.fulfill({ status: 200, headers: { "Content-Security-Policy": "sandbox allow-scripts allow-same-origin; connect-src 'none'", "Content-Type": type }, body });
     }
     if (url.host !== "magpie.test") return route.fulfill({ status: 404, body: "" });
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);

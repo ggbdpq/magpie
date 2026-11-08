@@ -46,7 +46,7 @@ const policy = (tok) => {
   const dir = `magpie.test/_magpie/plugin/${tok}/`;
   const own = `https://${dir} http://${dir}`;
   return [
-    "sandbox allow-scripts", "default-src 'none'", `script-src ${own}`, `style-src ${own} 'unsafe-inline'`,
+    "sandbox allow-scripts allow-same-origin", "default-src 'none'", `script-src ${own}`, `style-src ${own} 'unsafe-inline'`,
     `img-src ${own} data:`, `font-src ${own}`, `media-src ${own}`, "connect-src 'none'", "frame-src 'none'",
     "worker-src 'none'", "object-src 'none'", "form-action 'none'", "base-uri 'none'", "frame-ancestors 'self'",
   ].join("; ");
@@ -191,7 +191,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // the example: its declared read, the theme, its options
         await page.evaluate(() => show("plugin-glance"));
         const glance = await frameReady(page, GLANCE);
-        assert.equal(await page.locator("#view-plugin-glance iframe").getAttribute("sandbox"), "allow-scripts", where);
+        assert.equal(await page.locator("#view-plugin-glance iframe").getAttribute("sandbox"), "allow-scripts allow-same-origin", where);
         await glance.waitForFunction(() => document.getElementById("cost")?.textContent === "$0.50");
         assert.equal(await glance.locator("#calls").textContent(), "12 calls, 1234 tokens", where);
         assert.deepEqual(seen.reads.map((r) => [r.spec, r.read]), [["/x/glance", "usage:summary"]], where);
@@ -213,9 +213,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.evaluate(() => show("plugin-probe"));
           const probe = await got;
           assert.equal(probe.fetch, "refused", `${where}: the policy stops a fetch of /api`);
-          assert.equal(probe.storage, "refused", `${where}: no storage`);
-          assert.equal(probe.cookie, "refused", `${where}: no cookie`);
-          assert.equal(probe.top, "refused", `${where}: no reach into the window`);
+          // same origin, so the storage APIs a framework touches as it
+          // starts work (#5630); the cookie it reads is the site's own,
+          // and magpie's session cookie is HttpOnly
+          assert.equal(probe.storage, "number", `${where}: storage works`);
+          assert.equal(probe.cookie, "", `${where}: no cookie to read`);
+          assert.notEqual(probe.top, "refused", `${where}: the window's document is same-origin`);
           assert.equal(probe.read, "Probe doesn't ask to read usage:summary", where);
           assert.equal(probe.read2, "Probe doesn't ask to read providers:list", where);
           assert.equal(seen.api.length, 0, `${where}: nothing reached /api`);
@@ -252,7 +255,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const open = await got2;
           assert.equal(open.fetch.startsWith("status") || open.fetch === "refused", true, where);
           assert.equal(seen.api.length, 1, `${where}: the fetch went out`);
-          assert.equal(seen.api[0].origin, "null", `${where}: as Origin: null`);
+          assert.notEqual(seen.api[0].origin, "null", `${where}: a same-origin page sends its own origin, not null`);
           assert.equal(open.service, "", `${where}: a page with no service has no magpie.service`);
           assert.ok(!seen.api[0].cookie, `${where}: without a cookie`);
 
@@ -273,9 +276,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const card = page.locator("#view-plugin-broken .slot-error");
           await card.waitFor();
           assert.equal(await card.locator(".name").textContent(), "This page stopped working", where);
-          // the frame's own script's error is muted to it ("Script error."):
-          // the window says the page hit one
-          assert.equal(await card.locator(".sub").textContent(), "The page hit an error", where);
+          // same origin now, so the page's own error reaches the window
+          // whole, no longer muted to a bare "Script error."
+          assert.equal(await card.locator(".sub").textContent(), "fixture: the page broke", where);
           seen.broken = false;
           await card.locator(".slot-again").click();
           const fixed = await frameReady(page, BROKEN);

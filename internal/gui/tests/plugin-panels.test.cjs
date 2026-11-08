@@ -78,7 +78,7 @@ function server(lang, seen, opts) {
       else if (tok === BROKEN && rel === "app.js") body = seen.broken ? "throw new Error('fixture: the panel broke')" : "1";
       else if (tok === LIB && rel === "index.html") body = LIB_HTML;
       if (body == null) return route.fulfill({ status: 404, body: "" });
-      return route.fulfill({ status: 200, headers: { "Content-Security-Policy": "sandbox allow-scripts; connect-src 'none'", "Content-Type": type }, body });
+      return route.fulfill({ status: 200, headers: { "Content-Security-Policy": "sandbox allow-scripts allow-same-origin; connect-src 'none'", "Content-Type": type }, body });
     }
     if (url.host !== "magpie.test") return route.fulfill({ status: 404, body: "" });
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
@@ -117,7 +117,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const tall = page.locator('#view-agents .plugin-slot[data-slot="agents"] .plugin-panel[data-panel="plugin-tall-0"]');
         await tall.waitFor();
         const tf = tall.locator("iframe");
-        assert.equal(await tf.getAttribute("sandbox"), "allow-scripts", where);
+        assert.equal(await tf.getAttribute("sandbox"), "allow-scripts allow-same-origin", where);
         await page.waitForFunction(() => Math.round(document.querySelector('.plugin-panel[data-panel="plugin-tall-0"] iframe').getBoundingClientRect().height) === 180);
         assert.equal((await tall.locator(".row-head .label").textContent()), "Tall", where);
         assert.ok(await fits(page, "#view-agents"), `${where}: Agents fits`);
@@ -149,7 +149,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const broke = page.locator('.plugin-panel[data-panel="plugin-broken-0"] .plugin-panel-broke');
           await broke.waitFor();
           assert.equal(await broke.locator("b").textContent(), await tr("{name} stopped working", { name: "Broken" }), where);
-          assert.equal(await broke.locator(".note").textContent(), await tr("The page hit an error"), where);
+          // same origin now: the panel's own error is named, not masked
+          assert.equal(await broke.locator(".note").textContent(), "fixture: the panel broke", where);
           assert.equal(await tall.locator("iframe").count(), 1, `${where}: the other panel stays`);
           seen.broken = false;
           // by the keyboard: WebKit's Playwright calls a button low in a
@@ -179,7 +180,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForFunction(() => providers?.providers?.length === 1);
         await page.evaluate(() => openModal(renderEditor(providers.providers[0])));
         const notes = await frameReady(page, NOTES);
-        assert.equal(await page.locator('#modal .plugin-slot[data-slot="provider"] iframe').getAttribute("sandbox"), "allow-scripts", where);
+        assert.equal(await page.locator('#modal .plugin-slot[data-slot="provider"] iframe').getAttribute("sandbox"), "allow-scripts allow-same-origin", where);
         await notes.waitForFunction(() => window.magpie.context?.provider?.id === "openai");
         assert.equal(await notes.evaluate(() => magpie.context.provider.name), "OpenAI", where);
         await notes.locator("#note").fill("work account");
@@ -205,6 +206,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForTimeout(1100); // options are set once a second at most
         await sets.locator("#clear").click();
         await sets.locator("#count").filter({ hasText: "0 notes" }).waitFor();
+        // "0 notes" is the panel's first paint (the fake server starts
+        // with nothing saved), so it says nothing about the clear; the
+        // clear's save is on its way through the window: wait for it
+        let cleared = false;
+        for (let i = 0; i < 100 && !cleared; i++) {
+          await page.waitForTimeout(50);
+          const last = seen.options.at(-1);
+          cleared = !!last && last.options.notes && Object.keys(last.options.notes).length === 0;
+        }
         assert.deepEqual(seen.options.at(-1).options.notes, {}, `${where}: cleared`);
         assert.ok(await page.locator("#setPage-plugins").isVisible(), where);
         assert.ok(await fits(page, "#view-settings"), `${where}: Settings fits`);

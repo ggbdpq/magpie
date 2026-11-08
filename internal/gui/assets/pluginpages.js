@@ -1,12 +1,13 @@
 // A community plugin's own page in the window (docs/subsystems/
 // plugin-runtime.md, P4): package.json's magpie.page, in a tab of the
 // sidebar's Plugins group, after the built-in pages. The page runs in a
-// frame sandboxed to scripts alone, in an origin of its own: it has no
-// way to the window, to magpie's API (apiFramed) or to the network (its
-// policy, pluginpage.go). What it asks of the window comes by message,
-// from that frame only, and the window answers only what the page may:
-// the theme, its own options, and the reads its package declared
-// (magpie.permissions), which /api/plugin-pages/read checks again.
+// frame sandboxed to scripts and the site's own origin, so its storage
+// APIs work (#5630): it has no way to magpie's API (apiFramed) or to
+// the network (its policy, pluginpage.go). What it asks of the window
+// comes by message, from that frame only, and the window answers only
+// what the page may: the theme, its own options, and the reads its
+// package declared (magpie.permissions), which
+// /api/plugin-pages/read checks again.
 //
 // Panels (magpie.panels, P5) are framed the same way in a page's
 // .plugin-slot, as tall as they draw. plugin-runtime.md says the rest:
@@ -77,9 +78,10 @@
     const main = $("#view-" + key);
     const f = document.createElement("iframe");
     f.className = "plugin-frame";
-    // scripts, and nothing else: no same origin (no cookie, no storage of
-    // the window's, no reach into it), no forms, popups or top navigation
-    f.setAttribute("sandbox", "allow-scripts");
+    // scripts and the site's own origin, so the page's storage APIs work
+    // (#5630): magpie's session cookie is HttpOnly, and still no forms,
+    // popups or top navigation
+    f.setAttribute("sandbox", "allow-scripts allow-same-origin");
     f.setAttribute("referrerpolicy", "no-referrer");
     f.setAttribute("allow", "");
     f.title = titled(p.entry);
@@ -330,7 +332,7 @@
   function panelFrame(e, context, body) {
     const f = document.createElement("iframe");
     f.className = "plugin-frame plugin-panel-frame";
-    f.setAttribute("sandbox", "allow-scripts");
+    f.setAttribute("sandbox", "allow-scripts allow-same-origin");
     f.setAttribute("referrerpolicy", "no-referrer");
     f.setAttribute("allow", "");
     f.title = titled(e);

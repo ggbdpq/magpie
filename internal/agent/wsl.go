@@ -1782,9 +1782,15 @@ var wslProbeScript = sync.OnceValue(func() string {
 
 // wslLinkPaths are the paths under a distro's $HOME the probe asks where
 // they lead (distro.Links): each agent's folder and its skills, and the
-// folders and files the agents keep beside theirs.
+// folders and files the agents keep beside theirs — a Pi-like agent's
+// settings.json, models.json and auth.json too, which a person keeps as
+// links into a dotfiles repo while the folders around them are real
+// (#5465).
 func wslLinkPaths() []string {
-	out := []string{".config", ".local", ".local/share", ".agents", ".agents/skills", ".gemini", ".gemini/config", ".gemini/skills", ".kimi", ".reasonix", ".claude.json", ".slock", ".kimi-code/sessions", wslCopilotDir}
+	out := []string{".config", ".local", ".local/share", ".agents", ".agents/skills", ".gemini", ".gemini/config", ".gemini/skills", ".kimi", ".reasonix", ".claude.json", ".slock", ".kimi-code/sessions", wslCopilotDir,
+		".pi/agent", ".pi/agent/settings.json", ".pi/agent/models.json", ".pi/agent/auth.json",
+		".omo/agent", ".omo/agent/settings.json", ".omo/agent/models.json", ".omo/agent/auth.json",
+		".prime/agent/settings.json", ".prime/agent/models.json", ".prime/agent/auth.json"}
 	for _, k := range wslKinds {
 		if k.dir != "" {
 			out = append(out, k.dir, k.dir+"/skills")

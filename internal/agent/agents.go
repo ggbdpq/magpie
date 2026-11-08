@@ -1550,9 +1550,13 @@ func piLike(at place, id, name, dir string) *Agent {
 // that names the agent (agentKeyAt) for an agent whose requests carry
 // nothing else of it (Prime Agent, primeagent.go).
 func piLikeKeyed(at place, id, name, dir string, key func() string) *Agent {
-	path := filepath.Join(dir, "settings.json")
-	modelsPath := filepath.Join(dir, "models.json")
-	auth := filepath.Join(dir, "auth.json")
+	// the three files opened where a link leads (place.open, #5465): a
+	// person keeps them as links into a dotfiles repo, which can't be
+	// followed through \\wsl.localhost, while the folder around them is
+	// real and no link of the agent's own folder covers them
+	path := at.open(filepath.Join(dir, "settings.json"))
+	modelsPath := at.open(filepath.Join(dir, "models.json"))
+	auth := at.open(filepath.Join(dir, "auth.json"))
 	get := func(k string) (string, bool) { return edit.GetJSON(path, k) }
 	set := func(kvs ...edit.KV) error { return edit.SetJSON(path, kvs...) }
 	pair := pairSet(set, "defaultProvider", "defaultModel")

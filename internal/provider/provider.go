@@ -123,6 +123,20 @@ type Provider struct {
 	// tried in order.
 	Fallback []string `json:"fallback,omitempty"`
 
+	// FailWords are the words a whole reply of this provider's is read by
+	// before it goes to the agent (gateway.spentSaid): a relay that has
+	// spent its plan and answers with a 200 and a pitch of its own — the
+	// plan is out, buy more at a link it names — said an agent asking for
+	// JSON a JSONDecodeError, and one asking for code an advert, request
+	// after request, with every page saying 200, for as long as the plan
+	// was spent (leavrcn, #5692). Off, the default, nothing is read of a
+	// reply: a 200 is an answer, whatever it says — the same words in a
+	// real answer would fail it, and that is the user's own to weigh.
+	// Set in providers.json by hand; a save of the editor's, whose form
+	// doesn't carry them, keeps what was stored. One word magpie can't
+	// read as a regular expression is dropped, not fatal.
+	FailWords []string `json:"failWords,omitempty"`
+
 	// Routing is how requests spread over the keys or accounts it has on:
 	// "" smart, the first while it has quota to spare, then whichever has
 	// the most; "order" in order, the next one only when the one before
@@ -1391,6 +1405,12 @@ func Save(p Provider) error {
 		if p.Gave == nil {
 			p.Gave = was.Gave
 		}
+		// failWords are set in providers.json by hand, which the editor's
+		// form doesn't carry: a save that sends none keeps what was stored
+		// (#1604's kind), and clearing them is clearing them there
+		if p.FailWords == nil {
+			p.FailWords = was.FailWords
+		}
 		if sameStored(*was, p) {
 			// Save pressed on an editor left as it was: providers.json
 			// would be written byte for byte as it is, and its write
@@ -1870,6 +1890,7 @@ func normalize(p Provider) Provider {
 	p.KeySpendCaps = normalKeySpendCaps(p.KeySpendCaps)
 	p.KeyOwnBalances = normalKeyOwnBalances(p.KeyOwnBalances)
 	p.KeyPriceRates = normalKeyPriceRates(p.KeyPriceRates)
+	p.FailWords = normalFailWords(p.FailWords)
 	if len(p.Models) > 0 {
 		p.NoModels = false // a pick is no longer Select none
 	}
@@ -2033,6 +2054,19 @@ func normalize(p Provider) Provider {
 		}
 	}
 	return p
+}
+
+// normalFailWords is a provider's failWords as they are kept: each
+// trimmed, the blank ones gone, and none left, nil — a word that is all
+// whitespace reads as no word at all, not as one nothing matches.
+func normalFailWords(in []string) []string {
+	var out []string
+	for _, w := range in {
+		if w = strings.TrimSpace(w); w != "" {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 // Catalogs are the models.dev ids the provider's models are looked up in,

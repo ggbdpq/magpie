@@ -3760,6 +3760,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		// a compaction's summary is held to its end, for a cut or an
 		// error halfway to go to the next candidate (#2274)
 		hw.wantWhole = wantWhole && !pass
+		// the words a whole reply of a success status is read by (the
+		// provider's failWords, #5692): none where the user leaves the
+		// errors to the client, its replies going as they come
+		if !pass {
+			hw.spent = failWordsOf(c.p)
+		}
 		// Claude's and GPT's reasoning is held for a refusal after it only
 		// while another candidate could answer instead: the last one's
 		// refusal isn't asked again, so holding it only kept a lone relay's
@@ -5411,6 +5417,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			s.trace.update(tr, func(t *Route) { t.Fail = toldFail(other) })
 			failTo(w, kept, from, call.Status, call.Error)
 			break
+		} else if !hw.passing && hw.spent != nil && hw.code() >= 400 {
+			// nobody is left, and what this one answered is the vendor's
+			// own pitch for a spent plan (failWords): the agent is told
+			// the failure the words stand for, not handed the pitch as an
+			// answer it declared it isn't (#5692)
+			failTo(w, kept, from, hw.code(), call.Error)
 		} else if outgrew {
 			// in the agent's own words for it, for it to compact
 			failTo(w, kept, from, call.Status, hw.failMsg)

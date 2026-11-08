@@ -648,7 +648,74 @@ func TestDetectEmbeddingOnly(t *testing.T) {
 	}
 }
 
+// A vendor whose only models are for another API is detected on
+// /embeddings and /rerank, by the list's own word ("model_type",
+// Xinference's) as by the id's family (gte-*, m3e-*, text2vec-*): asked
+// to chat, none answers (#5416, heatonz on Discord: a vendor of gte-*).
+func TestDetectRetrievalOnlyByIdFamilyAndKind(t *testing.T) {
+	detectHome(t)
+	for _, c := range []struct {
+		name, list, model string
+	}{
+		{"by the list's word", `{"data":[{"id":"gte-base","model_type":"embedding"},{"id":"my-ranker","model_type":"rerank"}]}`, "gte-base"},
+		{"by the id's family", `{"data":[{"id":"m3e-base"},{"id":"text2vec-base-chinese"}]}`, "m3e-base"},
+	} {
+		var mu sync.Mutex
+		var got []asked
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			var body map[string]any
+			json.Unmarshal(b, &body)
+			m, _ := body["model"].(string)
+			mu.Lock()
+			got = append(got, asked{r.Method, r.URL.Path, r.Header.Get("Authorization"), m, body})
+			mu.Unlock()
+			switch r.Method + " " + r.URL.Path {
+			case "GET /v1/models":
+				io.WriteString(w, c.list)
+			case "POST /v1/embeddings":
+				io.WriteString(w, `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}]}`)
+			case "POST /v1/rerank":
+				io.WriteString(w, `{"results":[{"index":0,"relevance_score":0.9}]}`)
+			case "POST /v1/chat/completions":
+				// an embedding model asked to chat, as heatonz's vendor answers
+				http.Error(w, `{"error":{"message":"The model `+m+` does not support chat"}}`, http.StatusBadRequest)
+			default:
+				http.Error(w, `{"error":{"message":"Invalid URL (POST `+r.URL.Path+`)"}}`, http.StatusNotFound)
+			}
+		}))
+		res, err := Provider{Key: "sk-relay"}.Detect(context.Background(), srv.URL, "")
+		srv.Close()
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if len(res) != 4 || res[0].Protocol != Chat || !res[0].OK || res[0].Model != c.model || res[0].Base != srv.URL+"/v1" {
+			t.Fatalf("%s: chat = %+v", c.name, res)
+		}
+		for _, r := range res[1:] {
+			if r.OK || r.Model != c.model || !strings.Contains(r.Error, "model: asked at OpenAI's URL") || r.Status != 0 {
+				t.Fatalf("%s on %s: %+v", c.name, r.Protocol, r)
+			}
+		}
+		var posts []asked
+		for _, a := range got {
+			if a.method == "POST" {
+				posts = append(posts, a)
+			}
+		}
+		if len(posts) != 1 || posts[0].path != "/v1/embeddings" || posts[0].model != c.model || posts[0].auth != "Bearer sk-relay" {
+			t.Fatalf("%s: asked %+v", c.name, posts)
+		}
+		for _, k := range []string{"max_tokens", "messages", "stream", "temperature"} {
+			if _, ok := posts[0].body[k]; ok {
+				t.Fatalf("%s: %s sent %s: %v", c.name, posts[0].path, k, posts[0].body)
+			}
+		}
+	}
+}
+
 // Saved, such a provider's Test asks a model its list keeps apart where
+
 // the gateway sends it, and a model's own test too; the extra body a chat
 // carries isn't sent to /embeddings or /rerank, as the gateway sends none.
 func TestTestEmbeddingOnly(t *testing.T) {

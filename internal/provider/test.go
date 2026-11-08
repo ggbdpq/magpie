@@ -123,7 +123,7 @@ func (p Provider) Test(ctx context.Context) []Result {
 // tiny is the smallest request for model on proto's endpoint, streamed
 // to a backend that only streams.
 func tiny(q Provider, proto Protocol, model string) (url, body string) {
-	if kind := retrievalOf(model); kind != "" && proto == Chat && q.Account == nil {
+	if kind := q.retrievalOf(model); kind != "" && proto == Chat && q.Account == nil {
 		// an embedding or rerank model chats nowhere: it is asked where
 		// the gateway sends it (retrieve), the OpenAI-style base's
 		// /embeddings or /rerank (heatonz on Discord: a relay serving
@@ -151,6 +151,31 @@ func retrievalOf(model string) string {
 		return s
 	}
 	return ""
+}
+
+// retrievalOfModel is the retrieval API the vendor's list says m is made
+// for (Model.Serves, #5416), or, where the list says nothing, the one its
+// id does (retrievalOf): embeddings or rerank, else "".
+func retrievalOfModel(m catalog.Model) string {
+	switch m.Serves {
+	case catalog.ServesEmbedding, catalog.ServesRerank:
+		return m.Serves
+	}
+	return retrievalOf(m.ID)
+}
+
+// retrievalOf is p's model's retrieval API: what the list p keeps of the
+// vendor's says of it (a fetched list keeps a model made for another API
+// apart, its Serves), else what the id alone says.
+func (p Provider) retrievalOf(model string) string {
+	if ms, ok := catalog.LiveAll(p.ID); ok {
+		for _, m := range ms {
+			if m.ID == model {
+				return retrievalOfModel(m)
+			}
+		}
+	}
+	return retrievalOf(model)
 }
 
 // tinyRetrieval is the smallest request for a model of kind's at an
@@ -479,7 +504,7 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 		proto = clientProto(client, protos)
 	} else if draws {
 		proto = Chat
-	} else if retrievalOf(model) != "" && slices.Contains(protos, Chat) {
+	} else if p.retrievalOf(model) != "" && slices.Contains(protos, Chat) {
 		// an embedding or rerank model, at the OpenAI-style base's
 		// /embeddings or /rerank, where the gateway sends it (tiny)
 		proto = Chat
@@ -525,7 +550,7 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 			return d
 		}
 	}
-	if !r.OK && r.otherAPI && client != ClientClaudeCode && retrievalOf(model) == "" {
+	if !r.OK && r.otherAPI && client != ClientClaudeCode && p.retrievalOf(model) == "" {
 		// the vendor's word that the model isn't served on that API: it
 		// is asked on the next one that may serve it, as the gateway asks
 		// a request there (usable), and that one's answer is the model's
@@ -735,7 +760,7 @@ func (p Provider) testModel(q Provider, proto Protocol) string {
 		// sends it (heatonz on Discord: a provider serving only those)
 		// or one its preset names (Voyage AI, which lists none)
 		for _, m := range append(catalog.LiveServing(p.ID, ""), p.PlanRetrieval("")...) {
-			if retrievalOf(m.ID) != "" && !off(p.ID, m.ID) && sees(m.ID) {
+			if retrievalOfModel(m) != "" && !off(p.ID, m.ID) && sees(m.ID) {
 				return m.ID
 			}
 		}

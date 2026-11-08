@@ -86,15 +86,15 @@ func (p Provider) Detect(ctx context.Context, base, model string, picked ...stri
 	}
 	ctx = q.ownRequests(q.Via(ctx), probelog.KindDetect)
 	model = strings.TrimSpace(model)
-	var ids []string
+	var ms []catalog.Model
 	if model == "" {
 		for _, m := range picked {
-			if m = strings.TrimSpace(m); m != "" && !slices.Contains(ids, m) {
-				ids = append(ids, m)
+			if m = strings.TrimSpace(m); m != "" && !slices.ContainsFunc(ms, func(x catalog.Model) bool { return x.ID == m }) {
+				ms = append(ms, catalog.Model{ID: m})
 			}
 		}
-		if len(ids) == 0 {
-			ids = q.detectModels(ctx)
+		if len(ms) == 0 {
+			ms = q.detectModels(ctx)
 		}
 	}
 	out := make([]Detection, len(detectProtocols))
@@ -102,7 +102,7 @@ func (p Provider) Detect(ctx context.Context, base, model string, picked ...stri
 	for i, proto := range detectProtocols {
 		m := model
 		if m == "" {
-			m = detectModel(ids, proto)
+			m = detectModel(ms, proto)
 		}
 		var ask func(context.Context) Result
 		out[i], ask = q.detectOne(proto, m, testWait)
@@ -316,62 +316,61 @@ func (p Provider) DetectModels(ctx context.Context, base string, models []string
 }
 
 // detectModels are the models a detection may ask for: those p exposes and
-// lists, else the vendor's list, asked for now and not kept.
-func (p Provider) detectModels(ctx context.Context) []string {
-	var ids []string
+// lists, else the vendor's list, asked for now and not kept — with what
+// each is made for, where the list says so (Model.Serves, #5416).
+func (p Provider) detectModels(ctx context.Context) []catalog.Model {
+	var ms []catalog.Model
 	if p.ID != "" {
-		for _, ms := range [][]catalog.Model{p.Exposed(), p.Available()} {
-			for _, m := range ms {
-				if !slices.Contains(ids, m.ID) {
-					ids = append(ids, m.ID)
+		for _, pool := range [][]catalog.Model{p.Exposed(), p.Available()} {
+			for _, m := range pool {
+				if !slices.ContainsFunc(ms, func(x catalog.Model) bool { return x.ID == m.ID }) {
+					ms = append(ms, m)
 				}
 			}
 		}
 	}
-	if len(ids) > 0 {
-		return ids
+	if len(ms) > 0 {
+		return ms
 	}
 	l, err := p.fetchOne(ctx)
 	if err != nil {
 		return nil
 	}
-	for _, m := range l.models {
-		ids = append(ids, m.ID)
-	}
-	return ids
+	return append(ms, l.models...)
 }
 
-// detectModel is the model of ids to ask proto for: one made for it — a
+// detectModel is the model of ms to ask proto for: one made for it — a
 // Claude model on Anthropic's, an OpenAI one on Responses, a Gemini one on
 // Gemini's, any other on Chat — else the first that chats, else, on Chat,
-// an embedding or rerank model.
-func detectModel(ids []string, proto Protocol) string {
-	made := func(id string) bool {
+// an embedding or rerank model, as the vendor's list says of one or its id
+// does (retrievalOfModel).
+func detectModel(ms []catalog.Model, proto Protocol) string {
+	made := func(m catalog.Model) bool {
 		switch proto {
 		case Anthropic:
-			return isClaude(id)
+			return isClaude(m.ID)
 		case Responses:
-			return openAIModel(id)
+			return openAIModel(m.ID)
 		case Gemini:
-			return strings.Contains(strings.ToLower(id), "gemini")
+			return strings.Contains(strings.ToLower(m.ID), "gemini")
 		}
-		return !isClaude(id)
+		return !isClaude(m.ID)
 	}
-	chats := func(id string) bool { return !catalog.ImagesAPI(id) && retrievalOf(id) == "" }
-	for _, want := range []func(string) bool{
-		func(id string) bool { return made(id) && chats(id) }, chats,
+	chats := func(m catalog.Model) bool { return !catalog.ImagesAPI(m.ID) && retrievalOfModel(m) == "" }
+	for _, want := range []func(catalog.Model) bool{
+		func(m catalog.Model) bool { return made(m) && chats(m) }, chats,
 		// none chats: an embedding or rerank model, which OpenAI's base
 		// is asked for at /embeddings or /rerank (tiny)
-		func(id string) bool { return proto == Chat && retrievalOf(id) != "" },
+		func(m catalog.Model) bool { return proto == Chat && retrievalOfModel(m) != "" },
 	} {
-		for _, id := range ids {
-			if want(id) {
-				return id
+		for _, m := range ms {
+			if want(m) {
+				return m.ID
 			}
 		}
 	}
-	if len(ids) > 0 {
-		return ids[0]
+	if len(ms) > 0 {
+		return ms[0].ID
 	}
 	return ""
 }

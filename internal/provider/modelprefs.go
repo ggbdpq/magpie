@@ -277,7 +277,11 @@ func setModelEfforts(ref string, efforts []string) (bool, error) {
 // keptEfforts is the levels a user keeps of p's model as ModelEfforts
 // holds them: those given, checked against the model's own (or Levels, for
 // a model with none known), in the vendor's order, and none when they are
-// all of them.
+// all of them and none were named — a reset. A set the user names is kept
+// even when it is every level the model has (#5458): a model whose levels
+// the gateway doesn't publish (its vendor's list is silent about them) had
+// no supported way to be told them, as the override equal to its own set
+// was folded away and nothing was kept to publish.
 func keptEfforts(p *Provider, model string, efforts []string) ([]string, error) {
 	all := p.Known(model)
 	var keep []string
@@ -297,7 +301,7 @@ func keptEfforts(p *Provider, model string, efforts []string) ([]string, error) 
 		}
 	}
 	keep = effortsKept(all, keep) // in the vendor's order
-	if len(keep) == len(all) {
+	if len(keep) == len(all) && len(efforts) == 0 {
 		keep = nil
 	}
 	return keep, nil

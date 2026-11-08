@@ -57,3 +57,60 @@ func TestSetModelPrefs(t *testing.T) {
 		t.Fatalf("names %v, told %d times", settings.Load().ModelNames, touched)
 	}
 }
+
+// An override that names every level the model has is kept all the same
+// (#5458): folding it away as "offered all again" left no override in
+// settings, and a model whose levels the gateway doesn't publish (its
+// vendor's list is silent about them) then had no supported way to be
+// told them — the CLI said the levels, the list published none, and
+// setting exactly those levels changed nothing. What the user gave is
+// kept now; only a reset (no levels) offers them all again by taking
+// the override away.
+func TestModelEffortsNamingAllLevelsAreKept(t *testing.T) {
+	prefsHome(t)
+	p, err := Find("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := p.Known("sol")
+	if want := []string{"low", "medium", "high", "max"}; !slices.Equal(all, want) {
+		t.Fatalf("Known(sol) = %v, want %v", all, want)
+	}
+	// a subset was kept before (#92) and still is
+	if err := SetModelEfforts("a/sol", []string{"low", "high"}); err != nil {
+		t.Fatal(err)
+	}
+	if kept := settings.Load().ModelEfforts["a/sol"]; !slices.Equal(kept, []string{"low", "high"}) {
+		t.Fatalf("subset kept as %v", kept)
+	}
+	// the whole native set, spelt by the user: kept, not folded away
+	if err := SetModelEfforts("a/sol", []string{"max", "high", "medium", "low"}); err != nil {
+		t.Fatal(err)
+	}
+	kept, ok := settings.Load().ModelEfforts["a/sol"]
+	if !ok || !slices.Equal(kept, all) {
+		t.Fatalf("an override equal to the native set was not kept: %v", settings.Load().ModelEfforts)
+	}
+	// and the catalog carries it, in the vendor's order
+	if got := entry(t, "a/sol").Efforts; !slices.Equal(got, all) {
+		t.Fatalf("entry efforts %v, want %v", got, all)
+	}
+	// setting the same set again changes nothing further (told once more
+	// here, as the set above was a change)
+	if err := SetModelEfforts("a/sol", []string{"low", "medium", "high", "max"}); err != nil {
+		t.Fatal(err)
+	}
+	if kept := settings.Load().ModelEfforts["a/sol"]; !slices.Equal(kept, all) {
+		t.Fatalf("kept as %v after setting the same set again", kept)
+	}
+	// a reset still takes the override away
+	if err := SetModelEfforts("a/sol", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := settings.Load().ModelEfforts["a/sol"]; ok {
+		t.Fatal("reset left the override behind")
+	}
+	if got := entry(t, "a/sol").Efforts; !slices.Equal(got, all) {
+		t.Fatalf("after a reset the entry offers %v, want all of %v", got, all)
+	}
+}

@@ -155,7 +155,11 @@ func TestModelName(t *testing.T) {
 
 // Keeping some of a model's reasoning levels offers only those, in the
 // vendor's order, where magpie lists it (and so in the groups it is in);
-// asking for one it hasn't fails, and all of them, or none, is a reset.
+// asking for one it hasn't fails. A set naming every level the model has
+// is kept too (#5458): it is the user's word on what the lists publish,
+// where a model whose levels the gateway doesn't publish otherwise has no
+// supported way to be told them. A reset (no levels) offers them all
+// again by taking the override away.
 func TestModelEfforts(t *testing.T) {
 	prefsHome(t)
 	if err := SetModelEfforts("a/sol", []string{"high", "low", "high"}); err != nil {
@@ -183,8 +187,13 @@ func TestModelEfforts(t *testing.T) {
 	if err := SetModelEfforts("a/sol", []string{"low", "medium", "high", "max"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := settings.Load().ModelEfforts["a/sol"]; ok {
-		t.Fatal("every level kept is still a narrowing")
+	// naming every level the model has is kept as the user's word on what
+	// the lists publish (#5458), and offers all of them as before
+	if kept, ok := settings.Load().ModelEfforts["a/sol"]; !ok || !slices.Equal(kept, []string{"low", "medium", "high", "max"}) {
+		t.Fatalf("every level named was not kept: %v", settings.Load().ModelEfforts)
+	}
+	if got := entry(t, "a/sol").Efforts; !slices.Equal(got, []string{"low", "medium", "high", "max"}) {
+		t.Fatal(got)
 	}
 	SetModelEfforts("a/sol", []string{"max"})
 	if err := SetModelEfforts("a/sol", nil); err != nil {

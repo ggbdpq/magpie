@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -36,6 +37,11 @@ type fakeS3 struct {
 	log                []string // each request: method, and the condition sent
 	onWrite            func()   // runs once, at the next PUT or HEAD (a write's look first), before it is answered
 	sent               int      // the bytes of objects read
+	// failList makes a listing answer 500, as a bucket refusing to be
+	// listed does; pageMax is the most objects a listing page carries
+	// (unbounded when 0)
+	failList bool
+	pageMax  int
 	// reread, when set, is how the server reads a header back before it
 	// checks the signature over it
 	reread func(name, value string) string
@@ -79,6 +85,10 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
+		if r.Method == http.MethodGet && r.URL.Query().Get("list-type") == "2" {
+			f.list(w, r)
+			return
+		}
 		b, ok := f.objects[key]
 		if !ok {
 			if r.Method == http.MethodHead {
@@ -111,9 +121,58 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.store(key, body)
 		w.Header().Set("ETag", f.etags[key])
+	case http.MethodDelete:
+		delete(f.objects, key)
+		delete(f.etags, key)
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		f.fail(w, http.StatusNotImplemented, "NotImplemented")
 	}
+}
+
+// list answers a listing of the bucket: the objects under the query's
+// prefix, by key, each page carrying pageMax (max-keys') of them, the
+// next page named by the key it starts at. failList refuses every one.
+func (f *fakeS3) list(w http.ResponseWriter, r *http.Request) {
+	if f.failList {
+		f.fail(w, http.StatusInternalServerError, "InternalError")
+		return
+	}
+	q := r.URL.Query()
+	var ks []string
+	for k := range f.objects {
+		if strings.HasPrefix(k, q.Get("prefix")) {
+			ks = append(ks, k)
+		}
+	}
+	slices.Sort(ks)
+	most := f.pageMax
+	if v := q.Get("max-keys"); v != "" && f.pageMax == 0 {
+		most, _ = strconv.Atoi(v)
+	}
+	start := 0
+	if tok := q.Get("continuation-token"); tok != "" {
+		if i := slices.Index(ks, tok); i >= 0 {
+			start = i
+		}
+	}
+	end := len(ks)
+	if most > 0 && start+most < end {
+		end = start + most
+	}
+	var b strings.Builder
+	b.WriteString("<ListBucketResult>")
+	for _, k := range ks[start:end] {
+		fmt.Fprintf(&b, "<Contents><Key>%s</Key><Size>%d</Size></Contents>", k, len(f.objects[k]))
+	}
+	if end < len(ks) {
+		fmt.Fprintf(&b, "<IsTruncated>true</IsTruncated><NextContinuationToken>%s</NextContinuationToken>", ks[end])
+	} else {
+		b.WriteString("<IsTruncated>false</IsTruncated>")
+	}
+	b.WriteString("</ListBucketResult>")
+	w.Header().Set("Content-Type", "application/xml")
+	io.WriteString(w, b.String())
 }
 
 func (f *fakeS3) store(key string, b []byte) {

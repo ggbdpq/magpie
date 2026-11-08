@@ -70,14 +70,38 @@ func servesKind(kind string) func(p provider.Provider, model string) bool {
 		}
 	}
 	return func(p provider.Provider, model string) bool {
-		if slices.ContainsFunc(catalog.LiveServing(p.ID, kind), func(m catalog.Model) bool { return is(m, model) }) {
-			return true
-		}
-		if catalog.ServesOf(model) == kind && slices.ContainsFunc(provider.KeptListing(p).Available, func(m catalog.Model) bool { return is(m, model) }) {
-			return true
-		}
-		return slices.ContainsFunc(p.PlanRetrieval(kind), func(m catalog.Model) bool { return is(m, model) })
+		return slices.ContainsFunc(ServingOf(p, kind), func(m catalog.Model) bool { return is(m, model) })
 	}
+}
+
+// ServingOf are the models p serves of an API that is no chat, kind's
+// (catalog.Serves*), in the order its sources say them: its fetched list's
+// (catalog.LiveServing), those its kept list has under an id that says so
+// (another magpie's list, which keeps them as it lists them and marks
+// none), its preset plan's (PlanRetrieval) and its plugin's declared ones
+// (PluginServing). Each id once: the sources name no model twice that
+// matters. Hidden ones are still here — a request that names one still
+// serves — the lists to pick from take them out (servingObjects,
+// provider.HiddenSpeech, provider.HiddenEmbeddings, Fish-under-sea
+// #5418).
+func ServingOf(p provider.Provider, kind string) []catalog.Model {
+	if p.DecideOnly() {
+		return nil
+	}
+	out := catalog.LiveServing(p.ID, kind)
+	add := func(ms []catalog.Model) {
+		for _, m := range ms {
+			if slices.ContainsFunc(out, func(o catalog.Model) bool { return o.ID == m.ID }) {
+				continue
+			}
+			m.Provider = p.ID
+			out = append(out, m)
+		}
+	}
+	add(slices.DeleteFunc(slices.Clone(provider.KeptListing(p).Available), func(m catalog.Model) bool { return catalog.ServesOf(m.ID) != kind }))
+	add(p.PlanRetrieval(kind))
+	add(provider.PluginServing(p, kind))
+	return out
 }
 
 // retrievalKind is the kind of model an operation of serveRetrieval's is

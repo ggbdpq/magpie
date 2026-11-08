@@ -1611,6 +1611,48 @@ func videomakerObjects(r *http.Request) []map[string]any {
 	return out
 }
 
+// servingObjects are a kind's models (catalog.Serves*), as another SDK
+// asks for them in its list (?kind=embedding, rerank, speech or
+// transcription): "kind" says what a model is for, which an agent's list
+// never has, so it takes none for a model to chat with, and a client need
+// not guess from ids (Fish-under-sea, #5418). Those unticked in their
+// provider's editor are left out (provider.HiddenSpeech,
+// provider.HiddenEmbeddings), as OfferedDrawers are of the image models;
+// a request that names a hidden one still serves. A gateway key held to
+// some models is told of those alone, as its chat list is (#2579).
+func servingObjects(r *http.Request, kind string) []map[string]any {
+	who, held := keyListHolds(r)
+	var out []map[string]any
+	for _, p := range provider.All() {
+		if !p.On() || p.DecideOnly() {
+			continue
+		}
+		for _, m := range ServingOf(p, kind) {
+			if p.SpeechHidden(m.ID) || p.EmbeddingHidden(m.ID) {
+				continue
+			}
+			if held && (!modelAllowed(who, p, m.ID) || !accountServes(who, p, m.ID)) {
+				continue
+			}
+			name := cmp.Or(m.Name, m.ID)
+			in, outKinds := []string{"text"}, []string{"embedding"}
+			switch kind {
+			case catalog.ServesRerank:
+				outKinds = []string{"relevance"}
+			case catalog.ServesSpeech:
+				outKinds = []string{"audio"}
+			case catalog.ServesTranscription:
+				in, outKinds = []string{"audio"}, []string{"text"}
+			}
+			out = append(out, map[string]any{"id": p.ID + "/" + m.ID, "object": "model", "type": "model", "kind": kind, "created": 0,
+				"owned_by": p.ID, "display_name": name, "magpie_label": name + " · " + p.Name,
+				"modalities": map[string]any{"input": in, "output": outKinds},
+				"magpie_via": catalog.ViaHere(m.Via)})
+		}
+	}
+	return out
+}
+
 // viaOf is the magpies e's model passes through after this one, as the
 // remote magpie serving it listed them; nil for a provider's own model.
 // A routing group's are its members' together: a group with a remote
@@ -1642,14 +1684,17 @@ func catalogFor(r *http.Request) []provider.Entry {
 
 // listKinds is which of magpie's models a /v1/models call lists: its chat
 // models alone, unless it names the kinds it wants in ?kind= (chat, image,
-// video, comma separated; all for the three). Image and video models are
-// listed only when asked for, each marked "kind" (drawerObjects,
-// videomakerObjects): OpenAI's own list puts gpt-image and sora among its
-// chat models with nothing to tell them apart, and the clients and agents
-// that offer every id this list gives as a model to chat with (OpenCode's,
-// Cherry Studio's, ZCode's pasted ?format=text) would offer an image model
-// in their chat pickers (axelburks on Discord asked for them here). A kind
-// it doesn't know is refused, not read as none.
+// video, embedding, rerank, speech, transcription, comma separated; all
+// for chat, image and video). Image and video models are listed only when
+// asked for, each marked "kind" (drawerObjects, videomakerObjects):
+// OpenAI's own list puts gpt-image and sora among its chat models with
+// nothing to tell them apart, and the clients and agents that offer every
+// id this list gives as a model to chat with (OpenCode's, Cherry Studio's,
+// ZCode's pasted ?format=text) would offer an image model in their chat
+// pickers (axelburks on Discord asked for them here). The models made for
+// another API are likewise listed only when their kind is asked for, each
+// marked with it (servingObjects, Fish-under-sea #5418). A kind it doesn't
+// know is refused, not read as none.
 //
 // Cherry Studio is the exception: it can't ask, and it tells an image model
 // from a chat one itself. Its provider of magpie (an OpenAI-compatible one)
@@ -1659,12 +1704,12 @@ func catalogFor(r *http.Request) []provider.Entry {
 // grok-imagine models as image generation: those go to its Paintings page,
 // not its chat picker (isNonChatModel). Without them listed, Paintings had
 // no model of magpie's (pingqipai3 on X). So it is listed every kind.
-func listKinds(r *http.Request) (chat, image, video bool, err error) {
+func listKinds(r *http.Request) (chat, image, video bool, serves []string, err error) {
 	q, ok := r.URL.Query()["kind"]
 	if !ok {
 		// a list of ids pasted somewhere (?format=text) stays chat models
 		media := cherryStudio(r) && r.URL.Query().Get("format") != "text"
-		return true, media, media, nil
+		return true, media, media, nil, nil
 	}
 	for _, v := range q {
 		for k := range strings.SplitSeq(v, ",") {
@@ -1675,14 +1720,18 @@ func listKinds(r *http.Request) (chat, image, video bool, err error) {
 				image = true
 			case "video":
 				video = true
+			case catalog.ServesEmbedding, catalog.ServesRerank, catalog.ServesSpeech, catalog.ServesTranscription:
+				if !slices.Contains(serves, strings.ToLower(strings.TrimSpace(k))) {
+					serves = append(serves, strings.ToLower(strings.TrimSpace(k)))
+				}
 			case "all":
 				chat, image, video = true, true, true
 			default:
-				return false, false, false, fmt.Errorf("kind %q: /v1/models lists the kinds chat, image and video (or all), comma separated", k)
+				return false, false, false, nil, fmt.Errorf("kind %q: /v1/models lists the kinds chat, image, video, embedding, rerank, speech and transcription (or all), comma separated", k)
 			}
 		}
 	}
-	return chat, image, video, nil
+	return chat, image, video, serves, nil
 }
 
 // cherryStudio is a request of Cherry Studio's: with the key magpie's link
@@ -1709,7 +1758,7 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 	data := []map[string]any{}
-	chat, images, videos, err := listKinds(r)
+	chat, images, videos, serves, err := listKinds(r)
 	if err != nil {
 		writeError(w, provider.Chat, 400, err.Error())
 		return
@@ -1820,6 +1869,9 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 	}
 	if videos || r.Header.Get(provider.VideomakersHeader) != "" {
 		data = append(data, videomakerObjects(r)...)
+	}
+	for _, kind := range serves {
+		data = append(data, servingObjects(r, kind)...)
 	}
 	if r.Header.Get(provider.DecidersHeader) != "" {
 		// the decision models its own pickers offer: of a provider with

@@ -449,6 +449,51 @@ func pluginTalks(m plugin.Model) bool {
 	return slices.ContainsFunc(m.Outputs, func(k string) bool { return k == "text" || k == "image" || k == "video" })
 }
 
+// PluginServing are the models p, a plugin's provider, lists that its
+// plugin says are made for the API kind names (Model.Serves), in the
+// plugin's order; "" is every such model, whatever its API. What #3279
+// drops from the chat lists is kept apart here instead (Fish-under-sea,
+// #5418): an embedding ({"text": false}) and a TTS (audio alone) are told
+// by what the plugin declares, not the model's id, so one whose id names
+// nothing is still found, and a model said nothing of is none of them.
+func PluginServing(p Provider, kind string) []catalog.Model {
+	if !p.IsPlugin() {
+		return nil
+	}
+	pp, ok := PluginOf(p.ID)
+	if !ok {
+		return nil
+	}
+	var out []catalog.Model
+	for _, m := range pp.Models {
+		serves := pluginServesOf(m)
+		if serves == "" || kind != "" && serves != kind {
+			continue
+		}
+		name := m.Name
+		if name == "" || name == m.ID {
+			name = m.ID
+		}
+		out = append(out, catalog.Model{ID: m.ID, Name: name, Provider: p.ID, Serves: serves})
+	}
+	return out
+}
+
+// pluginServesOf is the API a plugin's model is made for, as its plugin
+// declares (capabilities.output): audio alone is speech, outputs said and
+// none given ({"text": false}) is an embedding. A model to talk with (a
+// text among the outputs, an image's or a video's place, or nothing said)
+// is made for none.
+func pluginServesOf(m plugin.Model) string {
+	if pluginTalks(m) {
+		return ""
+	}
+	if slices.Contains(m.Outputs, "audio") {
+		return catalog.ServesSpeech
+	}
+	return catalog.ServesEmbedding
+}
+
 // pluginPrice is m's price as its plugin gives it (m.Cost), if it gives
 // one: OpenCode's price of a model it has none for is 0, so only an input
 // or output price above it is one. A cache price of 0 is none given.

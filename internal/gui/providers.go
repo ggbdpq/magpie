@@ -445,8 +445,17 @@ type providerJSON struct {
 	// (provider.ModelKind), by id: they aren't among Models, whose kind is
 	// said there, and a chip's right-click starts from it (iceloon on X)
 	MediaKinds map[string]string `json:"mediaKinds,omitempty"`
-	Unlisted   bool              `json:"unlisted"` // its models serve only through routing groups
-	NoModels   bool              `json:"noModels"` // Select none: none of its models served (#1818)
+	// its speech models (a fetched list's or a plugin's TTS and
+	// transcription ones, gateway.ServingOf) and its embedding and rerank
+	// ones, listed apart in its editor as its image models are, and those
+	// unticked there (provider.HiddenSpeech, provider.HiddenEmbeddings,
+	// Fish-under-sea #5418)
+	SpeechIDs        []string `json:"speechIds,omitempty"`
+	HiddenSpeech     []string `json:"hiddenSpeech,omitempty"`
+	EmbedIDs         []string `json:"embedIds,omitempty"`
+	HiddenEmbeddings []string `json:"hiddenEmbeddings,omitempty"`
+	Unlisted         bool     `json:"unlisted"` // its models serve only through routing groups
+	NoModels         bool     `json:"noModels"` // Select none: none of its models served (#1818)
 	// Best in family: with nothing picked, only the newest model of each
 	// family it lists is served (provider.Provider.BestInFamily)
 	BestInFamily bool `json:"bestInFamily"`
@@ -1321,6 +1330,35 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 			out.MediaKinds[id] = k
 		}
 	}
+	// its speech and embedding models likewise (#5418, Fish-under-sea): a
+	// TTS or a transcription, an embedding or a rerank model sits nowhere
+	// else, so its editor is where it is ticked or unticked
+	speech := map[string]bool{}
+	for _, kind := range []string{catalog.ServesSpeech, catalog.ServesTranscription} {
+		for _, m := range gateway.ServingOf(p, kind) {
+			if speech[m.ID] {
+				continue
+			}
+			speech[m.ID] = true
+			out.SpeechIDs = append(out.SpeechIDs, m.ID)
+			if p.SpeechHidden(m.ID) {
+				out.HiddenSpeech = append(out.HiddenSpeech, m.ID)
+			}
+		}
+	}
+	embeds := map[string]bool{}
+	for _, kind := range []string{catalog.ServesEmbedding, catalog.ServesRerank} {
+		for _, m := range gateway.ServingOf(p, kind) {
+			if embeds[m.ID] {
+				continue
+			}
+			embeds[m.ID] = true
+			out.EmbedIDs = append(out.EmbedIDs, m.ID)
+			if p.EmbeddingHidden(m.ID) {
+				out.HiddenEmbeddings = append(out.HiddenEmbeddings, m.ID)
+			}
+		}
+	}
 	if t, ok := p.Listed(); ok {
 		out.Fetched = &t
 	}
@@ -2090,6 +2128,8 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				pr.Unlisted = in.Unlisted
 				pr.HiddenDrawers = in.HiddenDrawers
 				pr.HiddenVideomakers = in.HiddenVideomakers
+				pr.HiddenSpeech = in.HiddenSpeech
+				pr.HiddenEmbeddings = in.HiddenEmbeddings
 				pr.AccountProxies = in.AccountProxies
 				if in.Name != "" {
 					pr.Name = in.Name
@@ -2398,6 +2438,14 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				}
 				if in.HiddenVideomakers == nil && old != nil {
 					in.HiddenVideomakers = old.HiddenVideomakers
+				}
+				// its speech and embedding models unticked there likewise
+				// (#5418)
+				if in.HiddenSpeech == nil && old != nil {
+					in.HiddenSpeech = old.HiddenSpeech
+				}
+				if in.HiddenEmbeddings == nil && old != nil {
+					in.HiddenEmbeddings = old.HiddenEmbeddings
 				}
 				// a Zhipu key's team likewise: {} clears it
 				if in.ZhipuTeam == nil && old != nil {

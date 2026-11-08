@@ -709,6 +709,15 @@ type Provider struct {
 	// magpie's, /v1/models' ?kind=video) and of Automatic's choice. A
 	// request that names one still makes its video.
 	HiddenVideomakers []string `json:"hiddenVideomakers,omitempty"`
+	// HiddenSpeech are its speech models unticked in its editor, as
+	// HiddenDrawers are its image models: a fetched list's TTS and
+	// transcription models and a plugin's (capabilities.output), listed
+	// apart in its editor and, asked for, on /v1/models' ?kind= (Fish-
+	// under-sea, #5418). A request that names one still serves.
+	HiddenSpeech []string `json:"hiddenSpeech,omitempty"`
+	// HiddenEmbeddings are its embedding and rerank models unticked in
+	// its editor, as HiddenSpeech are its speech ones (#5418).
+	HiddenEmbeddings []string `json:"hiddenEmbeddings,omitempty"`
 	// Off switches the provider off without removing it: its keys and
 	// settings stay, but agents aren't given its models, no request,
 	// routing group or fallback goes to it, and its balance isn't asked,
@@ -1156,6 +1165,8 @@ func accountSettings(a, pk Provider) Provider {
 	// the image models unticked in its editor (HiddenDrawers)
 	a.HiddenDrawers = pk.HiddenDrawers
 	a.HiddenVideomakers = pk.HiddenVideomakers
+	a.HiddenSpeech = pk.HiddenSpeech
+	a.HiddenEmbeddings = pk.HiddenEmbeddings
 	// and the headers of its replies passed on (#4145)
 	a.ReplyHeaders = pk.ReplyHeaders
 	// and the headers of the agent's requests passed on
@@ -1595,6 +1606,12 @@ func AddCopy(p Provider, from string) (string, error) {
 	}
 	if p.HiddenVideomakers == nil {
 		p.HiddenVideomakers = slices.Clone(src.HiddenVideomakers)
+	}
+	if p.HiddenSpeech == nil {
+		p.HiddenSpeech = slices.Clone(src.HiddenSpeech)
+	}
+	if p.HiddenEmbeddings == nil {
+		p.HiddenEmbeddings = slices.Clone(src.HiddenEmbeddings)
 	}
 	p.Searches = p.Searches || src.Searches
 	p.Unredacted = p.Unredacted || src.Unredacted

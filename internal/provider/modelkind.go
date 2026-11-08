@@ -140,3 +140,18 @@ func (p Provider) DrawerHidden(model string) bool {
 func (p Provider) VideomakerHidden(model string) bool {
 	return slices.Contains(p.HiddenVideomakers, model)
 }
+
+// SpeechHidden is whether the user unticked p's speech model (a TTS or a
+// transcription) in its editor (HiddenSpeech): it is left out of the
+// lists a speech model is picked from, and still serves when named
+// (Fish-under-sea, #5418).
+func (p Provider) SpeechHidden(model string) bool {
+	return slices.Contains(p.HiddenSpeech, model)
+}
+
+// EmbeddingHidden is whether the user unticked p's embedding or rerank
+// model in its editor (HiddenEmbeddings), as SpeechHidden its speech
+// ones (#5418).
+func (p Provider) EmbeddingHidden(model string) bool {
+	return slices.Contains(p.HiddenEmbeddings, model)
+}

@@ -2329,7 +2329,7 @@ func (s *Server) gemini(w http.ResponseWriter, r *http.Request) {
 	// that can't see is shown in words of (image_input.go) too (#934)
 	body = geminiCamel(body)
 	var err error
-	if err := decodeRequest(body, &struct{}{}); err != nil {
+	if body, err = decodeRequest(body, &struct{}{}); err != nil {
 		writeError(w, provider.Gemini, 400, err.Error())
 		return
 	}
@@ -9848,16 +9848,74 @@ func streamOf(body []byte) bool {
 }
 
 // decodeRequest requires one complete JSON object before fields are rewritten
-// or a request is routed. In particular, null is not an empty object.
-func decodeRequest(body []byte, dst any) error {
-	body = bytes.TrimSpace(body)
-	if len(body) == 0 || body[0] != '{' {
-		return errors.New("invalid request: expected a JSON object")
+// or a request is routed. In particular, null is not an empty object. The
+// body comes back as it was read, or, when it did not parse over raw control
+// bytes inside its strings and escaping them mended it, as those bytes
+// escaped: the copy routed is the copy that parses (#5668).
+func decodeRequest(body []byte, dst any) ([]byte, error) {
+	raw := bytes.TrimSpace(body)
+	if len(raw) == 0 || raw[0] != '{' {
+		return body, errors.New("invalid request: expected a JSON object")
 	}
-	if err := decodeJSON(body, dst); err != nil {
-		return fmt.Errorf("invalid request: %w", err)
+	err := decodeJSON(raw, dst)
+	if err == nil {
+		return body, nil
 	}
-	return nil
+	// A raw control byte inside a string is what JSON forbids, and \u00XX is
+	// the same character in the only spelling the grammar takes: a tool
+	// result that read a binary file whole carried one, and the turn was lost
+	// over a byte magpie can spell (AnxForever, #5668). The walk is paid only
+	// by a body that failed to parse; a repaired copy that parses again is
+	// the body routed, with one line said of it; one the copy does not mend
+	// is refused with the first parse's error, as before.
+	if fixed, n, off := escapeRawControlBytes(raw); n > 0 {
+		if err2 := decodeJSON(fixed, dst); err2 == nil {
+			excerpt := raw[max(0, off-12):min(len(raw), off+12)]
+			log.Printf("gateway: escaped %d raw control byte(s) in a request string, first at offset %d: %q", n, off, excerpt)
+			return fixed, nil
+		}
+	}
+	return body, fmt.Errorf("invalid request: %w", err)
+}
+
+// escapeRawControlBytes escapes the raw control bytes (0x00–0x1F) body holds
+// inside its string literals, as \u00XX, and reports how many it escaped and
+// where the first was. Only a body that failed to parse comes here, so a
+// valid body is never walked, let alone copied. A control byte outside a
+// string stays as it is — \n, \t and \r are the whitespace JSON allows
+// between tokens, and any other is a broken structure escaping cannot mend.
+func escapeRawControlBytes(body []byte) ([]byte, int, int) {
+	var out []byte
+	n, first := 0, -1
+	inString, escaped := false, false
+	for i, c := range body {
+		switch {
+		case escaped:
+			escaped = false
+		case inString && c == '\\':
+			escaped = true
+		case c == '"':
+			inString = !inString
+		case inString && c < 0x20:
+			if out == nil {
+				out = append(make([]byte, 0, len(body)+64), body[:i]...)
+			}
+			const hex = "0123456789abcdef"
+			out = append(out, '\\', 'u', '0', '0', hex[c>>4], hex[c&0xF])
+			if first < 0 {
+				first = i
+			}
+			n++
+			continue
+		}
+		if out != nil {
+			out = append(out, c)
+		}
+	}
+	if out == nil {
+		return body, 0, -1
+	}
+	return out, n, first
 }
 
 func validateModel(model string) (string, error) {
@@ -9902,7 +9960,8 @@ func requestModel(body []byte) ([]byte, string, error) {
 	var q struct {
 		Model string `json:"model"`
 	}
-	if err := decodeRequest(body, &q); err != nil {
+	body, err := decodeRequest(body, &q)
+	if err != nil {
 		return nil, "", err
 	}
 	model, err := validateModel(q.Model)

@@ -25,6 +25,7 @@ func TestCodexRunsOutAfterPick(t *testing.T) {
 		t.Fatalf("beside the sign-in:\n%s", cfg)
 	}
 	codexUsedUp = func() bool { return true }
+	codexRoomKnown = func() bool { return false }
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -39,6 +40,7 @@ func TestCodexRunsOutAfterPick(t *testing.T) {
 		t.Fatalf("used up, synced again:\n%s", cfg)
 	}
 	codexUsedUp = func() bool { return false }
+	codexRoomKnown = func() bool { return true }
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +75,8 @@ func TestCodexKeptOnChatGPT(t *testing.T) {
 		t.Fatal(err)
 	}
 	codexUsedUp = func() bool { return true }
-	t.Cleanup(func() { codexUsedUp = func() bool { return false } })
+	codexRoomKnown = func() bool { return false }
+	t.Cleanup(func() { codexUsedUp = func() bool { return false }; codexRoomKnown = func() bool { return true } })
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +142,7 @@ func TestCodexOwnModelGoesThroughMagpieWhileUsedUp(t *testing.T) {
 		t.Fatal("joined with room: AppOut")
 	}
 	codexUsedUp = func() bool { return true }
+	codexRoomKnown = func() bool { return false }
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -155,6 +159,7 @@ func TestCodexOwnModelGoesThroughMagpieWhileUsedUp(t *testing.T) {
 		t.Fatalf("used up, synced again:\n%s", cfg)
 	}
 	codexUsedUp = func() bool { return false }
+	codexRoomKnown = func() bool { return true }
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -172,6 +177,7 @@ func TestCodexOwnModelGoesThroughMagpieWhileUsedUp(t *testing.T) {
 
 	// a model the user picked while out stays theirs when room comes back
 	codexUsedUp = func() bool { return true }
+	codexRoomKnown = func() bool { return false }
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -179,6 +185,7 @@ func TestCodexOwnModelGoesThroughMagpieWhileUsedUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	codexUsedUp = func() bool { return false }
+	codexRoomKnown = func() bool { return true }
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -246,6 +253,7 @@ func TestCodexOwnModelOneSpentAccountStaysOnItsSignIn(t *testing.T) {
 		}
 	}
 	codexUsedUp = func() bool { return true }
+	codexRoomKnown = func() bool { return false }
 	for _, when := range []string{"used up", "used up, synced again"} {
 		if err := cx.Sync(); err != nil {
 			t.Fatal(err)
@@ -253,6 +261,7 @@ func TestCodexOwnModelOneSpentAccountStaysOnItsSignIn(t *testing.T) {
 		same(when)
 	}
 	codexUsedUp = func() bool { return false }
+	codexRoomKnown = func() bool { return true }
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -284,6 +293,7 @@ func TestCodexOwnModelOneSpentAccountTakenOverForOtherModels(t *testing.T) {
 		t.Fatalf("other model %q", codexOtherModel())
 	}
 	codexUsedUp = func() bool { return true }
+	codexRoomKnown = func() bool { return false }
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -305,6 +315,7 @@ func TestCodexOwnModelOneSpentAccountTakenOverForOtherModels(t *testing.T) {
 		}
 	}
 	codexUsedUp = func() bool { return false }
+	codexRoomKnown = func() bool { return true }
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -335,6 +346,8 @@ func TestCodexOwnModelKeptOnChatGPT(t *testing.T) {
 		t.Fatal(err)
 	}
 	codexUsedUp = func() bool { return true }
+	codexRoomKnown = func() bool { return false }
+	t.Cleanup(func() { codexRoomKnown = func() bool { return true } })
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +377,8 @@ func TestCodexOwnModelOutThenKeptOnChatGPT(t *testing.T) {
 		t.Fatal(err)
 	}
 	codexUsedUp = func() bool { return true }
-	t.Cleanup(func() { codexUsedUp = func() bool { return false } })
+	codexRoomKnown = func() bool { return false }
+	t.Cleanup(func() { codexUsedUp = func() bool { return false }; codexRoomKnown = func() bool { return true } })
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -397,6 +411,7 @@ func TestCodexOwnModelOutThenKeptOnChatGPT(t *testing.T) {
 	}
 	onSignIn("kept on ChatGPT, synced")
 	codexUsedUp = func() bool { return false }
+	codexRoomKnown = func() bool { return true }
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}

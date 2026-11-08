@@ -57,7 +57,7 @@ func TestCodexTakeoverThreadComesBackOnceQuiet(t *testing.T) {
 		t.Fatal(err)
 	}
 	asked := watchCodexThreads(t)
-	t.Cleanup(func() { codexUsedUp = func() bool { return false } })
+	t.Cleanup(func() { codexUsedUp = func() bool { return false }; codexRoomKnown = func() bool { return true } })
 
 	codexUsedUp = func() bool { return true }
 	if err := cx.Sync(); err != nil {
@@ -86,7 +86,8 @@ func TestCodexTakeoverThreadComesBackOnceQuiet(t *testing.T) {
 		t.Fatal("a Sync asked for while the thread is still written to")
 	case <-time.After(100 * time.Millisecond):
 	}
-	// quiet now
+	// quiet now, and the account has room again: a reading says so
+	codexRoomKnown = func() bool { return true }
 	old := now.Add(-2 * time.Minute)
 	os.Chtimes(path, old, old)
 	select {
@@ -156,8 +157,9 @@ func TestCodexOpenThreadFollowsMagpieOnceLetGo(t *testing.T) {
 		t.Fatal(err)
 	}
 	asked := watchCodexThreads(t)
-	t.Cleanup(func() { codexUsedUp = func() bool { return false } })
+	t.Cleanup(func() { codexUsedUp = func() bool { return false }; codexRoomKnown = func() bool { return true } })
 	codexUsedUp = func() bool { return true }
+	codexRoomKnown = func() bool { return false }
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}

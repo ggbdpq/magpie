@@ -45,7 +45,8 @@ func TestCodexProviderIsNotJoined(t *testing.T) {
 		t.Fatal("back beside the sign-in: not joined")
 	}
 	codexUsedUp = func() bool { return true }
-	t.Cleanup(func() { codexUsedUp = func() bool { return false } })
+	codexRoomKnown = func() bool { return false }
+	t.Cleanup(func() { codexUsedUp = func() bool { return false }; codexRoomKnown = func() bool { return true } })
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +54,7 @@ func TestCodexProviderIsNotJoined(t *testing.T) {
 		t.Fatalf("held: joined %v\n%s", cx.Joined(), cfg)
 	}
 	codexUsedUp = func() bool { return false }
+	codexRoomKnown = func() bool { return true }
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}

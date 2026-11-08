@@ -70,12 +70,15 @@ func TestCodexNeverNamesGoneCatalog(t *testing.T) {
 		{"ChatGPT, disconnect", chatGPTAuth, nil, func(cx *Agent) error { return cx.Disconnect() }},
 		{"ChatGPT out, disconnect", chatGPTAuth, func(t *testing.T, home string, cx *Agent) {
 			codexUsedUp = func() bool { return true }
+			codexRoomKnown = func() bool { return false }
 			cx.Fields[0].Set("fake/m1")
 		}, func(cx *Agent) error { return cx.Disconnect() }},
 		{"ChatGPT out, room again, sync", chatGPTAuth, func(t *testing.T, home string, cx *Agent) {
 			codexUsedUp = func() bool { return true }
+			codexRoomKnown = func() bool { return false }
 			cx.Fields[0].Set("fake/m1")
 			codexUsedUp = func() bool { return false }
+			codexRoomKnown = func() bool { return true }
 		}, func(cx *Agent) error { return cx.Sync() }},
 		{"API key, then signs in to ChatGPT, disconnect", "", func(t *testing.T, home string, cx *Agent) {
 			os.WriteFile(filepath.Join(home, ".codex", "auth.json"), []byte(chatGPTAuth), 0o600)

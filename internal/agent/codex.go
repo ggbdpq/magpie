@@ -1372,6 +1372,17 @@ func codexIn(at place) *Agent {
 	// (chatgpt), where the user would rather the Codex app wait for the
 	// account than leave its ChatGPT state
 	out := func() bool { return stashShared()[at.key("codex.login")] != "chatgpt" && codexUsedUp() }
+	// givesBack says the takeover gives Codex its sign-in back: the user
+	// kept it on ChatGPT, or a reading says the account has room. Not the
+	// mere absence of a hold — a magpie just started, a vendor that
+	// answered nothing, a login read late say neither held nor room, and
+	// one taken for room gave Codex back to a ChatGPT account still out
+	// while its app-server ran on magpie, and every thread of either
+	// provider then failed the app's provider check (#5316, zqbake;
+	// #5480, liu95270). What nothing has spoken against keeps.
+	givesBack := func() bool {
+		return stashShared()[at.key("codex.login")] == "chatgpt" || codexRoomKnown()
+	}
 	dropBase := func() error {
 		forget(at.key("codex.failover"))
 		if !viaBase() {
@@ -2193,7 +2204,7 @@ func codexIn(at place) *Agent {
 					// moved since (another model picked, magpie API, a
 					// disconnect): that stands
 					forget(at.key("codex.out_own"), at.key("codex.out_stand"))
-				case !out():
+				case givesBack():
 					// back beside the sign-in on the one picked, as Join
 					// leaves it: Codex's own sign-in, magpie's models joined
 					forget(at.key("codex.out_own"), at.key("codex.out"), at.key("codex.out_stand"))
@@ -2221,7 +2232,7 @@ func codexIn(at place) *Agent {
 				switch {
 				case viaBase() && !asProvider() && out():
 					return set(m)
-				case asProvider() && stashShared()[at.key("codex.out")] == "1" && !out():
+				case asProvider() && stashShared()[at.key("codex.out")] == "1" && givesBack():
 					return set(m)
 				}
 			}
@@ -3090,6 +3101,13 @@ func codexThreadsLater(dir, p string) {
 // for it, and tells the catalog when the answer changes.
 var codexUsedUp = func() bool {
 	return provider.CodexUsedUpKnown()
+}
+
+// codexRoomKnown reports whether a reading in hand says, plainly, that
+// the ChatGPT account Codex is signed in to has room
+// (provider.CodexRoomKnown). A var so tests can say.
+var codexRoomKnown = func() bool {
+	return provider.CodexRoomKnown()
 }
 
 // codexFailover reports whether Codex is signed in to a ChatGPT account

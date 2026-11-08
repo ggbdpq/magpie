@@ -26,8 +26,10 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	// whether Codex's ChatGPT account is out of its allowance is asked of
-	// OpenAI; never from here
+	// OpenAI; never from here. Its having room is a reading's answer all
+	// the same: known here, where no reading is kept
 	codexUsedUp = func() bool { return false }
+	codexRoomKnown = func() bool { return true }
 	// a thread a Codex holds open is looked at again later, on its own
 	// goroutine, which would outlive its test; the tests about it set
 	// their own wait

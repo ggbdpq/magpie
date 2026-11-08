@@ -588,6 +588,29 @@ func CodexUsedUpKnown() bool {
 	return codexReadingHeld(knownLoginUsage("codex"))
 }
 
+// CodexRoomKnown is whether what was read already says, plainly, that the
+// ChatGPT account Codex is signed in to has room: every active login's
+// last reading succeeded and none is held. The absence of a known hold is
+// not room — a reading that failed, or none at all, is no answer (#5316)
+// — and one taken for room handed Codex back to a ChatGPT account still
+// out while its app-server ran on magpie, every thread of either provider
+// then failing the app's provider check (#5480, liu95270).
+func CodexRoomKnown() bool {
+	u := knownLoginUsage("codex")
+	said := false
+	for _, l := range Logins("codex") {
+		if !l.Active {
+			continue
+		}
+		q, ok := u[l.User]
+		if !ok || q.Error != "" || q.Held {
+			return false
+		}
+		said = true
+	}
+	return said
+}
+
 // codexReadingHeld is whether the reading u has the ChatGPT account Codex
 // is signed in to held by the Codex app. The held of one account's
 // reading, not codexHeld, which is what one vendor reply says.

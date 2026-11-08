@@ -2061,8 +2061,10 @@ func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip refSet, respon
 	withID := 0
 	for _, gateway := range gateways {
 		for i := range gateway.Rows {
-			if gateway.text(&gateway.Rows[i], 11) != 0 && matchable(gateway, i) {
-				withID++
+			if gateway.text(&gateway.Rows[i], 11) != 0 || gateway.text(&gateway.Rows[i], 25) != 0 {
+				if matchable(gateway, i) {
+					withID++
+				}
 			}
 		}
 	}
@@ -2077,12 +2079,28 @@ func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip refSet, respon
 				continue
 			}
 			p := &gateway.Rows[i]
+			// The reply's id is the call's other name (a Claude reply's
+			// message id is, its session file names the same id, and no
+			// request id of the gateway's own, #5674): the local calls
+			// naming either find this call's group.
+			group := int32(-1)
 			if id := gateway.Strings[gateway.text(p, 11)]; id != "" {
 				if k, ok := byID[id]; ok {
 					calls[k].more = append(calls[k].more, ref)
+					group = k
 				} else {
-					byID[id] = int32(len(calls))
+					group = int32(len(calls))
+					byID[id] = group
 					calls = append(calls, idCalls{first: ref})
+				}
+			}
+			if id := gateway.Strings[gateway.text(p, 25)]; id != "" {
+				if _, ok := byID[id]; !ok {
+					if group < 0 {
+						group = int32(len(calls))
+						calls = append(calls, idCalls{first: ref})
+					}
+					byID[id] = group
 				}
 			}
 		}
@@ -2113,10 +2131,16 @@ func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip refSet, respon
 			if skip.has(ref) || reserved.has(ref) || p.Time().Before(since) {
 				continue
 			}
-			if open.text(p, 11) == 0 {
+			// A call names the request id the gateway made its own and, a
+			// Claude call, the message's id, which is the gateway's reply's
+			// id (#5674).
+			if open.text(p, 11) == 0 && open.text(p, rowMsg) == 0 {
 				continue
 			}
 			if k, ok := byID[open.Strings[open.text(p, 11)]]; ok {
+				found = append(found, idLocal{calls[k].last, timedOf(ref, p)})
+				calls[k].last = int32(len(found))
+			} else if k, ok := byID[open.Strings[open.text(p, rowMsg)]]; ok {
 				found = append(found, idLocal{calls[k].last, timedOf(ref, p)})
 				calls[k].last = int32(len(found))
 			}

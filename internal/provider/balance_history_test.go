@@ -2,6 +2,8 @@ package provider
 
 import (
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -214,5 +216,92 @@ func TestBalanceOnlyCardHasTrend(t *testing.T) {
 	// the window's share is still kept as before
 	if lines := QuotaHistories(t0.Add(-time.Hour), "fakeco", ""); len(lines) != 1 {
 		t.Fatalf("windowed card's quota history = %+v", lines)
+	}
+}
+
+// TestNoteBalanceHistorySkipsEstimate (nina7274's #5682): a card's balance
+// typed by hand is no reading, so it is kept nowhere and draws no curve,
+// while the cards read from the vendor keep theirs — the skipping is the
+// history's own, so the caller hands it its cards as they are.
+func TestNoteBalanceHistorySkipsEstimate(t *testing.T) {
+	testenv.SetHome(t, t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t0 := time.Date(2026, 11, 8, 8, 0, 0, 0, time.UTC)
+	at := func(m int) time.Time { return t0.Add(time.Duration(m) * time.Minute) }
+	key := quotaHistKey("deepseek", "main")
+	writeBalanceHist(balanceHist{key: {{at(-60), 100}, {at(-30), 99}}})
+	typed := balCard("Typed", "≈$12.50")
+	typed.Estimate = &BalanceEstimate{Set: 20, At: t0.Add(-time.Hour), Left: fptr(12.5)}
+	real := balCard("Main", "¥99.50")
+	qs := []SubscriptionQuota{typed, real}
+	noteBalanceHistory(qs, at(0))
+	noteBalanceHistory(qs, at(30))
+	if qs[0].BalanceTrend != nil {
+		t.Fatalf("an estimate draws a curve: %+v", qs[0].BalanceTrend)
+	}
+	if qs[1].BalanceTrend == nil || len(qs[1].BalanceTrend.Points) != 4 {
+		t.Fatalf("the vendor's card trend = %+v, want its four readings", qs[1].BalanceTrend)
+	}
+	h := readBalanceHist()
+	if pts := h[quotaHistKey("deepseek", "typed")]; len(pts) != 0 {
+		t.Fatalf("an estimate kept in the balance history: %+v", pts)
+	}
+	if pts := h[key]; len(pts) != 4 {
+		t.Fatalf("the vendor's card points = %+v, want four", pts)
+	}
+}
+
+// TestKeyBalancesTrendWithEstimateCards (nina7274's #5682): KeyBalances
+// gives the trend to the very cards it returns, also with a card estimated
+// from a balance typed among them — the estimate filter once had the call
+// hand over a clone of them, and every trend landed on that copy and was
+// lost (0.1.3305's cards drew no "Balance over time" though the readings
+// went on being kept). A typed card itself still draws none and is still
+// kept nowhere.
+func TestKeyBalancesTrendWithEstimateCards(t *testing.T) {
+	probeSandbox(t)
+	probeLocal = false
+	spentStub(t, map[string]float64{keyID("sk-typed"): 2})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/balance" {
+			w.Write([]byte(`{"left":2}`))
+			return
+		}
+		w.Write([]byte(`<html>ok</html>`))
+	}))
+	defer srv.Close()
+	if err := Save(Provider{ID: "told", Name: "Told", Chat: srv.URL + "/v1", Key: "sk-told",
+		BalanceURL: srv.URL + "/balance", BalancePath: "$left"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(Provider{ID: "typed", Name: "Typed", Chat: "http://127.0.0.1:1/v1", Key: "sk-typed",
+		KeyOwnBalances: map[string]OwnBalance{keyID("sk-typed"): {USD: 20, At: time.Now().UTC().Add(-time.Hour)}}}); err != nil {
+		t.Fatal(err)
+	}
+	// the readings the reporter still had: 374 points in the file, none of
+	// them on the card
+	vendor := quotaHistKey("told", "")
+	pts := make([]BalancePoint, 374)
+	start := time.Now().UTC().Add(-187 * 30 * time.Minute)
+	for i := range pts {
+		pts[i] = BalancePoint{At: start.Add(time.Duration(i) * 30 * time.Minute), Amount: 100 - float64(i)/2}
+	}
+	balanceHistMu.Lock()
+	writeBalanceHist(balanceHist{vendor: pts})
+	balanceHistMu.Unlock()
+	c := ownCards(t)
+	real, ok := c["told|"]
+	if !ok || real.Balance != "$2.00" {
+		t.Fatalf("the vendor's card: %+v (have %v)", real, c)
+	}
+	if real.BalanceTrend == nil || len(real.BalanceTrend.Points) < 374 {
+		t.Fatalf("the vendor's card trend = %+v, want its 374 readings", real.BalanceTrend)
+	}
+	typedCard := c["typed|"]
+	if typedCard.Estimate == nil || typedCard.Balance != "≈$18.00" || typedCard.BalanceTrend != nil {
+		t.Fatalf("the typed card: %+v (estimate %+v), want ≈$18.00 with no trend", typedCard, typedCard.Estimate)
+	}
+	if bh := readBalanceHist(); len(bh[quotaHistKey("typed", "")]) != 0 {
+		t.Errorf("the typed card kept in the balance history: %+v", bh[quotaHistKey("typed", "")])
 	}
 }

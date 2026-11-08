@@ -187,13 +187,18 @@ func balanceCurrencies(s string) []currencyAmount {
 func currencyHistKey(key, sign string) string { return key + "|" + strings.TrimSpace(sign) }
 
 // noteBalanceHistory keeps the balance each card among qs tells, and gives
-// every card with a balance its trend.
+// every card with a balance its trend. A card's balance typed by hand (an
+// estimate) is no reading: the caller's cards are taken as they are, and
+// the estimate is skipped here.
 func noteBalanceHistory(qs []SubscriptionQuota, now time.Time) {
 	balanceHistMu.Lock()
 	defer balanceHistMu.Unlock()
 	var h balanceHist
 	changed := false
 	for _, q := range qs {
+		if q.Estimate != nil {
+			continue
+		}
 		pts := balancePointsOf(q, now)
 		if len(pts) > 0 && h == nil {
 			h = readBalanceHist()
@@ -236,7 +241,7 @@ func noteBalanceHistory(qs []SubscriptionQuota, now time.Time) {
 		writeBalanceHist(h)
 	}
 	for i, q := range qs {
-		if q.Balance == "" || len(q.BalanceParts) > 0 {
+		if q.Estimate != nil || q.Balance == "" || len(q.BalanceParts) > 0 {
 			continue
 		}
 		if h == nil {

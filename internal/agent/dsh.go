@@ -1371,6 +1371,15 @@ func dshStashKey(path, id string) string { return "dsh:" + path + ":" + id }
 // catalog change asks for, a model picked here, and the round magpie does
 // while it serves the gateway. Two of them reading one file and then writing
 // it would leave whichever read first as its content.
+// dshJustWritten is how recently a patch list may have been touched for the
+// round to reread it before writing: a list mid-write reads as a short
+// wired list, and a route written from that half is the half made whole.
+var dshJustWritten = 2 * time.Second
+
+// dshSettle is the beat a fresh list is reread after, long enough for the
+// writer's body to have landed (its head is in place in well under this).
+var dshSettle = 400 * time.Millisecond
+
 var dshWrites sync.Mutex
 
 // dshSet writes v as the model new sessions start on: a catalog model
@@ -2554,6 +2563,22 @@ func dshRouteAgainSaid(f string, models []catalog.Model, gw string) (string, err
 	raw, err := edit.Read(f)
 	if err != nil {
 		return "", nil
+	}
+	// a list written this recently may be dsh's own save still under way:
+	// its desktop rewrites the file in place — truncate, then the body —
+	// so for a moment the file is its head alone, which reads as a wired
+	// list of magpie's entries, and a route written from that half would
+	// fix the half as the whole list, the user's entries gone with it
+	// (#5782, stevenpisces: 57 entries became 2). A fresh list is reread
+	// after a beat: one that moved under us is left to the next round,
+	// which reads it whole.
+	if st, err := os.Stat(f); err == nil && time.Since(st.ModTime()) < dshJustWritten {
+		time.Sleep(dshSettle)
+		now, err := edit.Read(f)
+		if err != nil || !bytes.Equal(now, raw) {
+			return "", nil
+		}
+		raw = now
 	}
 	head, items, err := dshParse(f, string(raw))
 	if err != nil || !dshWired(items) {

@@ -7814,7 +7814,11 @@ func bridgeTools(req *Request) []bridgeTool {
 		if strings.HasPrefix(req.ToolChoice, "name:") && t.Name != strings.TrimPrefix(req.ToolChoice, "name:") {
 			continue
 		}
-		schema := t.Schema
+		// a root union Claude Code drops whole (it folds, or skips, a tool
+		// whose schema has an anyOf/oneOf/allOf at the root), so the fold
+		// the Anthropic path applies (#646) is applied here too; a schema
+		// with no root union goes as it came (#5822)
+		schema := objectSchema(t.Schema)
 		if len(schema) == 0 {
 			schema = json.RawMessage(`{"type":"object","properties":{}}`)
 		}

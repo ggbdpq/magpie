@@ -52,14 +52,14 @@ const words = {
   en: {
     failed: `magpie couldn't read what RTK saved: ${WHY}`,
     scope: "RTK's own count (rtk gain): every command run through RTK on this computer, from any agent or terminal.",
-    sandbox: "Codex runs its commands in its Windows sandbox, as its own sandbox account: RTK keeps what it saves there in that account's history, not yours, so it isn't counted here.",
+    sandbox: "Codex runs its commands in its Windows sandbox, as its own sandbox account, which can't write RTK's history: what RTK saves there isn't counted here. Switch RTK off and on for Codex, and magpie adds that folder to what the sandbox may write.",
     saved: "8.0k tokens saved over 42 commands — 89% on average",
     skills: "Skills",
   },
   zh: {
     failed: `magpie 读不到 RTK 的节省记录：${WHY}`,
     scope: "来自 RTK 自身的统计（rtk gain）：本机经过 RTK 的所有命令，不分 Agent 和终端。",
-    sandbox: "Codex 在 Windows 沙箱中以沙箱专用账户运行命令：RTK 的节省记录存在该账户下而非你的账户，此处无法统计。",
+    sandbox: "Codex 在 Windows 沙箱中以沙箱专用账户运行命令，该账户写不了 RTK 的历史记录，所以那里的节省不计入此处。把 Codex 的 RTK 关掉再打开，magpie 会把该目录加进沙箱可写的目录。",
     saved: "42 条命令共节省 8.0k token，平均省 89%",
     skills: "技能",
   },

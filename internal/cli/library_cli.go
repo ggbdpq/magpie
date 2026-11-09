@@ -669,7 +669,7 @@ func rtkCmd(args []string) error {
 		}
 		switch v.CodexSandbox {
 		case "elevated":
-			fmt.Println(muted.Render("  Codex runs its commands in its Windows sandbox as its own account, so what RTK saves there isn't counted"))
+			fmt.Println(muted.Render("  Codex runs its commands in its Windows sandbox as its own account, which can't write RTK's history, so what RTK saves there isn't counted: switch RTK off and on for Codex, and magpie adds that folder to what the sandbox may write"))
 		case "unelevated":
 			fmt.Println(muted.Render("  Codex runs its commands in its Windows sandbox, which can't write RTK's history, so what RTK saves there isn't counted"))
 		}

@@ -1759,9 +1759,13 @@ magpie.plugin("library", (ctx) => {
       gain.append(" ", el("span", "lib-rtk-scope", t("RTK's own count (rtk gain): every command run through RTK on this computer, from any agent or terminal.")));
       card.append(gain);
       // Codex's Windows sandbox: rtk runs there as another account, or one
-      // that can't write RTK's history, so what it saves isn't in that count
+      // that can't write RTK's history, so what it saves isn't in that
+      // count — and (elevated) switching RTK off and on for Codex has
+      // magpie make the folder writable for the sandbox (#5711). Said only
+      // while it isn't: once it is, what rtk saves there is counted, and
+      // the note is gone.
       if (rtk.codexSandbox) card.append(el("p", "lib-rtk-note lib-rtk-sandbox", rtk.codexSandbox === "elevated"
-        ? t("Codex runs its commands in its Windows sandbox, as its own sandbox account: RTK keeps what it saves there in that account's history, not yours, so it isn't counted here.")
+        ? t("Codex runs its commands in its Windows sandbox, as its own sandbox account, which can't write RTK's history: what RTK saves there isn't counted here. Switch RTK off and on for Codex, and magpie adds that folder to what the sandbox may write.")
         : t("Codex runs its commands in its Windows sandbox, which can't write RTK's history: what RTK saves there isn't recorded, so it isn't counted here.")));
       if (rtk.days?.length) card.append(rtkChart(rtk.days));
     } else {

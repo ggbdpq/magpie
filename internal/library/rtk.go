@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -111,9 +112,9 @@ var rtkSpecs = map[string]rtkSpec{
 	"codex": {
 		flags:   []string{"--codex"},
 		blocked: codexBlocked,
-		has: func(a *agent.Agent) bool {
-			return contains(filepath.Join(rtkCodexDir(a), "hooks.json"), "rtk hook codex")
-		},
+		// Codex reads hooks.json and the [hooks] tables of its config.toml
+		// alike (codexTomlHook), so a hook written only there isn't off (#5711)
+		has: func(a *agent.Agent) bool { return codexJSONHook(a) || codexTomlHook(a) },
 		files: func(a *agent.Agent) []string {
 			d := rtkCodexDir(a)
 			return []string{filepath.Join(d, "hooks.json"), filepath.Join(d, "AGENTS.md"), filepath.Join(d, "RTK.md")}
@@ -387,6 +388,61 @@ func codexBlocked(a *agent.Agent) string {
 		return ""
 	}
 	return fmt.Sprintf("Codex's hook needs RTK 0.50 or newer, and this RTK is %s: older ones only add @RTK.md to AGENTS.md, which rewrites no command. Update RTK (brew upgrade rtk, or its installer again), then switch it on", v)
+}
+
+// codexJSONHook says Codex's hooks.json has rtk's hook, which rtk init -g
+// --codex writes and magpie takes back out.
+func codexJSONHook(a *agent.Agent) bool {
+	return contains(filepath.Join(rtkCodexDir(a), "hooks.json"), "rtk hook codex")
+}
+
+// codexTomlHook says Codex's config.toml has rtk's hook: Codex reads
+// hooks.json beside it and its own [hooks] tables alike, and a hook a user
+// wrote as [[hooks.PreToolUse]] there was one the page said off while
+// Codex ran it — and switching RTK on would then have written a second
+// hook of the same command into hooks.json (#5711). Only PreToolUse
+// counts: the event whose commands rtk rewrites.
+func codexTomlHook(a *agent.Agent) bool {
+	on, _ := filememo.Read("rtk codex toml hook", filepath.Join(rtkCodexDir(a), "config.toml"), func(raw []byte) (bool, error) {
+		return codexTomlHookIn(raw), nil
+	})
+	return on
+}
+
+// codexTomlHookIn is codexTomlHook of config.toml's bytes.
+func codexTomlHookIn(raw []byte) bool {
+	var c struct {
+		Hooks struct {
+			PreToolUse []struct {
+				Command string `toml:"command"`
+				// a matcher group can carry the command in a nested hooks
+				// array ([[hooks.PreToolUse.hooks]]) — Codex runs it the
+				// same, and trusted it in its hooks.state, so the
+				// flat-only read said off while Codex ran it
+				// (laweit-lxy, #5711)
+				Hooks []struct {
+					Command        string `toml:"command"`
+					CommandWindows string `toml:"commandWindows"`
+				} `toml:"hooks"`
+			} `toml:"PreToolUse"`
+		} `toml:"hooks"`
+	}
+	if toml.Unmarshal(edit.TOMLWithout(raw, "projects"), &c) != nil {
+		return false
+	}
+	said := func(s string) bool { return strings.Contains(s, "rtk hook codex") }
+	for _, h := range c.Hooks.PreToolUse {
+		if said(h.Command) {
+			return true
+		}
+		for _, n := range h.Hooks {
+			// commandWindows is the Windows-only form of the command
+			if said(n.Command) || runtime.GOOS == "windows" && said(n.CommandWindows) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // agyPlugin is the folder rtk's installer writes its Antigravity plugin to.
@@ -865,10 +921,15 @@ func ReadRTK() *RTKView {
 		}
 	}
 	v.Gain, v.Days, v.GainErr = rtkGain(v.Path)
-	if runtime.GOOS == "windows" {
+	if sandboxedWindows {
 		for _, a := range v.Agents {
 			if a.ID == "codex" && a.On {
-				v.CodexSandbox = codexSandbox()
+				// elevated, with rtk's history folder already writable for
+				// the sandbox: what its commands save is counted, nothing
+				// left to say (#5711)
+				if sb := codexSandbox(); sb != "" && (sb != "elevated" || !hasWritableRoot(codexDir(), rtkGainDir())) {
+					v.CodexSandbox = sb
+				}
 			}
 		}
 	}
@@ -937,13 +998,14 @@ func parseGain(out string) (*RTKGain, []RTKDay, string) {
 
 // codexSandbox is the Windows sandbox Codex runs its commands in, from its
 // config.toml ([windows] sandbox, or the features it replaced): "elevated"
-// runs them as Codex's own sandbox account (CodexSandboxOffline/Online,
-// started with that account's profile), so the rtk its hook puts in front
-// of them keeps its history in that account's AppData, not the user's;
-// "unelevated" runs them with a token that can't write the user's. Either
-// way rtk gain here doesn't count them. "" when Codex doesn't sandbox them.
-// It is parsed again only when config.toml changes: one with a table for
-// each of thousands of projects is ~0.2s of CPU to parse (#1665).
+// runs them as Codex's own sandbox account (CodexSandboxOffline/Online),
+// which reads rtk's history folder but can't write it (only an inherited
+// (RX), #5711); "unelevated" runs them with a token that can't write the
+// user's. Either way rtk gain here doesn't count them, until rtk's folder
+// is among [sandbox_workspace_write] writable_roots (rtkGainWritable).
+// "" when Codex doesn't sandbox them. It is parsed again only when
+// config.toml changes: one with a table for each of thousands of projects
+// is ~0.2s of CPU to parse (#1665).
 func codexSandbox() string {
 	s, _ := filememo.Read("rtk codex sandbox", filepath.Join(codexDir(), "config.toml"), func(raw []byte) (string, error) {
 		return codexSandboxIn(raw), nil
@@ -974,6 +1036,92 @@ func codexSandboxIn(raw []byte) string {
 		return "unelevated"
 	}
 	return ""
+}
+
+// sandboxedWindows is whether Codex's commands run in its Windows sandbox
+// here; a var so a test on any system can have it so.
+var sandboxedWindows = runtime.GOOS == "windows"
+
+// rtkGainDir is where rtk keeps its history, %LOCALAPPDATA%\rtk; "" when
+// this system has no such folder to make writable.
+func rtkGainDir() string {
+	if !sandboxedWindows {
+		return ""
+	}
+	l := appdir.Getenv("LOCALAPPDATA")
+	if l == "" {
+		return ""
+	}
+	return filepath.Join(l, "rtk")
+}
+
+// rtkGainWritable: in the elevated Windows sandbox, Codex's commands run as
+// its sandbox account, which reads rtk's history folder but can't write it,
+// so the rtk its hook puts in front of them runs, and silently records
+// nothing (#5711). Codex makes every folder of [sandbox_workspace_write]
+// writable_roots writable for its sandbox accounts when it starts, so
+// rtk's folder is added there, when RTK is switched on for Codex (SetRTK).
+// An unelevated sandbox wasn't tried with this, and gets no write; a
+// machine without the folder to add gets none either.
+func rtkGainWritable() error {
+	dir := rtkGainDir()
+	if dir == "" || codexSandbox() != "elevated" {
+		return nil
+	}
+	return addWritableRoot(codexDir(), dir)
+}
+
+// addWritableRoot adds dir to config.toml's [sandbox_workspace_write]
+// writable_roots, unless it is there already.
+func addWritableRoot(dir, add string) error {
+	path := filepath.Join(dir, "config.toml")
+	raw, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	roots, err := writableRootsIn(raw)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if slices.Contains(roots, add) {
+		return nil
+	}
+	quoted := make([]string, len(roots)+1)
+	for i, r := range append(roots, add) {
+		quoted[i] = strconv.Quote(r)
+	}
+	return edit.SetTOMLKey(path, "sandbox_workspace_write", "writable_roots", edit.Raw("["+strings.Join(quoted, ", ")+"]"))
+}
+
+// hasWritableRoot says dir is in config.toml's [sandbox_workspace_write]
+// writable_roots; never, when there is no folder to speak of.
+func hasWritableRoot(dir, add string) bool {
+	if add == "" {
+		return false
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		return false
+	}
+	roots, err := writableRootsIn(raw)
+	return err == nil && slices.Contains(roots, add)
+}
+
+// writableRootsIn is what config.toml's [sandbox_workspace_write]
+// writable_roots holds, nil when it has none or says none.
+func writableRootsIn(raw []byte) ([]string, error) {
+	var c struct {
+		SandboxWorkspaceWrite struct {
+			WritableRoots []string `toml:"writable_roots"`
+		} `toml:"sandbox_workspace_write"`
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil
+	}
+	if err := toml.Unmarshal(raw, &c); err != nil {
+		return nil, err
+	}
+	return c.SandboxWorkspaceWrite.WritableRoots, nil
 }
 
 // shown is a command as the page shows it: a script's own line.
@@ -1014,6 +1162,10 @@ func SetRTK(id string, on bool) (*RTKView, error) {
 	case a.WSL != "" && !rtkWSLLive(a):
 		// nothing in it is read or run: that would start it (#3896)
 		return nil, fmt.Errorf("WSL %s isn't running, and magpie doesn't start it to change RTK for %s: start the distro (open its terminal), then switch it again", a.WSL, a.Name)
+	case !on && kind == "codex" && codexTomlHook(a) && !codexJSONHook(a):
+		// off asked, and only config.toml's hook there: it is the user's,
+		// and magpie taking no hook out isn't to look done (#5711)
+		return nil, fmt.Errorf("%s's config.toml has rtk's hook in [hooks.PreToolUse], which magpie doesn't manage: take it out there", a.Name)
 	case sp.has(a) == on:
 		return ReadRTK(), nil
 	}
@@ -1050,6 +1202,9 @@ func SetRTK(id string, on bool) (*RTKView, error) {
 			return nil, fmt.Errorf("taking rtk out of %s: %w", a.Name, err)
 		}
 		if sp.has(a) {
+			if kind == "codex" && codexTomlHook(a) {
+				return nil, fmt.Errorf("%s's config.toml has rtk's hook in [hooks.PreToolUse] as well, which magpie doesn't manage: take it out there, then switch RTK off again", a.Name)
+			}
 			return nil, fmt.Errorf("rtk's hook is still in %s", a.Name)
 		}
 	}
@@ -1058,6 +1213,14 @@ func SetRTK(id string, on bool) (*RTKView, error) {
 	}
 	v := ReadRTK()
 	v.Restart, v.Backup = []string{a.ID}, b.dir
+	// elevated Windows sandbox: let its account write rtk's history, or the
+	// commands run there record nothing (#5711). Best effort: the page's
+	// sandbox note still says why nothing is counted when this fails.
+	if on && kind == "codex" && a.WSL == "" {
+		if err := rtkGainWritable(); err != nil {
+			v.Note = "rtk's history folder couldn't be made writable for Codex's sandbox: " + err.Error()
+		}
+	}
 	return v, nil
 }
 

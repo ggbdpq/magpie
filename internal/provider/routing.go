@@ -588,7 +588,9 @@ func (a Allowance) Count(model string, now time.Time) (amount, of float64, unit 
 // whose credits left run out before it renews (Limit.RunsOut) renews
 // then, as what is left is lost then all the same: WorkBuddy's accounts,
 // whose credits have no reset, go by the package that ends first
-// (cdredfox on X).
+// (cdredfox on X). A lapse of a part of what is left (RunsOutLeft told,
+// less than the window has left) doesn't move it: what runs out there is
+// a share of the window, and the window itself goes by its reset (#5791).
 func (a Allowance) Renewal(model string, now time.Time) []time.Time {
 	ls := a.renewing(model, now)
 	out := make([]time.Time, len(ls))
@@ -615,7 +617,7 @@ func (a Allowance) renewing(model string, now time.Time) []Limit {
 				l.Resets = now.Add(l.Span)
 			}
 		}
-		if l.RunsOut.After(now) && (l.Resets.IsZero() || l.RunsOut.Before(l.Resets)) {
+		if l.RunsOut.After(now) && (l.Resets.IsZero() || l.RunsOut.Before(l.Resets)) && l.lapsingAll() {
 			l.Resets = l.RunsOut
 		}
 		l.Resets = restarted(l.Resets, restart)
@@ -901,6 +903,24 @@ func (l Limit) expiring(u float64, now, ends time.Time) (pace float64, at time.T
 		share = min(100, 100*l.RunsOutLeft/l.Of)
 	}
 	return share / max(l.RunsOut.Sub(now), time.Hour).Hours(), l.RunsOut, true
+}
+
+// lapsingAll says whether a window ends at RunsOut as much as it does at
+// its reset. One with no reset of its own (WorkBuddy's credits) ends
+// nowhere else: RunsOut is its renewal whatever lapses there. One with a
+// reset that doesn't count what lapses (RunsOutLeft or Of untold) loses
+// all it has left there, as before; a part told less than the window has
+// left expires alone, and the window keeps its reset (#5791: one credit
+// of 500 expiring had the window renew in hours, and Smart sent it every
+// request).
+func (l Limit) lapsingAll() bool {
+	if l.Resets.IsZero() {
+		return true
+	}
+	if l.RunsOutLeft <= 0 || l.Of <= 0 {
+		return true
+	}
+	return l.Of*(100-min(100, max(0, l.Used)))/100 <= l.RunsOutLeft
 }
 
 // Allowances is each of an agent's accounts' allowance by user, as last

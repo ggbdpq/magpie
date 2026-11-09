@@ -507,11 +507,18 @@ func (p Provider) fetchList(ctx context.Context) ([]catalog.Model, error) {
 		return nil, ErrListOff
 	}
 	ctx = p.ownRequests(p.Via(ctx), probelog.KindList)
-	if p.DecideOnly() {
-		return p.fetchDecide(ctx)
-	}
+	// an account's list first, even when p looks decision-only: a plugin
+	// with decide said reads so before its first list, and its decision
+	// API is empty then — the account's list is what fills the listing in
+	// (#5793). A provider with a lister of its own serves its
+	// conversations through the same account, never on an endpoint of its
+	// own beside it, so nothing that had both ever asked here the other
+	// way round.
 	if p.Account != nil && p.Account.fetch != nil {
 		return p.Account.fetch(ctx)
+	}
+	if p.DecideOnly() {
+		return p.fetchDecide(ctx)
 	}
 	if p.Account != nil && p.Account.models != nil {
 		// a plan with no list to ask (ZCode's, WorkBuddy's): its models

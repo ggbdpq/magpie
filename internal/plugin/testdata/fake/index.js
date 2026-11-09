@@ -178,11 +178,19 @@ export const FakePlugin = async ({ client }) => ({
     // $FAKE_DECIDE: the provider serves a decision API too (#1514), asked
     // at its base /systemone through the loader's fetch: fake-clef is a
     // decision model it marks, jev-9 one magpie knows by its name.
-    // "models" marks them without saying decide.
+    // "models" marks them without saying decide. "dynamic" says decide and
+    // lists no model of its own, as a plugin that reads its vendor's list
+    // does (#5793): before its first list the provider reads decision-only.
     if (process.env.FAKE_DECIDE) {
       if (process.env.FAKE_DECIDE !== "models") cfg.provider[ID].decide = true
-      cfg.provider[ID].models["fake-clef"] = { name: "Fake Clef", decides: true, limit: { context: 1000, output: 0 } }
-      cfg.provider[ID].models["jev-9"] = { name: "Jev 9", limit: { context: 1000, output: 0 } }
+      if (process.env.FAKE_DECIDE !== "dynamic") {
+        cfg.provider[ID].models["fake-clef"] = { name: "Fake Clef", decides: true, limit: { context: 1000, output: 0 } }
+        cfg.provider[ID].models["jev-9"] = { name: "Jev 9", limit: { context: 1000, output: 0 } }
+      } else {
+        // its models are the hook's alone: none in the config, so before
+        // its first list the provider reads decision-only (#5793)
+        cfg.provider[ID].models = {}
+      }
     }
     // $FAKE_OFF: a model that stops thinking at none and one that can't,
     // as Factory's plugin has Kimi K3 and GLM-5.3 (#899)
@@ -418,6 +426,12 @@ export const FakePlugin = async ({ client }) => ({
         }
         await client.auth.set({ path: { id: ID }, body: { ...auth, refresh: auth.refresh + "+" } })
       }
+      // $FAKE_DECIDE=dynamic: its models are the hook's alone, two
+      // ordinary chat models, none marked a decision model (#5793)
+      if (process.env.FAKE_DECIDE === "dynamic") {
+        p.models["fake-1"] ??= { name: "Fake One", limit: { context: 1000, output: 100 } }
+        p.models["fake-claude"] ??= { name: "Fake Claude", provider: { npm: "@ai-sdk/anthropic" }, modalities: { input: ["text", "image"], output: ["text"] }, limit: { context: 2000, output: 200 } }
+      }
       // fake-1 costs the plan nothing, as a WorkBuddy model of x0.00
       // credits ($FAKE_NO_FREE: a list with no free model, as ZCode's was
       // before 0.1.58 and a coding-plan-only account's is)
@@ -462,7 +476,7 @@ export const FakePlugin = async ({ client }) => ({
       if (process.env.FAKE_SEARCHER) p.models["fake-search"] = { ...p.models["fake-1"], id: "fake-search", name: "Fake Search", api: { ...p.models["fake-1"].api, id: "fake-search" }, free: false, searches: true }
       // $FAKE_DECIDE: one more decision model, marked on the list the hook
       // gives, as a plugin that reads its vendor's list marks one
-      if (process.env.FAKE_DECIDE) p.models["fake-judge"] = { ...p.models["fake-1"], id: "fake-judge", name: "Fake Judge", api: { ...p.models["fake-1"].api, id: "fake-judge" }, free: false, decides: true }
+      if (process.env.FAKE_DECIDE && process.env.FAKE_DECIDE !== "dynamic") p.models["fake-judge"] = { ...p.models["fake-1"], id: "fake-judge", name: "Fake Judge", api: { ...p.models["fake-1"].api, id: "fake-judge" }, free: false, decides: true }
       // $FAKE_FAST=tier: as Cursor's plugin 0.2.x lists a model, once per
       // context size, and from 0.2.2 says fast on the sizes Cursor has a
       // fast variant at (Opus 5.5's 300k, not its 1m); no -fast model

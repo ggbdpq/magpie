@@ -53,10 +53,24 @@ type Result struct {
 // sees, and reports what came back.
 func (p Provider) Test(ctx context.Context) []Result {
 	ctx = withUnreached(p.ownRequests(p.Via(ctx), probelog.KindTest))
-	if p.DecideOnly() {
+	// a plugin reads decision-only before its first list, and its
+	// decision API is empty then (#5793): the list is fetched below, and
+	// what the plugin serves — its conversation endpoints among them — is
+	// tested instead. Any decision model it lists asks at the bottom, as
+	// every other provider's does.
+	if p.DecideOnly() && !p.IsPlugin() {
 		return p.testDecide(ctx)
 	}
 	_, listErr := p.Fetch(ctx)
+	if p.IsPlugin() {
+		// the list fetched may be the plugin's first: the conversation
+		// endpoints it discovered are what the tests below ask, taken
+		// from the provider the listing now serves — the caller's value
+		// keeps its account, its keys and its picks (#5793)
+		if q, err := Find(p.ID); err == nil && q.IsPlugin() {
+			p.Chat, p.Responses, p.Anthropic = q.Chat, q.Responses, q.Anthropic
+		}
+	}
 	if client := testClient(ctx); client != "" {
 		// the one endpoint that agent's requests go to
 		proto := clientProto(client, p.Speaks())
@@ -114,7 +128,9 @@ func (p Provider) Test(ctx context.Context) []Result {
 		if model := p.Jev(); listErr == nil && model != "" {
 			out = append(out, Result{Protocol: "decide", Model: model, OK: true, Status: http.StatusOK})
 		}
-	} else if p.Decides() {
+	} else if p.Decides() && (!p.IsPlugin() || len(p.decideModels()) > 0) {
+		// a plugin that lists no decision model has none its decision API
+		// could answer (#5793): saying so on every test is no answer
 		out = append(out, p.testDecide(ctx)...)
 	}
 	return out

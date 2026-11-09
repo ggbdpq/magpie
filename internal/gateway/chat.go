@@ -393,6 +393,17 @@ func joinTexts(content []map[string]any) string {
 	return b.String()
 }
 
+// inlineThinkHost is whether a Chat API at host gives a model's thinking in
+// the text, between <think> tags, as MiniMax's own Chat API does: the
+// decoder takes it out as thinking (#1267), buildChat writes it back in
+// where it came from on the turns after (its interleaved thinking), and a
+// reply of such an API is asked translated, never relayed as it came, which
+// would hand the tags to the client as the answer's text (#5805).
+// api.minimax.cn is MiniMax China's host beside api.minimaxi.com.
+func inlineThinkHost(host string) bool {
+	return strings.HasSuffix(host, "minimax.io") || strings.HasSuffix(host, "minimaxi.com") || strings.HasSuffix(host, "minimax.cn")
+}
+
 func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 	r = responseInstructions(r)
 	var msgs []map[string]any
@@ -405,8 +416,7 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 	// interleaved thinking): the decoder takes it out as thinking (#1267),
 	// so it goes back in where it came from. A relay serving MiniMax's
 	// models may give the thinking apart and take it back otherwise.
-	// api.minimax.cn is MiniMax China's host beside api.minimaxi.com.
-	inlineThink := strings.HasSuffix(host, "minimax.io") || strings.HasSuffix(host, "minimaxi.com") || strings.HasSuffix(host, "minimax.cn")
+	inlineThink := inlineThinkHost(host)
 	// Gemini wants each step's thought signature back on its first call
 	// (#687), and one it can't check for a step it didn't sign
 	gemini := geminiCompat(host, model)

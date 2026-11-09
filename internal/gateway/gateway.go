@@ -5718,6 +5718,15 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 	// on every turn, and on a provider serving Responses each went out as
 	// Chat (#997, Xiaomi MiMo)
 	ownAPI := false
+	// A Chat API that thinks in its text (MiniMax's own, #5805) is asked
+	// translated even by a Chat client: relayed as it came, the reply's
+	// leading <think>…</think> reaches the client as the answer's text,
+	// with no reasoning field to fold it by. The translation takes the
+	// block out as thinking, which goes back between the tags only on the
+	// turns after (buildChat).
+	if relay && from == provider.Chat && inlineThinkChat(p) {
+		relay, ownAPI = false, true
+	}
 	// except a subagent's task its lead sealed (#1109): only the server
 	// that sealed it reads it, and a translation would drop it; and Codex's
 	// turn to a relay that takes it as Codex sent it (codexAsSent): the
@@ -9837,6 +9846,19 @@ func dashScope(p provider.Provider) bool {
 	return strings.HasPrefix(h, "dashscope") && strings.HasSuffix(h, ".aliyuncs.com") ||
 		strings.HasSuffix(h, ".maas.aliyuncs.com") || h == "maas.qianwenaiapi.com" || strings.HasSuffix(h, ".maas.qianwenaiapi.com") ||
 		h == "maas.qwencloudapi.com" || strings.HasSuffix(h, ".maas.qwencloudapi.com")
+}
+
+// inlineThinkChat is whether p's Chat API gives a model's thinking in the
+// text, between <think> tags: MiniMax's own does, by preset or by host. Its
+// replies are asked translated (#5805), never relayed as they came, so the
+// tags' block is taken out as thinking for the client and goes back between
+// the tags only on the turns after (inlineThinkHost, buildChat).
+func inlineThinkChat(p provider.Provider) bool {
+	switch p.Preset {
+	case "minimax", "minimax-cn":
+		return true
+	}
+	return inlineThinkHost(p.Host())
 }
 
 func streamOf(body []byte) bool {

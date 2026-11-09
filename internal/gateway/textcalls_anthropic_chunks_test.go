@@ -113,6 +113,53 @@ data: {"type":"message_stop"}
 
 `
 
+// citedAnthropicStream is a Messages reply the way OpenRouter's Messages
+// endpoint writes one for a model that searched with web_search_20250305:
+// the search's call, a text block that carries only its citations (its
+// start says "text": "" and no text follows it), then the answer in
+// another text block. The cited block's empty start is what the relay
+// holds while it looks for a call written into the text.
+const citedAnthropicStream = `event: message_start
+data: {"type":"message_start","message":{"id":"msg_cited","type":"message","role":"assistant","model":"relay-model","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":30,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"call_01","name":"web_search","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"Tokyo current time\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":"","citations":[]}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://www.timeanddate.com/worldclock/japan/tokyo","title":"Current Local Time in Tokyo, Japan","cited_text":"Monday, November 9, 2026"}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://time.is/Tokyo","title":"Time in Tokyo, Japan now","cited_text":"Monday, November 9, 2026"}}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"It is 12:00 in Tokyo."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":9}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
 type anthropicSSEChunk struct {
 	Type         string `json:"type"`
 	Index        int    `json:"index"`
@@ -223,7 +270,7 @@ func checkAnthropicStream(t *testing.T, frames []anthropicSSEFrame, wantBlocks [
 			}
 			open, next = f.chunk.Index, next+1
 			blocks = append(blocks, f.chunk.ContentBlock.Type)
-			if f.chunk.ContentBlock.Type == "tool_use" {
+			if f.chunk.ContentBlock.Type == "tool_use" || f.chunk.ContentBlock.Type == "server_tool_use" {
 				tools = append(tools, &toolBlock{id: f.chunk.ContentBlock.ID, name: f.chunk.ContentBlock.Name})
 			}
 		case "content_block_delta":
@@ -238,6 +285,9 @@ func checkAnthropicStream(t *testing.T, frames []anthropicSSEFrame, wantBlocks [
 					t.Fatalf("input for block %d reached the client without its start", f.chunk.Index)
 				}
 				tools[len(tools)-1].input += f.chunk.Delta.PartialJSON
+			case "citations_delta":
+				// the block opened above is what it cites for; the check
+				// before the switch already said its start went first
 			default:
 				t.Fatalf("block %d has an unexpected delta type %q", f.chunk.Index, f.chunk.Delta.Type)
 			}
@@ -389,6 +439,27 @@ func TestAnthropicTextCallsSSEChunksKeepFraming(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A cited block's start is held with its text while the relay looks for a
+// call written into it, but a citation is not text: it must not go out
+// before the block's start. Claude Code reads a delta for a block it never
+// saw start as a stream cut short and ends the reply ("The search was cut
+// off before any results arrived", #5759).
+func TestAnthropicTextCallsCitationFollowsItsBlockStart(t *testing.T) {
+	for _, how := range []string{"whole", "events", "lines", "bytes", "crlf lines"} {
+		t.Run(how, func(t *testing.T) {
+			tc := &anthropicTextCalls{names: map[string]bool{"web_search": true}, sse: true}
+			var out strings.Builder
+			for _, part := range chunkAnthropicSSE(citedAnthropicStream, how) {
+				out.Write(tc.write([]byte(part)))
+			}
+			out.Write(tc.flush())
+			checkAnthropicStream(t, readAnthropicSSE(t, out.String()),
+				[]string{"server_tool_use", "text", "text"}, "It is 12:00 in Tokyo.", "end_turn",
+				[]wantAnthropicCall{{name: "web_search", id: "call_01", args: `{"query":"Tokyo current time"}`}})
+		})
 	}
 }
 

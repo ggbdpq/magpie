@@ -107,8 +107,19 @@ func (t *anthropicTextCalls) event(ev []byte) []byte {
 			Text string `json:"text"`
 		}
 		decodeJSON(m["delta"], &d)
-		if !t.text || index != t.idx || d.Type != "text_delta" {
+		if !t.text || index != t.idx {
 			return ev
+		}
+		if d.Type != "text_delta" {
+			// a citation of the held block (OpenRouter's searched reply
+			// writes a text block that carries only citations_delta, no
+			// text): its start goes before any delta of it — a client
+			// reads a delta for a block it never saw start as a stream
+			// cut short, and Claude Code ends the search there ("The
+			// search was cut off before any results arrived", #5759)
+			out := t.startHeld
+			t.startHeld = nil
+			return append(out, ev...)
 		}
 		s := t.pending + d.Text
 		t.pending = ""

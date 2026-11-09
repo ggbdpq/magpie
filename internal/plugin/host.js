@@ -2787,7 +2787,11 @@ async function apiKey({ provider, method, inputs, key, account, proxy }, signal)
 // a refresh token once turns a second away). A renewal that fails leaves
 // the sign-in as it was, for the vendor's answer to tell, and isn't tried
 // again for RENEW_RETRY, or, turned away for good, till it is signed in
-// again.
+// again. Nor is one that leaves the sign-in still due — nothing given
+// back, or an expires still inside the plugin's own refreshLead: such an
+// answer renewed nothing, and making it again at once had every listing
+// and request renew the same sign-in, and every save told magpie the
+// sign-ins changed, so every provider was listed again, endlessly.
 
 const RENEW_LEAD = 5 * 60 * 1000
 const RENEW_WAIT = 15 * 1000
@@ -2982,17 +2986,46 @@ async function renewLocked(provider, key, a, was) {
     send({ event: "log", level: "error", message: `${auths().get(provider)?.spec ?? provider}: auth.refresh: ${e?.message ?? e}` })
     return
   }
-  if (!got || typeof got !== "object") return
+  // Nothing given back: the renewal failed as one that throws does, save
+  // that the plugin had no error to tell. Held back for RENEW_RETRY like
+  // it, for the vendor to be asked again only after that.
+  if (!got || typeof got !== "object") {
+    unrenewed.set(key, { at: Date.now(), secret: secretOf(was), gone: false, error: "" })
+    send({ event: "log", level: "error", message: `${auths().get(provider)?.spec ?? provider}: auth.refresh gave back nothing; tried again in ${RENEW_RETRY / 1000}s` })
+    return
+  }
+  const { type: _t, ...fields } = got
+  const next = { ...was, ...fields, type: "oauth" }
+  // An answer that leaves the sign-in still due (its expires still inside
+  // the plugin's own refreshLead) would be renewed again by the next
+  // thing to use the account, and each save tells magpie the sign-ins
+  // changed, which lists every provider again: every plugin's vendor was
+  // asked every few seconds for as long as magpie ran. So it is held back
+  // for RENEW_RETRY as a failed one is, and one that renewed nothing (no
+  // new token) isn't saved at all: saving it would only list everything
+  // again.
+  const due = renewAt(a, next)
+  const still = due !== 0 && Date.now() >= due
+  const why = still
+    ? `auth.refresh left the sign-in still due (its expires inside its own refreshLead, ${Math.round(leadOf(a) / 60e3)} min); tried again in ${RENEW_RETRY / 1000}s`
+    : ""
+  if (still && !changed(next, was)) {
+    unrenewed.set(key, { at: Date.now(), secret: secretOf(was), gone: false, error: why })
+    send({ event: "log", level: "error", message: `${auths().get(provider)?.spec ?? provider}: ${why}` })
+    return
+  }
   // signed out, signed in again or renewed by another host while it ran:
   // that one stands. Checked under the lock the save is made under, so
   // nothing comes between the two.
-  const { type: _t, ...fields } = got
   const kept = await changeAuth((all) => {
     if (changed(all[key], was)) return false
-    all[key] = { ...was, ...fields, type: "oauth" }
+    all[key] = next
   })
   if (kept === false) return
-  unrenewed.delete(key)
+  // kept, though still due: not renewed again at once (the hold is read
+  // against the sign-in as it now stands)
+  if (still) unrenewed.set(key, { at: Date.now(), secret: secretOf(next), gone: false, error: why })
+  else unrenewed.delete(key)
   forgetAccount(key)
   send({ event: "auth", provider, account: key })
   send({ event: "signIn", provider, account: key, said: "renewed" })

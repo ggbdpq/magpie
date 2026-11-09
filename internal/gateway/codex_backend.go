@@ -3899,17 +3899,39 @@ var upstreamFailedWords = regexp.MustCompile(`(?i)upstream request failed`)
 
 // summaryTooLarge is a summary request refused for its size: past the
 // vendor's byte cap (413; DeepSeek's "Failed to buffer the request body:
-// length limit exceeded", celestial_eagle_99230 on Discord) or past the
-// model's window. Codex's remote compaction asks nothing smaller after
-// either (it trims only by its token estimate against the catalog's
-// window, and a 1M window holds more bytes than the cap takes), so told
-// of it, Codex could neither compact nor go on. The summary is asked
-// again as text, its images left out and long outputs cut
+// length limit exceeded", celestial_eagle_99230 on Discord), past the
+// model's window, or carrying more images than the vendor takes in one
+// request (Copilot's 400 "Exceeded maximum number of images (50) allowed
+// in the request", #5815). The image count is a budget of its own: a
+// request under the window and the byte cap still exceeds it, and the
+// words of neither say so. Codex's remote compaction asks nothing smaller
+// after any of them (it trims only by its token estimate against the
+// catalog's window, and a 1M window holds more bytes than the cap takes),
+// so told of it, Codex could neither compact nor go on. The summary is
+// asked again as text, its images left out and long outputs cut
 // (plainCompact), and compacted without a model when that is refused
 // too.
 func summaryTooLarge(rec *recorder) bool {
-	return rec.status == http.StatusRequestEntityTooLarge || overflowed(rec.status, rec.body.Bytes())
+	if rec.status == http.StatusRequestEntityTooLarge || overflowed(rec.status, rec.body.Bytes()) {
+		return true
+	}
+	// an image-count refusal comes as a request error whose words say so:
+	// it is not a rate limit's ("images per minute"), which counts how
+	// fast, so asking again as text is no answer to that
+	switch rec.status {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return imageCountWords.Match(wordsOf(rec.body.Bytes()))
+	}
+	return false
 }
+
+// imageCountWords say a request was turned away over how many images it
+// carries, not over its bytes or its tokens: Copilot's "Exceeded maximum
+// number of images (50) allowed in the request" (#5815). No vendor's
+// number is matched, and no provider is named, so another's cap and
+// another's count are read the same. Matched decoded, as the other
+// refusals are.
+var imageCountWords = regexp.MustCompile(`(?i)maximum number of images|too many images`)
 
 // itemNotFound is a 400 refusing an item of the input by its id, as Azure
 // OpenAI's and OpenAI's API answer one they never stored ("Item with id

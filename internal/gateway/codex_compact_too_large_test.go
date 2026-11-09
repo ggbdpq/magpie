@@ -24,6 +24,13 @@ const deepseekBodyCap = "Failed to buffer the request body: length limit exceede
 // window, OpenAI's words.
 const deepseekOverflow = `{"error":{"message":"This model's maximum context length is 1048576 tokens. However, you requested 1100000 tokens (1100000 in the messages, 0 in the completion). Please reduce the length of the messages or completion.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`
 
+// copilotImageCap is what Copilot answered a summary request carrying a
+// session's screenshots with (ghjkllasdf-fake, #5815): its cap on how
+// many images one request takes, an HTTP 400. The count is its own
+// budget: a request under the model's window and its byte cap still
+// exceeds it, and neither the words of the one nor of the other say so.
+const copilotImageCap = `{"error":{"message":"Copilot: Exceeded maximum number of images (50) allowed in the request.","type":"invalid_request_error"}}`
+
 // capped is an upstream that refuses a body of more than most bytes with
 // status and body (as ctype), and answers any other with a summary in its
 // protocol's stream. Every body it is sent is kept.
@@ -157,6 +164,42 @@ func TestCodexCompactTooLargeAsksSmaller(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A summary request refused for carrying more images than the vendor
+// takes in one — Copilot's 400 "Exceeded maximum number of images (50)
+// allowed in the request" (#5815) — went back to Codex as that failure:
+// the count is a budget of its own, matched by neither the 413 nor the
+// model's window's words, and Codex's remote compaction asks nothing
+// smaller on it. magpie asks again with the conversation as text, its
+// images left out, and Codex installs the model's summary.
+func TestCodexCompactImageLimitAsksSmaller(t *testing.T) {
+	for _, proto := range []provider.Protocol{provider.Chat, provider.Responses} {
+		t.Run(string(proto), func(t *testing.T) {
+			up := &capped{proto: proto, most: cappedMost, status: http.StatusBadRequest, ctype: "application/json", body: copilotImageCap}
+			cappedOn(t, up)
+			code, body := codexPost(t, bigCompaction())
+			if code != 200 {
+				t.Fatalf("Codex's compaction failed: %d %s", code, body)
+			}
+			if got := compactedText(t, body); got != "SUMMARY" {
+				t.Fatalf("summary %q", got)
+			}
+			calls := up.calls()
+			if len(calls) < 2 || len(calls[0]) <= cappedMost {
+				t.Fatalf("asked %d times", len(calls))
+			}
+			small := string(calls[len(calls)-1])
+			if len(small) > cappedMost || strings.Contains(small, "iVBORw0KGgo") {
+				t.Fatalf("asked again as large (%d bytes) or with the image", len(small))
+			}
+			for _, want := range []string{"fix the login bug", "now add a test", "I fixed main.go"} {
+				if !strings.Contains(small, want) {
+					t.Errorf("the smaller ask lacks %q", want)
+				}
+			}
+		})
 	}
 }
 

@@ -1751,10 +1751,25 @@ func googleAlsoOn(agent string) []Provider {
 func googleLoginQuota(ctx context.Context, l Login) SubscriptionQuota {
 	for _, g := range googleLogins(l.Agent) {
 		if strings.EqualFold(g.User, l.User) {
-			return g.acct.quota(ctx, l.Plan)
+			q := g.acct.quota(ctx, l.Plan)
+			if q.Plan != l.Plan {
+				keepGooglePlan(l.Agent, l.User, q.Plan)
+			}
+			return q
 		}
 	}
 	return SubscriptionQuota{Provider: l.Agent, Plan: l.Plan, Windows: []QuotaWindow{}, Error: "not signed in"}
+}
+
+// keepGooglePlan keeps the plan a Google account's allowance named on its
+// saved account, for the accounts list, the account's card and Routing's
+// rows, which show the saved plan, as keepPluginPlan does for a plugin's.
+// A Gemini CLI login magpie keeps no account of is left as it is.
+func keepGooglePlan(agent, user, plan string) {
+	_ = editSideLogin(agent, user, func(ls []savedLogin, i int) ([]savedLogin, error) {
+		ls[i].Plan = plan
+		return ls, nil
+	})
 }
 
 // ---- signing in -----------------------------------------------------------------

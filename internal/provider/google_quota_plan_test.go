@@ -47,6 +47,11 @@ func TestGoogleQuotaPlanFollowsCodeAssist(t *testing.T) {
 				if q.Plan != c.want {
 					t.Errorf("plan %q, want %q (saved %q)", q.Plan, c.want, c.saved)
 				}
+				// the accounts list, the card and Routing's rows read the
+				// saved plan, not the quota's
+				if l := Logins(agent); len(l) != 1 || l[0].Plan != c.want {
+					t.Errorf("saved account after the reading: %+v, want plan %q", l, c.want)
+				}
 				if !c.failed && (len(q.Windows) != 1 || q.Windows[0].Model != "gemini-2.5-flash" || q.Windows[0].Used != 50) {
 					t.Errorf("windows %+v, want gemini-2.5-flash at 50%% used", q.Windows)
 				}

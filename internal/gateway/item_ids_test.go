@@ -736,3 +736,104 @@ func TestCopilotTakesItsOwnOpaqueSearchCallID(t *testing.T) {
 		}
 	}
 }
+
+// copilotOwnID is an input item's id as Copilot mints them: opaque, of
+// safe characters alone, and of hundreds of them (isnine's 420, #4525,
+// ghjkllasdf-fake's 444, #4527, JaxWeng's 428, #5812). OpenAI's API and
+// every relay in front of it turns an item of one away — "Invalid
+// 'input[286].id': string too long. Expected a string with maximum
+// length 64, but got a string with length 428 instead."
+var copilotOwnID = "msg_" + strings.Repeat("a", 424) // 428 characters
+
+// copilotTurn is a conversation whose answer's item Copilot minted an id
+// of its own for, and the turn after it.
+var copilotTurn = `{"type":"message","id":"` + copilotOwnID + `","role":"assistant","content":[{"type":"output_text","text":"I fixed main.go"}]},
+  {"type":"message","role":"user","content":[{"type":"input_text","text":"now add a test"}]}`
+
+// A relay in front of OpenAI, which magpie can't tell from any other
+// upstream, turns the too-long id away as OpenAI words it: asked once
+// more with ids it takes, and from then on asked that way at once.
+func TestRelayRefusingOverlongItemIDsAskedAgain(t *testing.T) {
+	fresh(t)
+	up := &idChecker{check: true}
+	srv := httptest.NewServer(up)
+	t.Cleanup(srv.Close)
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Models: []string{"gpt-6.1"}, Responses: srv.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	for turn := range 2 {
+		rec := codexPostTo(s, `{"model":"relay/gpt-6.1","stream":true,"store":false,"input":[`+copilotTurn+`]}`)
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), "DONE") {
+			t.Fatalf("turn %d: %d %s", turn, rec.Code, rec.Body.String())
+		}
+	}
+	asked := up.asked()
+	if len(asked) != 3 {
+		t.Fatalf("asked the relay %d times, want 2 for the first turn and 1 for the second", len(asked))
+	}
+	b, _ := json.Marshal(asked[0])
+	if !strings.Contains(string(b), `"`+copilotOwnID+`"`) {
+		t.Errorf("the first ask went without the id it was refused over: %s", b)
+	}
+	for i, input := range asked[1:] {
+		for _, it := range input {
+			if id, ok := it["id"].(string); ok && (len(id) > 64 || !openaiItemID.MatchString(id)) {
+				t.Errorf("ask %d: item id %q sent", i+2, id)
+			}
+		}
+		if b, _ := json.Marshal(input); !strings.Contains(string(b), "I fixed main.go") || !strings.Contains(string(b), "now add a test") {
+			t.Errorf("ask %d: the items' words not kept: %s", i+2, b)
+		}
+	}
+}
+
+// A Chat client's turn that carries a Responses upstream's sealed
+// reasoning in its call's id (reasoning_carry, #4798) goes to another
+// Responses upstream, a relay that checks ids as OpenAI does: the sealed
+// item goes back with its id bound, as the relayed request's would be,
+// and not every turn of the session refused the same way (#5812).
+func TestChatCarriedSealedAskedWithPlainIDs(t *testing.T) {
+	fresh(t)
+	up := &idChecker{check: true}
+	srv := httptest.NewServer(up)
+	t.Cleanup(srv.Close)
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Models: []string{"gpt-6.1"}, Responses: srv.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	seal := `{"type":"reasoning","id":"rs_` + strings.Repeat("a", 425) + `","summary":[],"encrypted_content":"copilot-sealed"}`
+	carry := reasonedID("call_copilot_1", []json.RawMessage{json.RawMessage(seal)})
+	if carry == "call_copilot_1" {
+		t.Fatal("the call carries no reasoning")
+	}
+	ask := `{"model":"relay/gpt-6.1","stream":true,"messages":[
+		{"role":"user","content":"fix the login bug"},
+		{"role":"assistant","content":"I'll look.","tool_calls":[{"id":"` + carry + `","type":"function","function":{"name":"shell","arguments":"{\"cmd\":\"ls\"}"}}]},
+		{"role":"tool","tool_call_id":"` + carry + `","content":"main.go"}]}`
+	s := New()
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(ask)))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "DONE") {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	asked := up.asked()
+	if len(asked) != 2 {
+		t.Fatalf("asked the relay %d times, want the refusal and the ask again", len(asked))
+	}
+	b, _ := json.Marshal(asked[0])
+	if !strings.Contains(string(b), `"encrypted_content":"copilot-sealed"`) {
+		t.Errorf("the first ask went without the seal it was refused over: %s", b)
+	}
+	var overlong bool
+	for _, it := range asked[1] {
+		if id, ok := it["id"].(string); ok && (len(id) > 64 || !openaiItemID.MatchString(id)) {
+			overlong = true
+			t.Errorf("item id %q sent", id)
+		}
+	}
+	if !overlong {
+		if b, _ := json.Marshal(asked[1]); !strings.Contains(string(b), `"encrypted_content":"copilot-sealed"`) {
+			t.Errorf("the ask again went without the seal: %s", b)
+		}
+	}
+}

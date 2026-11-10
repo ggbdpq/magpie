@@ -116,9 +116,9 @@ func TestStuckSystemProxyReadHoldsNoRequest(t *testing.T) {
 
 	// It answers at last, and what it read is taken.
 	done := underWay()
-	answers <- readAnswer{Proxy{URL: "http://127.0.0.1:7890"}, true}
+	answers <- readAnswer{Proxy{URL: "http://10.1.2.3:7890"}, true}
 	readEnds(t, done)
-	if p := ask(t); p.URL != "http://127.0.0.1:7890" {
+	if p := ask(t); p.URL != "http://10.1.2.3:7890" {
 		t.Fatalf("the read answered, but requests take %+v", p)
 	}
 	if n := reads.Load(); n != 1 {
@@ -131,7 +131,7 @@ func TestStuckSystemProxyReadHoldsNoRequest(t *testing.T) {
 // a failed one holds nobody.
 func TestFailedSystemProxyReadKeepsTheProxy(t *testing.T) {
 	const wait = time.Second
-	set := Proxy{URL: "http://127.0.0.1:7890"}
+	set := Proxy{URL: "http://10.1.2.3:7890"}
 	reads, answers := holdReads(t, set, time.Now().Add(-time.Hour), wait)
 
 	if p := ask(t); p.URL != set.URL {
@@ -159,9 +159,9 @@ func TestFailedSystemProxyReadKeepsTheProxy(t *testing.T) {
 		t.Fatalf("a request waited %v for the read after a failed one", took)
 	}
 	done = underWay()
-	answers <- readAnswer{Proxy{URL: "http://127.0.0.1:7891"}, true}
+	answers <- readAnswer{Proxy{URL: "http://10.1.2.3:7891"}, true}
 	readEnds(t, done)
-	if p := ask(t); p.URL != "http://127.0.0.1:7891" {
+	if p := ask(t); p.URL != "http://10.1.2.3:7891" {
 		t.Fatalf("the read after a failed one answered, but requests take %+v", p)
 	}
 }
@@ -173,7 +173,7 @@ func TestSystemProxyToolThatHangsIsEnded(t *testing.T) {
 		t.Skip("no echo or sleep program on Windows")
 	}
 	parse := func(out string) Proxy { return Proxy{URL: strings.TrimSpace(out)} }
-	if p, ok := readTool(parse, "echo", "http://127.0.0.1:7890"); !ok || p.URL != "http://127.0.0.1:7890" {
+	if p, ok := readTool(parse, "echo", "http://10.1.2.3:7890"); !ok || p.URL != "http://10.1.2.3:7890" {
 		t.Fatalf("a tool that answered read as %+v, %v", p, ok)
 	}
 
@@ -196,10 +196,10 @@ func TestQuickSystemProxyReadIsWaitedFor(t *testing.T) {
 	_, answers := holdReads(t, Proxy{}, time.Time{}, 5*time.Second)
 	got := make(chan Proxy, 1)
 	go func() { got <- System() }()
-	answers <- readAnswer{Proxy{URL: "http://127.0.0.1:7890"}, true}
+	answers <- readAnswer{Proxy{URL: "http://10.1.2.3:7890"}, true}
 	select {
 	case p := <-got:
-		if p.URL != "http://127.0.0.1:7890" {
+		if p.URL != "http://10.1.2.3:7890" {
 			t.Fatalf("the first read answered at once, but the request waiting for it took %+v", p)
 		}
 	case <-time.After(10 * time.Second):

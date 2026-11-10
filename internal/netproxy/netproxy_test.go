@@ -84,11 +84,11 @@ func TestFor(t *testing.T) {
 	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
 		t.Setenv(k, "")
 	}
-	sysCache.at, sysCache.p = farFuture, Proxy{URL: "http://127.0.0.1:7890", Bypass: []string{"*.corp"}}
+	sysCache.at, sysCache.p = farFuture, Proxy{URL: "http://10.1.2.3:7890", Bypass: []string{"*.corp"}}
 	t.Cleanup(func() { sysCache.at = zero })
 
 	u, _ := url.Parse("https://chatgpt.com/backend-api/codex/responses")
-	if p, _ := For(u); p == nil || p.String() != "http://127.0.0.1:7890" {
+	if p, _ := For(u); p == nil || p.String() != "http://10.1.2.3:7890" {
 		t.Fatalf("system: %v", p)
 	}
 	corp, _ := url.Parse("https://git.corp/x")
@@ -119,7 +119,7 @@ func TestFor(t *testing.T) {
 
 func TestEnv(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	sysCache.at, sysCache.p = farFuture, Proxy{URL: "http://127.0.0.1:7890", Bypass: []string{"*.corp", "<local>"}}
+	sysCache.at, sysCache.p = farFuture, Proxy{URL: "http://10.1.2.3:7890", Bypass: []string{"*.corp", "<local>"}}
 	t.Cleanup(func() { sysCache.at = zero })
 	get := func(env []string, k string) string {
 		v := ""
@@ -133,7 +133,7 @@ func TestEnv(t *testing.T) {
 
 	// the system's proxy, where the environment names none
 	env := Env([]string{"PATH=/bin", "HOME=/h"})
-	if get(env, "HTTPS_PROXY") != "http://127.0.0.1:7890" || get(env, "all_proxy") != "http://127.0.0.1:7890" ||
+	if get(env, "HTTPS_PROXY") != "http://10.1.2.3:7890" || get(env, "all_proxy") != "http://10.1.2.3:7890" ||
 		get(env, "NO_PROXY") != "localhost,127.0.0.1,::1,.corp" || get(env, "PATH") != "/bin" {
 		t.Fatalf("system: %v", env)
 	}

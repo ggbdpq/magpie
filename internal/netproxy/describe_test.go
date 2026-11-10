@@ -12,10 +12,10 @@ import (
 func TestDescribeHidesProxyCredentials(t *testing.T) {
 	for _, source := range []string{"settings", "environment", "system"} {
 		for _, tc := range []struct{ name, raw, want string }{
-			{"plain", "socks5://127.0.0.1:1080", "socks5://127.0.0.1:1080"},
-			{"authenticated", "socks5://alice:secret@127.0.0.1:1080", "socks5://127.0.0.1:1080"},
-			{"encoded", "socks5h://ali%40ce:p%3Aa%2Fss%25@[::1]:1080", "socks5h://[::1]:1080"},
-			{"username", "http://alice@127.0.0.1:7890", "http://127.0.0.1:7890"},
+			{"plain", "socks5://10.1.2.3:1080", "socks5://10.1.2.3:1080"},
+			{"authenticated", "socks5://alice:secret@10.1.2.3:1080", "socks5://10.1.2.3:1080"},
+			{"encoded", "socks5h://ali%40ce:p%3Aa%2Fss%25@[2001:db8::1]:1080", "socks5h://[2001:db8::1]:1080"},
+			{"username", "http://alice@10.1.2.3:7890", "http://10.1.2.3:7890"},
 		} {
 			t.Run(source+"/"+tc.name, func(t *testing.T) {
 				t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -51,7 +51,7 @@ func TestDescribeHidesMalformedSystemProxy(t *testing.T) {
 	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
 		t.Setenv(k, "")
 	}
-	sysCache.at, sysCache.p = farFuture, Proxy{URL: "socks5://alice:secret%zz@127.0.0.1:1080"}
+	sysCache.at, sysCache.p = farFuture, Proxy{URL: "socks5://alice:secret%zz@10.1.2.3:1080"}
 	t.Cleanup(func() { sysCache.at = zero })
 	if got, from := Describe(); got != "" || from != "system" {
 		t.Fatalf("malformed proxy description = %q (%s)", got, from)

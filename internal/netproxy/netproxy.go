@@ -596,6 +596,17 @@ func System() Proxy {
 	if !sysCache.at.IsZero() && time.Since(sysCache.at) <= keep {
 		p := sysCache.p
 		sysCache.Unlock()
+		if deadLocal(p.URL) {
+			// the proxy app died since the read: nothing listens on the
+			// loopback port it named, and every request dialing it would
+			// be refused (#6012). Taken as none at once, and the cache
+			// let go, so the next read takes the app's being back — or
+			// its setting gone.
+			sysCache.Lock()
+			sysCache.at = time.Time{}
+			sysCache.Unlock()
+			return Proxy{}
+		}
 		return p
 	}
 	if sysCache.reading == nil {
@@ -622,9 +633,15 @@ func System() Proxy {
 }
 
 // refreshSystem reads the system proxy into sysCache, then closes done.
-// A read that fails keeps what was read before, if anything was.
+// A read that fails keeps what was read before, if anything was. A proxy
+// on this machine with nobody listening on its port is read as none: the
+// proxy app died with its setting left behind (#6012), and every request
+// dialing that port is refused for good.
 func refreshSystem(done chan struct{}) {
 	p, ok := readSystem()
+	if ok && deadLocal(p.URL) {
+		p, ok = Proxy{}, true
+	}
 	sysCache.Lock()
 	if ok || sysCache.at.IsZero() {
 		sysCache.p = p
@@ -640,6 +657,35 @@ func loopback(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// deadLocalWait is how long a loopback proxy's port is waited for before
+// it is taken for dead: a listener on this machine takes it, or refuses
+// the dial at once.
+const deadLocalWait = 500 * time.Millisecond
+
+// deadDial is the probe's dial: a variable so a test says what the port
+// answers.
+var deadDial = func(addr string, timeout time.Duration) (net.Conn, error) {
+	return net.DialTimeout("tcp", addr, timeout)
+}
+
+// deadLocal says a proxy on this machine has nobody listening on its port
+// any more (#6012): the proxy app died with its system setting left
+// behind, and every request dialing the port is refused for good. Probed
+// when the system's proxy is read or taken from the cache, on the
+// loopback alone — a proxy elsewhere is none of this read's to probe.
+func deadLocal(u string) bool {
+	p, err := Parse(u)
+	if err != nil || p == nil || p.Port() == "" || !loopback(p.Hostname()) {
+		return false
+	}
+	c, err := deadDial(p.Host, deadLocalWait)
+	if err != nil {
+		return true
+	}
+	c.Close()
+	return false
 }
 
 // bypassed matches the system's exception list: exact hosts, "*.example.com"

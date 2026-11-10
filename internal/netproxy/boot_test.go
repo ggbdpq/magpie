@@ -32,15 +32,15 @@ func TestSystemProxySetAfterStartIsTakenSoon(t *testing.T) {
 	if got := System(); got.URL != "" {
 		t.Fatalf("no proxy yet, read %+v", got)
 	}
-	p.Store(Proxy{URL: "http://127.0.0.1:7890"})
+	p.Store(Proxy{URL: "http://10.1.2.3:7890"})
 	time.Sleep(200 * time.Millisecond)
-	if got := System(); got.URL != "http://127.0.0.1:7890" {
+	if got := System(); got.URL != "http://10.1.2.3:7890" {
 		t.Fatalf("the proxy app set the system proxy, but magpie still reads %+v", got)
 	}
 	// A proxy that is set is kept for its own while.
 	p.Store(Proxy{})
 	time.Sleep(200 * time.Millisecond)
-	if got := System(); got.URL != "http://127.0.0.1:7890" {
+	if got := System(); got.URL != "http://10.1.2.3:7890" {
 		t.Fatalf("a set proxy was read again within %v: %+v", systemKeep, got)
 	}
 }

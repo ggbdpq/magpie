@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/applog"
 	"github.com/yetone/magpie/internal/claudecode"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/plugin"
@@ -73,6 +74,13 @@ var claudeLetGo = func() {
 }
 
 func claudeRun(args []string) error {
+	// the terminal is claude's for the session: what magpie logs beside it
+	// (an account's models asked again, a gateway note) would overwrite
+	// its screen (#5923), so while claude runs magpie's log goes to
+	// magpie's log file, stderr back when it's done. What the launcher
+	// itself has to say is printed below, on stderr, as before.
+	restore := applog.Quiet()
+	defer restore()
 	bin := claudeFind()
 	if bin == "" {
 		return errors.New("Claude Code isn't installed: install it from https://claude.com/claude-code, " + claudecode.InstallHint)

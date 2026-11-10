@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/applog"
 	"github.com/yetone/magpie/internal/proc"
 )
 
@@ -67,6 +68,12 @@ var agyExec = agyExecOS
 var agyLook = func() (string, error) { return proc.Look("agy") }
 
 func agyRun(args []string) error {
+	// the terminal is agy's while it runs, and on Windows magpie waits
+	// beside it (Unix replaces magpie with agy): what magpie logs there
+	// would overwrite its screen, as it would claude-magpie's (#5923), so
+	// magpie's log goes to magpie's log file until agy is done
+	restore := applog.Quiet()
+	defer restore()
 	bin, err := agyLook()
 	if err != nil {
 		return errors.New("agy isn't installed, or isn't on your PATH")

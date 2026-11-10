@@ -93,6 +93,33 @@ func Stop() {
 	}
 }
 
+// Quiet sends the standard logger's output to the log alone, for a
+// command handing the terminal to an interactive child (`magpie claude
+// run`): what magpie logs beside the session — an account's models asked
+// again, a gateway note — would overwrite the child's screen (#5923).
+// What the command has to say to the user it prints itself, and the
+// child's own output isn't the logger's to write. It answers a function
+// that brings the logger back to where it was; when the log can't be
+// opened, the logger stays there, and the function restores nothing.
+func Quiet() (restore func()) {
+	prev := log.Writer()
+	w, err := open(Path(), Limit)
+	if err != nil {
+		return func() {}
+	}
+	log.SetOutput(w)
+	if was := active.Swap(w); was != nil {
+		was.Close()
+	}
+	return func() {
+		log.SetOutput(prev)
+		_ = debug.SetCrashOutput(nil, debug.CrashOptions{})
+		if w := active.Swap(nil); w != nil {
+			w.Close()
+		}
+	}
+}
+
 // file is a log file rotated at limit bytes.
 type file struct {
 	mu    sync.Mutex

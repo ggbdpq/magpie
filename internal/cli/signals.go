@@ -45,6 +45,7 @@ func endProbesOnSignal() {
 			if !handled {
 				provider.FlushServed() // a gateway's last answers, noted and not yet written
 				gateway.FlushSticks()  // and who answered which conversation
+				gateway.ShelveIdle()   // and every conversation waiting for its next turn keeps its session out the restart (#5971)
 				// and the session index, or the next start reads every
 				// file a scan read since the last save again
 				savedWithin(sessionsSaved, saveOnSignal)

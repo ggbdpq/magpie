@@ -967,6 +967,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		if !s.waitSightSaves(c) {
 			log.Printf("gateway: ending before image descriptions could all be saved; the next start may describe them again")
 		}
+		s.subscription.shelveIdle() // every conversation waiting for its next turn keeps its session out the restart (#5971)
 		s.subscription.abortAll()
 		provider.FlushServed() // what answered last, kept for the next start and the CLI
 		flushSticks()          // who answered which conversation, for the next start or the magpie handed over to

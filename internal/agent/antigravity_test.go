@@ -560,3 +560,38 @@ func TestAntigravitySyncWiresConfigJSON(t *testing.T) {
 		t.Errorf("settings.json:\n%s", readFile(legacy))
 	}
 }
+
+// The wire protocol of a file on magpie stays what the file holds: on the
+// app's openai stream its own accumulator folds a turn's parallel calls
+// into one (id, names and arguments lost, #5908), and on genai it reads
+// them whole, so the protocol is the user's to pick once magpie wired the
+// file (the reporter hand-set genai and had it work until magpie's next
+// write put openai back). What magpie writes still refreshes; a file with
+// no wire protocol of its own is put on openai, as before.
+func TestAntigravityWireProtocolKept(t *testing.T) {
+	home := antigravityHome(t)
+	path := filepath.Join(home, ".antigravity", "settings.json")
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	a := antigravity(home)
+	f := a.Field("model")
+	if err := f.Set("magpie/anth/claude-sonnet-5"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := edit.GetJSON(path, "gateway.wireProtocol"); got != "openai" {
+		t.Fatalf("a block magpie starts writes %q, want openai", got)
+	}
+	// the reporter's pick, hand-set in magpie's own block
+	if err := edit.SetJSON(path, edit.KV{Path: "gateway.wireProtocol", Value: "genai"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Set("magpie/anth/claude-sonnet-5"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "genai"}
+	if file := antigravityFile(t, path); !sameJSON(string(file["gateway"]), want) {
+		t.Fatalf("the wire protocol didn't stay the user's: %s", readFile(path))
+	}
+}

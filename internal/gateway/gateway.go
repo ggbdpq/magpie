@@ -5615,6 +5615,13 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 		if from == provider.Responses && !keep && !searchesModel(p, from, model) && !codexAsSent(p, r.Header) {
 			body = withoutSearchCalls(body)
 		}
+		// the block a handover after the thinking began parks — neither
+		// thinking nor signature — carries nothing for any vendor, and an
+		// Anthropic-type endpoint turns the whole request away for it,
+		// every later turn until the conversation is compacted (#5833)
+		if from == provider.Anthropic {
+			body = withoutEmptyThinking(body)
+		}
 		status, msg, done := s.passthrough(w, r, p, from, model, body, &call.Usage)
 		if done {
 			return status, msg

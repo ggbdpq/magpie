@@ -23,9 +23,106 @@ import (
 // anthropicBody leaves an unsigned thinking block out for Anthropic and
 // keeps its text only where the upstream wants reasoning back (DeepSeek,
 // which takes the empty field, as aBlock already writes it); a relay sends
-// it back to the vendor that wrote it, as the client keeps it.
+// it back to the vendor that wrote it, as the client keeps it — except a
+// block that got neither thinking nor signature, which withoutEmptyThinking
+// takes out of a relayed request: it carries nothing for any vendor, and
+// an Anthropic-type endpoint turns the whole request away for it.
 
 var thinkingType = []byte(`"thinking"`)
+
+// withoutEmptyThinking is a relayed Messages request with the block a
+// handover after the thinking began leaves — the parked block got no
+// thinking_delta and no signature_delta before the next candidate answered
+// (#5833) — taken out, and a redacted_thinking with no data beside it. The
+// client sends such a block back on every later turn, wherever it sits in
+// the history, and an Anthropic-type endpoint refuses the whole request
+// for it ("each thinking block must contain thinking"). A block that
+// carries something stays as the client keeps it: one a vendor signed, and
+// one with its text though no signature. A turn the drop would leave
+// without content stays as it was: a handover's parked block is beside the
+// next candidate's answer, never alone.
+func withoutEmptyThinking(body []byte) []byte {
+	if !bytes.Contains(body, thinkingType) && !bytes.Contains(body, []byte(`"redacted_thinking"`)) {
+		return body
+	}
+	var q map[string]json.RawMessage
+	if decodeJSONView(body, &q) != nil {
+		return body
+	}
+	raw, ok := q["messages"]
+	if !ok {
+		return body
+	}
+	var msgs []json.RawMessage
+	if json.Unmarshal(raw, &msgs) != nil {
+		return body
+	}
+	changed := false
+	for i, m := range msgs {
+		var mm map[string]json.RawMessage
+		if json.Unmarshal(m, &mm) != nil {
+			continue
+		}
+		content, ok := mm["content"]
+		if !ok || !bytes.HasPrefix(bytes.TrimSpace(content), []byte("[")) {
+			continue // a string content has no blocks to drop
+		}
+		var blocks []json.RawMessage
+		if json.Unmarshal(content, &blocks) != nil {
+			continue
+		}
+		out := make([]json.RawMessage, 0, len(blocks))
+		dropped := false
+		for _, b := range blocks {
+			if emptyThinkingArtifact(b) {
+				dropped = true
+				continue
+			}
+			out = append(out, b)
+		}
+		if !dropped || len(out) == 0 {
+			continue // nothing to drop, or the turn would be left empty
+		}
+		mm["content"], _ = marshalPlain(out)
+		nm, err := marshalPlain(mm)
+		if err != nil {
+			continue
+		}
+		msgs[i] = nm
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	q["messages"], _ = marshalPlain(msgs)
+	encoded, err := marshalPlain(q)
+	if err != nil {
+		return body
+	}
+	return encoded
+}
+
+// emptyThinkingArtifact is a thinking block with neither text nor
+// signature, or a redacted_thinking with no data: what a handover parks
+// (#5833), nothing any vendor can verify.
+func emptyThinkingArtifact(raw json.RawMessage) bool {
+	var b struct {
+		Type      string `json:"type"`
+		Thinking  string `json:"thinking"`
+		Signature string `json:"signature"`
+		Data      string `json:"data"`
+	}
+	if json.Unmarshal(raw, &b) != nil {
+		return false
+	}
+	switch b.Type {
+	case "thinking":
+		return b.Thinking == "" && b.Signature == ""
+	case "redacted_thinking":
+		return b.Data == ""
+	}
+	return false
+}
 
 // sigFieldTidy gives each thinking block of a Messages reply relayed as it
 // came an empty signature where it has none: a stream's content_block_start

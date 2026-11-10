@@ -42,10 +42,17 @@ func InProviderOrder(qs []SubscriptionQuota) []SubscriptionQuota {
 
 // Allotted is Quotas without the keys' balances: the accounts and plans
 // whose allowance runs out and starts again, which is what magpie quota
-// wait waits on; no key's balance is asked for.
+// wait waits on; no key's balance is asked for. A provider switched off
+// in magpie stays out: it is read no more, and what its last card (as of
+// then) says is not an allowance the agent would ever be moved to
+// (#5863).
 func Allotted(ctx context.Context) []SubscriptionQuota {
 	plans, subs := seatCards(PlanQuotas(ctx), SubscriptionUsage(ctx))
-	return append(withAccountNames(subs), plans...)
+	qs := append(withAccountNames(subs), plans...)
+	return slices.DeleteFunc(qs, func(q SubscriptionQuota) bool {
+		p, err := Find(q.Provider)
+		return err == nil && p.Off
+	})
 }
 
 func quotas(ctx context.Context) (subs, plans, balances []SubscriptionQuota) {

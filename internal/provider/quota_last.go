@@ -9,8 +9,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -198,6 +200,31 @@ func (c *lastQuotasT) reported(key string) (SubscriptionQuota, bool) {
 	at := e.At
 	out.AsOf = &at
 	return out, true
+}
+
+// lastReadingsOf is what was last read of provider id's accounts, oldest
+// user first: for a provider switched off, which is read no more
+// (left_alone.go), its cards keep standing with what it last reported,
+// dated as of then (#5863). A provider never read has nothing.
+func lastReadingsOf(id string) []SubscriptionQuota {
+	if id == "" {
+		return nil
+	}
+	c := &lastQuotas
+	c.Lock()
+	defer c.Unlock()
+	c.load()
+	prefix := id + "/"
+	var out []SubscriptionQuota
+	for _, k := range slices.Sorted(maps.Keys(c.m)) {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		if q, ok := c.reading(k); ok {
+			out = append(out, q)
+		}
+	}
+	return out
 }
 
 // lastAllowances is each of an agent's accounts' allowance as it last

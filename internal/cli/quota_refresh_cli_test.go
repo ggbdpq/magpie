@@ -135,3 +135,16 @@ func TestQuotaRefreshGapPerCard(t *testing.T) {
 		t.Error("the provider's refresh didn't hold its account")
 	}
 }
+
+// A provider switched off in magpie is read no more, asking or not: the
+// refresh says so, instead of reading nothing and saying it has no card
+// (#5863).
+func TestQuotaRefreshRefusesASwitchedOffProvider(t *testing.T) {
+	groupsHome(t)
+	if err := provider.SetOff("a", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := quotaRefreshCmd([]string{"a"}); err == nil || !strings.Contains(err.Error(), "switched off in magpie") {
+		t.Fatalf("not refused as switched off: %v", err)
+	}
+}

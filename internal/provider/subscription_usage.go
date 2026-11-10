@@ -405,10 +405,20 @@ func SubscriptionUsageReading() bool {
 }
 
 // visibleQuotas drops accounts removed from magpie since the last refresh.
+// A provider switched off is asked no more in the background
+// (left_alone.go), but what was last known of it is still shown: its last
+// readings stand in, dated as of when they were made and marked as not
+// being refreshed (#5863: switched off to only switch its account, its
+// card and quota's windows vanished altogether). A removed account
+// (Hidden) stays gone.
 func visibleQuotas(all []SubscriptionQuota) []SubscriptionQuota {
 	hidden := map[string]bool{}
+	off := map[string]bool{}
 	for _, p := range load().Providers {
 		hidden[p.ID] = p.Hidden || p.Off // switched off: not asked either
+		if p.Off && !p.Hidden {
+			off[p.ID] = true
+		}
 	}
 	var chosen map[string]map[string]bool
 	out := []SubscriptionQuota{}
@@ -434,6 +444,19 @@ func visibleQuotas(all []SubscriptionQuota) []SubscriptionQuota {
 			q.Windows = chosenWindows(q.Windows, chosen[q.Provider], base)
 		}
 		out = append(out, q)
+	}
+	shown := map[string]bool{}
+	for _, q := range out {
+		shown[q.Provider] = true
+	}
+	for id := range off {
+		if shown[id] {
+			continue
+		}
+		for _, q := range lastReadingsOf(id) {
+			q.ReadDeferred = true
+			out = append(out, q)
+		}
 	}
 	return out
 }

@@ -53,6 +53,12 @@ func quotaRefreshCmd(args []string) error {
 	}
 	if p, err := provider.Find(id); err == nil && !provider.IsRemoteCard(id) {
 		id = p.ID
+		// A provider switched off in magpie is read no more, asking or not
+		// (left_alone.go): its card on the Usage page is what was last
+		// read, and there is nothing a refresh would ask (#5863)
+		if p.Off {
+			return fmt.Errorf("%s is switched off in magpie: its allowance isn't read, its card is what was last read · switch it on to read it again", id)
+		}
 	} else {
 		id = strings.ToLower(id)
 	}

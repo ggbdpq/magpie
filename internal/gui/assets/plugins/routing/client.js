@@ -1770,6 +1770,7 @@ function routingPage(part) {
   let rp = null;            // a replay playing: see replay
   let day = "", days = [], past = [], pastCut = false; // a kept day looked at ("" for live), the days kept, its routes
   let tallies = null; // today's counts per account or key, from the history read (#3351); live only
+  let serves = null; // what each provider serves now, with the history read (#5895); live only
   const src = () => rp ? rp.routes : routes; // the routes the stage plays from
   const LINGER = 12e3;      // how long an agent's last request stays on the stage
   let gen = 0, trips = [], waiters = [];
@@ -3989,7 +3990,7 @@ function routingPage(part) {
       days = res.days || [];
       noteAccounts(res.routes);
       if (d && d === day) { past = (res.routes || []).map(whole); pastCut = !!res.cut; }
-      else if (!d) { tallies = res.tallies || null; actsFold = { rs: [], by: null }; } // the fold memo holds the pre-tallies list: drop it, the next fold seeds from the day (#3351)
+      else if (!d) { tallies = res.tallies || null; serves = res.serves || null; actsFold = { rs: [], by: null }; } // the fold memo holds the pre-tallies list: drop it, the next fold seeds from the day (#3351)
     } catch {}
     renderHist(); // shown once there are days, though none are live
   }
@@ -4823,9 +4824,9 @@ function routingPage(part) {
   // Folded again only when a request listed is new or has changed: the
   // list is drawn ten times a second, and each fold went through every
   // kept request's hundreds of keys, a few ms each time (#3164)
-  let actsFold = { rs: [], by: null };
+  let actsFold = { rs: [], by: null, serves: null };
   function foldActs(rs) {
-    if (actsFold.by && actsFold.rs.length === rs.length && rs.every((r, i) => r === actsFold.rs[i])) return actsFold.by;
+    if (actsFold.by && actsFold.serves === serves && actsFold.rs.length === rs.length && rs.every((r, i) => r === actsFold.rs[i])) return actsFold.by;
     const by = new Map();
     // The agent's current sign-in uses its provider's ID; after switching,
     // that same account uses provider@user and the base ID names another.
@@ -4879,7 +4880,14 @@ function routingPage(part) {
         else if (tr.rest && end >= a.restAt) { a.rest = tr.rest; a.restAt = end; }
       }
     }
-    actsFold = { rs: [...rs], by };
+    // An account or key removed from its provider is in the day's tallies
+    // still, and in the orders of the requests the gateway keeps (#5895):
+    // what the history read says each provider serves now keeps the fold's
+    // entries to those, so the list and the counts it sums are the
+    // provider's own. A day looked at keeps who it had.
+    const served = !day && serves?.length ? new Set(serves) : null;
+    if (served) for (const k of [...by.keys()]) if (!served.has(k)) by.delete(k);
+    actsFold = { rs: [...rs], by, serves };
     return by;
   }
   const provBoxes = new Map(); // a provider → its box in the accounts' list (renderActs)

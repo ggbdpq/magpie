@@ -542,6 +542,32 @@ func traceRoutes(mux *http.ServeMux) {
 		out.Routes = pricedRoutes(out.TraceState.Routes)
 		writeJSON(rw, out)
 	})
+	// servedActKeys is what each provider serves now, named the way the
+	// day's tallies and the Routing page's accounts fold name them (#5895):
+	// an account by its provider and its user in lower case, a key or the
+	// provider by its own id — a key's alone when it is the only one, and
+	// with its own when there are more. The list is the providers' config
+	// as it is, so an account or key removed from it names none of these
+	// and the fold lets its day go.
+	servedActKeys := func() []string {
+		out := []string{}
+		for _, p := range provider.All() {
+			out = append(out, p.ID)
+			for _, a := range p.AccountIDs() {
+				if a.Key {
+					out = append(out, p.ID+"#"+a.ID)
+					continue
+				}
+				u := strings.ToLower(strings.TrimSpace(a.User))
+				if u == "" {
+					continue
+				}
+				b, _ := json.Marshal([]string{p.ID, u})
+				out = append(out, string(b))
+			}
+		}
+		return out
+	}
 	// the routes of a day gone by, from the history the gateway keeps on
 	// disk — read whichever magpie serves the gateway
 	mux.HandleFunc("GET /api/gateway/history", func(rw http.ResponseWriter, r *http.Request) {
@@ -552,8 +578,12 @@ func traceRoutes(mux *http.ServeMux) {
 		if day == "" {
 			// the live page's accounts and keys say tried and answered of
 			// the day the Usage page reads, not of the last few requests
-			// the trace still keeps (#3351)
+			// the trace still keeps (#3351); and what each provider serves
+			// now, so the page's fold keeps its entries to those and one
+			// removed from its provider is off it, its day in the tallies
+			// or not (#5895)
 			out["tallies"] = gateway.DayTallies()
+			out["serves"] = servedActKeys()
 		}
 		writeJSON(rw, out)
 	})

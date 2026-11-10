@@ -6,10 +6,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // The Routing page's accounts and keys counted each account's tried and
@@ -97,5 +100,64 @@ func TestLiveHistoryTalliesTheWholeDay(t *testing.T) {
 		Tries: []gateway.Try{try}}})
 	if got = ask(); got[`["p","b"]`].Tried != 11 {
 		t.Errorf("the day grown, the quiet account's day: tried %d", got[`["p","b"]`].Tried)
+	}
+}
+
+// The fold's entries are named as the day's tallies are (#5895), so the
+// live read carries what each provider serves now by the same names: a
+// key by its provider's id alone when it is the only one, and with its
+// own when there are more. A key removed from its provider names none of
+// these, and its day goes off the page with it. A day asked by name
+// carries no such list: its fold is that day's, not now's.
+func TestLiveHistoryServesWhatTheProvidersServeNow(t *testing.T) {
+	sandboxHome(t)
+	old := served.Swap(nil)
+	t.Cleanup(func() { served.Store(old) })
+	save := func(keys ...string) {
+		t.Helper()
+		p := provider.Provider{ID: "p", Name: "P", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"m"}}
+		if len(keys) > 0 {
+			p.Key = keys[0]
+			for _, k := range keys[1:] {
+				p.Keys = append(p.Keys, provider.KeyAccount{Key: k})
+			}
+		}
+		if err := provider.Save(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ask := func() []string {
+		t.Helper()
+		mux := http.NewServeMux()
+		traceRoutes(mux)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest("GET", "/api/gateway/history?day=", nil))
+		var out struct {
+			Serves []string `json:"serves"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("the history read: %v %s", err, w.Body)
+		}
+		return out.Serves
+	}
+	save("k1", "k2")
+	want := []string{"p", "p#" + provider.KeyID("k1"), "p#" + provider.KeyID("k2")}
+	if got := ask(); !slices.Equal(got, want) {
+		t.Errorf("two keys on: serves %v, want %v", got, want)
+	}
+	// the second key removed: its own is off the list, the provider and
+	// the first key's stay
+	save("k1")
+	want = []string{"p", "p#" + provider.KeyID("k1")}
+	if got := ask(); !slices.Equal(got, want) {
+		t.Errorf("one key on: serves %v, want %v", got, want)
+	}
+	// a day asked by name carries no serves
+	mux := http.NewServeMux()
+	traceRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/api/gateway/history?day=2026-11-10", nil))
+	if strings.Contains(w.Body.String(), `"serves"`) {
+		t.Errorf("a day's read carries serves: %s", w.Body)
 	}
 }

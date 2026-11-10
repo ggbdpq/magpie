@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -740,6 +742,7 @@ type claudeUsageEntry struct {
 	wait     time.Duration // how long after tried it runs again unasked
 	err      error         // what the last run said, when it failed
 	whole    bool          // /usage was read: ws has every window the account has
+	cred     string        // the sign-in the reading was told by (claudeCredMark): another one under the account gives way (#5921)
 }
 
 // windows is what e keeps as of now, partial where /usage never read it.
@@ -749,6 +752,28 @@ func (e claudeUsageEntry) windows(now time.Time) []QuotaWindow {
 		ws[i].partial = !e.whole
 	}
 	return ws
+}
+
+// claudeCredMark says which sign-in of it the live credential is: a
+// digest of its access token, enough to tell a re-login (fresh tokens, a
+// plan moved on the account) from the sign-in a kept reading was told by.
+// "" when no credential is read.
+func claudeCredMark() string {
+	c, _, ok := claudeCredential()
+	if !ok || c.OAuth.AccessToken == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(c.OAuth.AccessToken))
+	return hex.EncodeToString(sum[:6])
+}
+
+// forgetClaudeUsage drops what Claude Code last told of user's allowance:
+// a sign-in for the account can only change it, and the windows of the
+// sign-in before stand for that one, not this (#5921).
+func forgetClaudeUsage(user string) {
+	claudeUsage.Lock()
+	delete(claudeUsage.m, strings.ToLower(user))
+	claudeUsage.Unlock()
 }
 
 // claudeAskFloor is the least time between two readings, however often the
@@ -907,6 +932,21 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
 	c.Lock()
 	e, ok := c.m[key]
 	c.Unlock()
+	// a re-login for the account swaps the credential under a kept
+	// reading: what it told stands for the sign-in before, whose windows
+	// a plan change leaves far from — every window full served while the
+	// account's real allowance was gone, till a hand refresh (#5921).
+	// The next look reads again. A move to another account takes nothing
+	// away: the reading kept is that account's own, and it stands for it
+	// while Claude Code is signed in elsewhere (moved off).
+	if ok && active && e.cred != claudeCredMark() && !ClaudeCodeMovedOff(user) {
+		c.Lock()
+		if f, still := c.m[key]; still && f.cred == e.cred {
+			delete(c.m, key)
+		}
+		c.Unlock()
+		e, ok = claudeUsageEntry{}, false
+	}
 	// the account Claude Code is on is read sooner near out
 	// (claudeWaitOf), and at once once Claude Code was refused for its
 	// limit since (claudeLimitHitAfter, #4443)
@@ -1016,7 +1056,7 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
 	if c.m == nil {
 		c.m = map[string]claudeUsageEntry{}
 	}
-	c.m[key] = claudeUsageEntry{at: now, ws: ws, heard: e.heard, tried: now, asked: asked, wait: e.wait, whole: true}
+	c.m[key] = claudeUsageEntry{at: now, ws: ws, heard: e.heard, tried: now, asked: asked, wait: e.wait, whole: true, cred: claudeCredMark()}
 	c.Unlock()
 	// as of now, as a kept reading is: /usage gives a reset to the minute
 	// and can lag it, so a window it still counts full may have started

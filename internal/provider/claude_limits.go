@@ -116,6 +116,7 @@ func NoteClaudeLimits(user string, ls []ClaudeLimit) {
 	ws = append(ws, heard...)
 	slices.SortStableFunc(ws, func(a, b QuotaWindow) int { return claudeKindOrder(a) - claudeKindOrder(b) })
 	e.ws, e.at, e.heard = ws, time.Now(), time.Now()
+	e.cred = claudeCredMark()             // what it told, it told as this sign-in (#5921)
 	e.heardSeq = quotaReadSequence.Add(1) // after every reading started before it, as the cards order them
 	e.err = nil                           // a new observation supersedes the failed reading
 	c.m[key] = e

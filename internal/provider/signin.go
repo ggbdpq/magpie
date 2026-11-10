@@ -979,6 +979,9 @@ func addLogin(l savedLogin) (using bool, err error) {
 		// signed in afresh: what Claude Code kept for it beside the
 		// agent's own is an older sign-in, and gives way
 		forgetClaudeDir(l.User)
+		// so does the allowance it told: windows of the sign-in before,
+		// served on while the card said the new plan (#5921)
+		forgetClaudeUsage(l.User)
 	}
 	loginsSeenAt.Store(0)
 	forgetAccountCaches()

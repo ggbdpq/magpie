@@ -1567,6 +1567,8 @@ func switchSavedLogin(agent, user string) (from string, _ error) {
 			// Claude Code's own now: its only holder
 			forgetClaudeDir(want.User)
 			claudeHandedOver(want.User)
+			// and the allowance the sign-in before told gives way with it (#5921)
+			forgetClaudeUsage(want.User)
 		}
 	default:
 		err = fmt.Errorf("%s accounts can't be switched", agent)

@@ -2047,6 +2047,12 @@ func retryable(status int, body []byte) bool {
 		return false
 	case status == 401, status == 402, status == 403, status == 404, status == 408, status == 429, status >= 500:
 		return true
+	case prevForeign(status, raw):
+		// a relay's Azure resource cannot read this history (its own
+		// refusal, 400). Passthrough has already tried repairing the
+		// items it owns; another member may answer, and the failing
+		// relay takes its normal error rest (#5932)
+		return true
 	case modelRetired(status, body):
 		// another provider of the model may still serve it
 		return true

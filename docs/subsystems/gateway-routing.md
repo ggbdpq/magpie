@@ -3016,8 +3016,16 @@ included). `previousResponse` in
   reproduced against Azure) is asked once more with the conversation
   whole and those ids taken out. Only a request whose conversation magpie
   holds is asked again, and only with a body that differs: an id magpie
-  doesn't hold, or a refusal with nothing of magpie's to take out, is
-  passed on as before.
+  doesn't hold, or a refusal with nothing of magpie's to take out, is not
+  sent again unchanged to that resource. If this specific resource-mismatch
+  refusal remains, `retryable` lets the next candidate answer before any
+  reply reaches the client, and the failing candidate takes its normal
+  error rest, subject to its provider's `rest-cap`. A successful repair
+  rests nobody; unrelated input-validation 400s still reach the client
+  without failover. `TestAzureResourceMismatchFailsOverAndRests` covers both
+  a failed repair and a Codex-style full-history request with `store:false`;
+  `TestAzureResourceMismatchLeavesOtherBadRequestsAlone` holds the input
+  error boundary.
 - A ChatGPT account's streamed turn goes on its conversation's kept
   socket as a delta after the backend's own `previous_response_id`
   (`codexKept`, see [Providers and accounts](providers-accounts.md)).

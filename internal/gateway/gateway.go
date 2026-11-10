@@ -2711,6 +2711,17 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		s.rememberCodexTurn(r, call.Agent, agent, call.Kind, asked)
 	}
 	if !ok {
+		// providers.json unreadable (#5935): a model the user's providers
+		// serve must not be answered from the built-in subscriptions alone,
+		// which is all the reads of an unreadable file leave to resolve
+		// from. Refused, saying so: the agent asks again, and is served
+		// once the file reads again.
+		if ferr := provider.FileError(); ferr != nil {
+			call.Status, call.Error = http.StatusServiceUnavailable, "providers unreadable"
+			writeError(w, from, http.StatusServiceUnavailable, ferr.Error())
+			turnedAway()
+			return
+		}
 		call.Status, call.Error = 404, "unknown model"
 		if off, isOff := provider.SwitchedOff(asked); isOff {
 			call.Error = "provider switched off"

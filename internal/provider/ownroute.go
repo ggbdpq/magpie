@@ -78,6 +78,13 @@ func ownRouteIn(entries []Entry, all []Group, agent, id string) (to, group strin
 	if !bare {
 		return "", "", false
 	}
+	// providers.json unreadable (#5935): the user's groups and picks, which
+	// say whether the agent's own subscription should have the request, are
+	// not known, so the subscription is not picked in their place — the
+	// request is refused where routing reads no entry for the id.
+	if FileError() != nil {
+		return "", "", false
+	}
 	if gid, found := groupForIn(all, id); found {
 		g, _ := groupOf(all, strings.TrimPrefix(gid, GroupPrefix))
 		if !g.Auto {

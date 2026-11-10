@@ -1157,6 +1157,12 @@ func GroupFor(id string) (string, bool) {
 	if id == "" || strings.Contains(id, "/") {
 		return "", false
 	}
+	// providers.json unreadable (#5935): the user's groups are not known,
+	// and a group found among the built-in subscriptions alone must not
+	// take the request in their place
+	if FileError() != nil {
+		return "", false
+	}
 	return groupForIn(Groups(), id)
 }
 

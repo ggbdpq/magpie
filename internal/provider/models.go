@@ -3789,6 +3789,13 @@ func Resolve(id string) (Provider, string, bool) {
 		// poll, every 15s)
 		entries := providerEntries()
 		if e, ok := entryIn(groupEntries(entries), id); ok {
+			// a found group among the built-in subscriptions alone (#5935):
+			// the user's groups are unreadable, and this one is not theirs
+			// to serve the request — the members in view are the built-ins
+			// the user's providers stand beside
+			if gid, isRef := GroupIDOf(id); isRef && strings.HasPrefix(gid, "auto-") && FileError() != nil {
+				return Provider{}, "", false
+			}
 			return *e.Provider, e.Model, true
 		}
 		if e, ok := entryIn(Catalog(), id); ok {
@@ -3821,6 +3828,14 @@ func resolveIn(entries []Entry, id string) (Provider, string, bool) {
 		if p := lookIn(sharedAll(), pid); p != nil && p.On() && !p.ServesNone() {
 			return p.clone(), model, true
 		}
+	}
+	// providers.json unreadable (#5935): what follows answers a bare id
+	// from whoever lists it now, and with the user's providers unreadable
+	// that is the built-in subscriptions alone — their quota would be
+	// spent in the user's provider's place, without a word. Refused
+	// instead: the id is one the user's file may well answer.
+	if FileError() != nil {
+		return Provider{}, "", false
 	}
 	for i := range entries {
 		if e := &entries[i]; e.Model == id {

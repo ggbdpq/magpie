@@ -270,3 +270,92 @@ func copilotTurnFake(t *testing.T, models map[string]string, refuse func(model s
 	provider.CopilotTokenURL, provider.CopilotUserURL = ghSrv.URL+"/token", ghSrv.URL+"/user"
 	t.Cleanup(func() { provider.CopilotTokenURL, provider.CopilotUserURL = oldTok, oldUser })
 }
+
+// copilotScalarUnionsRequest is the issue's repro (#5952, qinezh): one tool
+// whose single property is an anyOf of two overlapping string branches, and
+// one whose single property is an anyOf of two nested integer intervals —
+// both turned away 400 "invalid request body" by Copilot's Gemini, while
+// each union's widest branch alone came back 200.
+const copilotScalarUnionsRequest = `{"model":"copilot/gemini-4-argon","stream":true,
+  "messages":[{"role":"user","content":"Reply with exactly OK. Do not call tools."}],
+  "tools":[{"type":"function","function":{"name":"test_tool","description":"Synthetic schema test.",
+    "parameters":{"type":"object","properties":{"value":{"anyOf":[{"type":"string","enum":["a","b"]},{"type":"string"}]}},"required":["value"]}}},
+            {"type":"function","function":{"name":"test_count","description":"Synthetic schema test.",
+    "parameters":{"type":"object","properties":{"value":{"anyOf":[{"type":"integer","minimum":1,"maximum":10},{"type":"integer","minimum":1,"maximum":20}]}},"required":["value"]}}}],
+  "tool_choice":"auto","max_tokens":64}`
+
+// TestCopilotGeminiTakesOverlappingScalarUnionsAsTheirWidest: what Copilot's
+// Gemini turns away is the anyOf (#4374's comparisons, now on scalar unions
+// too), and a union of overlapping branches must not go as oneOf, which says
+// at most one branch — so a branch every other branch provably admits nothing
+// beside goes alone: the pure type takes every string the enum'd branch does,
+// and the wider of two nested intervals takes both.
+func TestCopilotGeminiTakesOverlappingScalarUnionsAsTheirWidest(t *testing.T) {
+	var mu sync.Mutex
+	var sent []string
+	copilotTurnFake(t, map[string]string{
+		"gemini-4-argon": `["/chat/completions"]`,
+	}, nil, func(m string, b []byte) bool {
+		return bytes.Contains(b, []byte(`"anyOf"`))
+	}, "invalid request body", http.StatusBadRequest, &sent)
+
+	rec := httptest.NewRecorder()
+	New().Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(copilotScalarUnionsRequest)))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "hi") {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sent) != 1 {
+		t.Fatalf("Copilot was asked %d times", len(sent))
+	}
+	if strings.Contains(sent[0], `"anyOf"`) {
+		t.Errorf("the overlapping scalar unions went to Copilot's Gemini as anyOf, which it turns away: %s", sent[0])
+	}
+	if !strings.Contains(sent[0], `"value":{"type":"string"}`) {
+		t.Errorf("the string union did not go as its pure branch: %s", sent[0])
+	}
+	if strings.Contains(sent[0], `"enum":["a","b"]`) {
+		t.Errorf("the branch the pure type takes in did not go away: %s", sent[0])
+	}
+	if !strings.Contains(sent[0], `"value":{"type":"integer","minimum":1,"maximum":20}`) {
+		t.Errorf("the integer union did not go as its widest interval: %s", sent[0])
+	}
+	if strings.Contains(sent[0], `"maximum":10`) {
+		t.Errorf("the narrower interval went beside the wider one: %s", sent[0])
+	}
+}
+
+// copilotScalarGapRequest carries the union the collapse must not make: two
+// integer intervals with a gap between them, whose envelope [1,20] would
+// admit 6..9 that neither branch does.
+const copilotScalarGapRequest = `{"model":"copilot/gemini-4-argon","stream":true,
+  "messages":[{"role":"user","content":"Reply with exactly OK. Do not call tools."}],
+  "tools":[{"type":"function","function":{"name":"test_count","description":"Synthetic schema test.",
+    "parameters":{"type":"object","properties":{"value":{"anyOf":[{"type":"integer","minimum":1,"maximum":5},{"type":"integer","minimum":10,"maximum":20}]}},"required":["value"]}}}],
+  "tool_choice":"auto","max_tokens":64}`
+
+// TestCopilotGeminiKeepsUnprovenScalarUnions: only a branch that provably
+// takes the others' values goes alone. A union with a gap between its
+// branches stays an anyOf, and Copilot's refusal of it still reaches the
+// client, as TestCopilotGeminiKeepsUnprovenUnions pins for objects.
+func TestCopilotGeminiKeepsUnprovenScalarUnions(t *testing.T) {
+	var mu sync.Mutex
+	var sent []string
+	copilotTurnFake(t, map[string]string{
+		"gemini-4-argon": `["/chat/completions"]`,
+	}, nil, func(m string, b []byte) bool {
+		return bytes.Contains(b, []byte(`"anyOf"`))
+	}, "invalid request body", http.StatusBadRequest, &sent)
+
+	rec := httptest.NewRecorder()
+	New().Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(copilotScalarGapRequest)))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid request body") {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sent) != 0 {
+		t.Errorf("a refused turn was recorded as taken: %q", sent)
+	}
+}

@@ -3573,6 +3573,7 @@ application:
     - /mcp
     - /me
     - /join
+    - /magpie-ca.crt
 services:
   magpie:
     image: ghcr.io/yetone/magpie:0.1.N

@@ -597,6 +597,14 @@ func failure(status int, body []byte) string {
 		// Kimi's "exceeded model token limit" is the conversation's
 		// length, not the plan's
 		return failOther
+	case status == http.StatusBadRequest && emptyContentWords.Match(body):
+		// the vendor answered a request it gave nothing of: Kimi Code's
+		// plan, its weekly window spent, refuses every chat with a 400
+		// "text content is empty" and no word of the window (#5876,
+		// kedoupi) — the account out of its allowance, as magpie's own
+		// reading of the window already says, though no word of a
+		// quota's is in the answer
+		return failQuota
 	case status == 402 && usedUpWords.Match(body) && !creditWords.Match(body) && !bodyHas(body, "insufficient_quota"):
 		// a 402 that says a usage limit and nothing of money is out of
 		// quota, not of credit: Factory's "You've reached your weekly

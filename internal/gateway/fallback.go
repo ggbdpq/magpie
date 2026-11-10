@@ -1674,6 +1674,15 @@ func quotaSaid(msg string) bool {
 	return quotaWords.MatchString(msg) && !tooLong(http.StatusBadRequest, msg)
 }
 
+// emptyContentWords are how a vendor answers a request it gave nothing
+// of: the whole of its words, no error beside them. Kimi Code's plan,
+// its weekly window spent, answers every chat request with a 400 "text
+// content is empty" (#5876, kedoupi) — in=0 in the usage, and no word
+// of the window in it, so nothing read the answer as the spent plan it
+// is there. The words are read whole, as they are written (#5089's
+// rule): an answer of more than them isn't one.
+var emptyContentWords = lazyre.New(`(?i)(^|[\s:"])text content is empty(\\?"|\.?\s*$)`)
+
 // unservedWords are how a vendor says the model isn't one it serves this
 // key, or this way — words another provider, or key, may not answer with.
 // provider.ModelUnserved owns them: a plugin's 401 that says them doesn't
@@ -2066,6 +2075,12 @@ func retryable(status int, body []byte) bool {
 		// the vendor turning the agent's prompt away, at whatever 4xx it
 		// picks: the AutoClaw plugin's 406 (plugins#1094) as much as
 		// WorkBuddy's 400. Another member may take the same prompt
+		return true
+	case status == 400 && emptyContentWords.Match(body):
+		// the vendor answered a request it gave nothing of (#5876): Kimi
+		// Code's plan, its weekly window spent, answers just this, and
+		// the group's next member may answer instead — out of quota, as
+		// failure reads it
 		return true
 	case status == 400, status == 422:
 		return quotaWords.Match(body) || unservedWords.Match(body) || refusedWords.Match(body) || shapeWords.Match(body) || unsaidWords.Match(body) || regionWords.Match(body) || zhipuImageRefusal.Match(body) || wrongEndpoint(status, body) ||

@@ -8,8 +8,10 @@ package agent
 // vscodeProfiles), a JSONC array VS Code watches and reads again when it
 // changes. magpie adds a group of its own there,
 // {"vendor": "customendpoint", "name": "magpie"}, listing the catalog: each
-// model at the gateway's /v1/chat/completions with tool calling on (agent
-// mode lists only models that call tools). A group's apiKey can't be
+// model at the gateway's /v1/responses with tool calling on (agent
+// mode lists only models that call tools) — the Responses API, since its
+// Chat Completions one chops streaming thinking to pieces there (#5907).
+// A group's apiKey can't be
 // written in the file: VS Code reads it from its secret storage alone, so
 // each model sends magpie's token in requestHeaders' Authorization, which a
 // Custom Endpoint model may set and which then stands in for the key; the
@@ -462,13 +464,15 @@ func vscodeKindAt(k vscodeKind, dir string) *Agent {
 				return k.name + "'s Copilot Chat " + c.version + " lists a group for " + c.vendor + " and magpie's is for " + vendor + "; magpie writes it again when it next starts"
 			}
 			header, want := "requestHeaders.Authorization", "Bearer "+k.token()
+			url := vscodeResponsesURL()
 			if vendor == vscodeOAI {
 				header, want = "requestHeaders.x-api-key", k.token()
+				url = vscodeURL()
 			}
 			return wiringOff(k.name, models, func(k string) (string, bool) {
 				r := gjson.Get(g, "models.0."+k)
 				return r.String(), r.Exists()
-			}, "url", vscodeURL(), header, want)
+			}, "url", url, header, want)
 		},
 		Fields: []Field{{
 			Key: "model", Label: "model", Get: model,
@@ -612,9 +616,18 @@ func vscodeProfiles(dir string) (settings, models []string) {
 	return settings, models
 }
 
-// vscodeURL is the gateway's Chat Completions URL: a Custom Endpoint model's
-// url that ends in /chat/completions is asked as it is.
+// vscodeURL is the gateway's Chat Completions URL: what the OpenAI
+// Compatible provider's and the JetBrains plugin's models are asked, a url
+// that ends in /chat/completions asked as it is.
 func vscodeURL() string { return gatewayV1() + "/chat/completions" }
+
+// vscodeResponsesURL is the gateway's Responses URL, what VS Code's Custom
+// Endpoint models are asked over (#5907): its Chat Completions client takes
+// a thinking part's id from GitHub CAPI's own fields alone, so the standard
+// reasoning_content deltas reached its renderer without ids and it chopped
+// a full chain of thought into a bullet a frame; the Responses one names
+// each summary text with a stable item_id.
+func vscodeResponsesURL() string { return gatewayV1() + "/responses" }
 
 // vscodeGroupJSON is magpie's group in chatLanguageModels.json for a
 // provider (vscodeEndpoint or vscodeOAI): the catalog as the chat of the VS
@@ -634,8 +647,12 @@ func vscodeGroupJSON(k vscodeKind, vendor string) map[string]any {
 			output = 8192
 		}
 		output = outputOr(m, min(output, context/4))
+		url := vscodeResponsesURL()
+		if vendor == vscodeOAI {
+			url = vscodeURL()
+		}
 		entry := map[string]any{
-			"id": m.ID, "name": m.Name, "url": vscodeURL(),
+			"id": m.ID, "name": m.Name, "url": url,
 			"toolCalling": true, "vision": m.Images,
 			"contextWindow": context, "maxOutputTokens": output,
 			"requestHeaders": map[string]string{"Authorization": "Bearer " + k.token()},
@@ -649,14 +666,18 @@ func vscodeGroupJSON(k vscodeKind, vendor string) map[string]any {
 		}
 		if len(m.Efforts) > 0 {
 			entry["supportsReasoningEffort"] = m.Efforts
-			entry["reasoningEffortFormat"] = "chat-completions"
+			if vendor == vscodeOAI {
+				entry["reasoningEffortFormat"] = "chat-completions"
+			} else {
+				entry["reasoningEffortFormat"] = "responses"
+			}
 		}
 		list = append(list, entry)
 	}
 	if vendor == vscodeOAI {
 		return map[string]any{"name": magpieID, "vendor": vscodeOAI, "models": list}
 	}
-	return map[string]any{"name": magpieID, "vendor": vscodeEndpoint, "apiType": "chat-completions", "models": list}
+	return map[string]any{"name": magpieID, "vendor": vscodeEndpoint, "apiType": "responses", "models": list}
 }
 
 // vscodeGroupKept is magpie's group v laid over the one in the file, cur,

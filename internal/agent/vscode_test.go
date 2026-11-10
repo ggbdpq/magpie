@@ -2,12 +2,14 @@ package agent
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/jsonc"
+	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/usage"
@@ -69,8 +71,8 @@ func TestVSCode(t *testing.T) {
 	}
 	g, _ := edit.GetJSONItem(lm, vscodeGroup)
 	for k, want := range map[string]string{
-		"vendor": "customendpoint", "name": "magpie", "apiType": "chat-completions",
-		"models.0.id": "relay/glm-4.6", "models.0.url": gatewayV1() + "/chat/completions",
+		"vendor": "customendpoint", "name": "magpie", "apiType": "responses",
+		"models.0.id": "relay/glm-4.6", "models.0.url": gatewayV1() + "/responses",
 		"models.0.toolCalling": "true", "models.0.contextWindow": "204800",
 		"models.0.requestHeaders.Authorization": "Bearer magpie",
 	} {
@@ -162,6 +164,52 @@ func TestVSCodeRoundTrip(t *testing.T) {
 	}
 	if v, ok := edit.GetJSON(a.Path, vscodeDefault); ok || a.Wired() {
 		t.Fatalf("fresh disconnected: %q\n%s", v, readFile(a.Path))
+	}
+}
+
+// #5907 (Lynn-zy): the Custom Endpoint group sent VS Code to the gateway's
+// Chat Completions, whose reasoning_content deltas carry no block id: its
+// parser takes a thinking part's id from GitHub CAPI's own fields alone,
+// and its renderer then chopped a full chain of thought into a bullet a
+// frame. The group asks the Responses API, whose thinking deltas name a
+// stable item_id; the OpenAI Compatible one goes on asking Chat
+// Completions.
+func TestVSCodeCustomEndpointAsksResponses(t *testing.T) {
+	syncHome(t)
+	os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755)
+	os.WriteFile(catalog.CachePath(), []byte(`{"zai":{"models":{"glm-4.6":{"id":"glm-4.6","name":"GLM-4.6","reasoning_options":[{"type":"effort","values":["minimal","low","medium","high"]}],"limit":{"context":204800}}}}}`), 0o644)
+	catalog.Reset()
+	t.Cleanup(catalog.Reset)
+	b, err := json.Marshal(vscodeGroupJSON(vscodeStable, vscodeEndpoint))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]string{
+		"apiType":                        "responses",
+		"models.0.url":                   gatewayV1() + "/responses",
+		"models.0.reasoningEffortFormat": "responses",
+	} {
+		if got := gjson.GetBytes(b, k).String(); got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+	if n := len(gjson.GetBytes(b, "models.0.supportsReasoningEffort").Array()); n != 4 {
+		t.Errorf("supportsReasoningEffort = %s", gjson.GetBytes(b, "models.0.supportsReasoningEffort").Raw)
+	}
+	b, err = json.Marshal(vscodeGroupJSON(vscodeStable, vscodeOAI))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]string{
+		"models.0.url":                   gatewayV1() + "/chat/completions",
+		"models.0.reasoningEffortFormat": "chat-completions",
+	} {
+		if got := gjson.GetBytes(b, k).String(); got != want {
+			t.Errorf("customoai %s = %q, want %q", k, got, want)
+		}
+	}
+	if gjson.GetBytes(b, "apiType").Exists() {
+		t.Errorf("customoai apiType = %s", gjson.GetBytes(b, "apiType").Raw)
 	}
 }
 

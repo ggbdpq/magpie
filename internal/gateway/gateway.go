@@ -6136,7 +6136,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 			// display to the provider
 			extra = s.withoutRefusedShapes(p, adaptiveThinking(extra))
 		}
-		body = extra
+		body = arkKimiTemperature(p, to, extra)
 	}
 	if !countsTokens(path) {
 		// the tier it goes at, the user's own fields in it (#1784)

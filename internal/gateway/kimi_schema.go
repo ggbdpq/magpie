@@ -219,7 +219,8 @@ func valuesType(vals []gjson.Result) string {
 // fills in the value the model and mode want, so no number is written
 // here. Models that take a range — moonshot-v1-*, kimi-k2-0905-preview,
 // kimi-k2-thinking, kimi-latest — keep what the user set, as does anyone
-// not served by Moonshot or Ark.
+// not served by Moonshot or Ark. Ark's K3.1 Pro thinking-off default is
+// supplied after extraBody by arkKimiTemperature.
 func kimiLockedSampling(p provider.Provider, to provider.Protocol, body []byte) []byte {
 	if !isKimi(p, to) && !isArk(p) {
 		return body

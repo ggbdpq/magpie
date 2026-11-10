@@ -459,13 +459,13 @@ func TestKimiLockedSampling(t *testing.T) {
 			t.Errorf("Ark was sent the sampling fields: %s", got.body)
 		}
 	})
-	t.Run("volcengine's anthropic endpoint drops the fields", func(t *testing.T) {
+	t.Run("volcengine's anthropic endpoint fits the thinking-off default", func(t *testing.T) {
 		got := post(t, "/v1/messages", `{"model":"volc/kimi-k3.1-pro","messages":[{"role":"user","content":"hi"}],"temperature":0.6,"top_p":0.95,"max_tokens":5}`)
 		if got.host != "ark.cn-beijing.volces.com" {
 			t.Fatalf("the request went to %s", got.host)
 		}
-		if gjson.Get(got.body, "temperature").Exists() || gjson.Get(got.body, "top_p").Exists() {
-			t.Errorf("Ark was sent the sampling fields: %s", got.body)
+		if gjson.Get(got.body, "temperature").Float() != 0.6 || gjson.Get(got.body, "top_p").Exists() {
+			t.Errorf("Ark was sent incompatible thinking-off sampling: %s", got.body)
 		}
 	})
 	t.Run("volcengine keeps the fields for a model its server doesn't lock", func(t *testing.T) {

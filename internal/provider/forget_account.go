@@ -54,6 +54,21 @@ func forgetLogins(agent string) error {
 			errs = append(errs, err)
 		}
 	}
+	// the sign-in the agent itself holds, which none of the saved copies
+	// named — removed from magpie before any look saved it, or signed in
+	// to another account itself after (magpie saves nothing of a removed
+	// agent's): signed out too, as the ask says Codex itself is (#5916),
+	// rather than a Sign out… that says done and leaves the removed row
+	// standing, still signed in. Claude Code is never signed out
+	// (claudeStandIn), and the other agents' own sign-ins the ask leaves
+	// as they are.
+	if agent == "codex" {
+		if live, ok := liveLogin(agent); ok && !slices.ContainsFunc(ls, func(l Login) bool { return strings.EqualFold(l.User, live.User) }) {
+			if err := ForgetLogin(agent, live.User); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
 	ForgetAccounts()
 	return errors.Join(errs...)
 }

@@ -36,6 +36,7 @@ import (
 	"github.com/yetone/magpie/internal/autostart"
 	"github.com/yetone/magpie/internal/bark"
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/filelock"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/fonts"
 	"github.com/yetone/magpie/internal/fx"
@@ -3628,6 +3629,9 @@ func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, r
 	return tag
 }
 
+// busyKey is the i18n.js key of filelock.BusyError's words.
+const busyKey = "another magpie is changing {file} right now, so this change wasn't saved: try again in a moment"
+
 func fail(rw http.ResponseWriter, err error) {
 	rw.Header().Set("Content-Type", "application/json")
 	rw.WriteHeader(http.StatusBadRequest)
@@ -3660,6 +3664,12 @@ func fail(rw http.ResponseWriter, err error) {
 	if errors.As(err, &allHidden) {
 		out["code"] = "all_hidden"
 		out["agent"] = allHidden.Agent
+	}
+	// a change refused while another magpie held the file: said
+	// in the reader's language, for the user to make it again
+	var busy *filelock.BusyError
+	if errors.As(err, &busy) {
+		out["error"], out["said"], out["file"] = busy.Error(), busyKey, busy.File()
 	}
 	var signedIn *provider.SignedInError
 	if errors.As(err, &signedIn) {

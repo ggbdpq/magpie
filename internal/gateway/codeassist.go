@@ -798,9 +798,12 @@ func pairFunctionTurns(contents []map[string]any, ag, agClaude bool) []map[strin
 // (#636); Antigravity's own tiered ids, sent a level, don't.
 //
 // Gemini 3's levels: medium goes as medium to Flash, and up to high to
-// Pro, which took low and high only (3 Pro). A later Gemini is sent the
-// medium it was asked, already fitted to its own levels (fitFor):
-// gemini-4-argon has low, medium and high (#2083). Minimal goes only to a
+// Pro, which took low and high only (3 Pro). A later Gemini follows the
+// same rule where its id names no level: 4 Argon lists a medium (#2083
+// sent it as asked), but at it the model writes its reasoning into the
+// reply itself more often than not — 58.5% of a week's requests,
+// against 2.8% at high (#5882) — so its plain id goes to high as Pro's
+// does, and its own tiered ids keep the level they name. Minimal goes only to a
 // Flash variant at minimal: 3.7 and 3.8 Flash have none (AI Studio
 // answers 3.8's with a 400), and the id here doesn't say which Flash serves it (Gemini
 // CLI's 3.5 Flash goes out as 3.8 Flash where that is rolled out).
@@ -833,7 +836,7 @@ func thinkingConfig(r *Request, model string, claude bool, at string) map[string
 				level = "minimal"
 			case offEffort(effort) && !catalog.DrawsID(m):
 				level = "low"
-			case effort == "medium" && (strings.Contains(m, "flash") || gen > 3):
+			case effort == "medium" && (strings.Contains(m, "flash") || gen > 3 && at != ""):
 				level = "medium"
 			}
 			tc["thinkingLevel"] = level

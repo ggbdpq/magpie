@@ -182,6 +182,9 @@ func TestCodeAssistAntigravityLevels(t *testing.T) {
 		{"gemini-3.7-flash-high", "", "antigravity", "gemini-3.7-flash-high", ""},
 		{"gemini-3.7-flash-high", "low", "antigravity", "gemini-3.7-flash-low", "low"},
 		{"gemini-3.1-pro", "medium", "antigravity", "gemini-3.1-pro-high", "high"},
+		// the report's own surface (#5882): the plain Argon id Antigravity
+		// serves with no tiers, asked medium, goes at high
+		{"gemini-4-argon", "medium", "antigravity", "gemini-4-argon", "high"},
 		{"gemini-3-flash", "medium", "antigravity", "gemini-3-flash", "medium"},
 		{"gemini-pro-agent", "medium", "antigravity", "gemini-pro-agent", "high"},
 		{"gemini-pro-agent", "low", "antigravity", "gemini-pro-agent", "low"},

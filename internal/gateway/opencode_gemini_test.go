@@ -169,11 +169,14 @@ func TestOpenCodeGoGeminiModelOnGeminiAPI(t *testing.T) {
 		t.Errorf("gemini answer: %s", body)
 	}
 
-	for _, effort := range []string{"low", "medium", "high"} {
-		code, body = serve(s, "/v1/chat/completions", `{"model":"opencode-go/gemini-4-argon-contributor","reasoning_effort":"`+effort+`","messages":[{"role":"user","content":"Say hi in one word"}]}`)
-		a := check("effort "+effort, code, body)
-		if got := gjson.GetBytes(a.body, "generationConfig.thinkingConfig.thinkingLevel").String(); got != effort {
-			t.Errorf("effort %s: thinkingLevel %q in %s", effort, got, gjson.GetBytes(a.body, "generationConfig").Raw)
+	// Argon's medium goes as high (#5882: at the medium its id lists, the
+	// model writes its reasoning into the reply itself); low and high as
+	// asked.
+	for _, c := range []struct{ effort, want string }{{"low", "low"}, {"medium", "high"}, {"high", "high"}} {
+		code, body = serve(s, "/v1/chat/completions", `{"model":"opencode-go/gemini-4-argon-contributor","reasoning_effort":"`+c.effort+`","messages":[{"role":"user","content":"Say hi in one word"}]}`)
+		a := check("effort "+c.effort, code, body)
+		if got := gjson.GetBytes(a.body, "generationConfig.thinkingConfig.thinkingLevel").String(); got != c.want {
+			t.Errorf("effort %s: thinkingLevel %q in %s", c.effort, got, gjson.GetBytes(a.body, "generationConfig").Raw)
 		}
 	}
 }

@@ -22,8 +22,10 @@ const argonBudgetRefused = `{"error":{"code":400,"message":"Thinking budget is n
 
 // #2083: a provider the user added that speaks Gemini's API, its models
 // from models.dev's google-vertex, as the reporter set it up. Gemini 4
-// Argon is told a thinking level, and medium as medium, the levels it has:
-// it turns every budget away with a 400. Gemini 3.8 Flash is told its level
+// Argon is told a thinking level, never a budget: it turns every budget
+// away with a 400. Its medium goes as high (#5882): at the medium its id
+// lists, the model writes its reasoning into the reply itself more often
+// than not, where at high it doesn't. Gemini 3.8 Flash is told its level
 // as before, Gemini 2.5 still a budget, and a Gemini 3 Pro medium as high.
 func TestGeminiLaterGenerationsToldALevel(t *testing.T) {
 	fresh(t)
@@ -68,7 +70,7 @@ func TestGeminiLaterGenerationsToldALevel(t *testing.T) {
 		want                map[string]any
 	}{
 		{"/v1/chat/completions", "gemini-4-argon", "low", level("low")},
-		{"/v1/chat/completions", "gemini-4-argon", "medium", level("medium")},
+		{"/v1/chat/completions", "gemini-4-argon", "medium", level("high")},
 		{"/v1/chat/completions", "gemini-4-argon", "high", level("high")},
 		{"/v1/responses", "gemini-4-argon", "high", level("high")},
 		{"/v1/chat/completions", "gemini-3.8-flash", "low", level("low")},

@@ -27,6 +27,10 @@ func Stored() ([]Provider, error) {
 // one without an access key or balance token keeps those (KeepSecrets). It
 // returns how many were new and how many replaced one here.
 func Restore(ps []Provider) (added, replaced int, err error) {
+	if err := providersMu.Take(); err != nil {
+		return 0, 0, err
+	}
+	defer providersMu.Unlock()
 	f, err := read()
 	if err != nil {
 		return 0, 0, err
@@ -75,6 +79,10 @@ func RestoreGroups(gs []Group) error {
 	if len(gs) == 0 {
 		return nil
 	}
+	if err := providersMu.Take(); err != nil {
+		return err
+	}
+	defer providersMu.Unlock()
 	f, err := read()
 	if err != nil {
 		return err
@@ -105,6 +113,10 @@ func RestoreGroups(gs []Group) error {
 // provider kept on this computer (ThisDevice) is neither replaced nor
 // removed by them.
 func Mirror(ps []Provider, gs []Group) error {
+	if err := providersMu.Take(); err != nil {
+		return err
+	}
+	defer providersMu.Unlock()
 	f, err := read()
 	if err != nil {
 		return err

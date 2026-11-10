@@ -118,8 +118,21 @@ func (f agyFile) wired() bool {
 	return on == "true" && gatewayKey(key)
 }
 
-func antigravityGateway() map[string]any {
-	return map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "openai"}
+// antigravityGateway is the gateway block magpie writes at path. The wire
+// protocol stays the file's once it holds one: on the app's openai stream
+// its own accumulator folds a turn's parallel calls into one, their ids,
+// names and arguments lost (#5908), and on genai it reads them whole, so
+// the protocol of a wired file is the user's to pick (a Gemini-native
+// provider's row wants genai). A file with none is put on openai, as
+// before, and so is a block magpie starts.
+func antigravityGateway(path string) map[string]any {
+	proto := "openai"
+	if path != "" {
+		if v, _ := edit.GetJSON(path, "gateway.wireProtocol"); strings.TrimSpace(v) != "" {
+			proto = v
+		}
+	}
+	return map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": proto}
 }
 
 // keepSource stashes a catalog of the user's that a file wired before
@@ -182,10 +195,10 @@ func (f agyFile) connect(ref string) error {
 		return err
 	}
 	// set again on magpie, what the user added to its block stays
-	block := any(antigravityGateway())
+	block := any(antigravityGateway(""))
 	if on {
 		f.keepSource()
-		block = theirsKept(f.path, "gateway", func() any { return antigravityGateway() })()
+		block = theirsKept(f.path, "gateway", func() any { return antigravityGateway(f.path) })()
 	}
 	kv := []edit.KV{{Path: "gateway", Value: block}, {Path: antigravitySource, Value: antigravityCatalog()}}
 	if ref != "" {
@@ -237,7 +250,7 @@ func (f agyFile) leave(v string, always bool) error {
 // sync brings a wired file's gateway and catalog to the gateway's current
 // address, and the model it starts on to a level the catalog lists
 func (f agyFile) sync() error {
-	if err := syncJSON(f.path, "gateway", theirsKept(f.path, "gateway", func() any { return antigravityGateway() })); err != nil {
+	if err := syncJSON(f.path, "gateway", theirsKept(f.path, "gateway", func() any { return antigravityGateway(f.path) })); err != nil {
 		return err
 	}
 	// the catalog at the gateway's address, and on a file wired before

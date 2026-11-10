@@ -4402,6 +4402,35 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				continue
 			}
 		}
+		if resealed < 2 && from == provider.Responses && !hw.passing && hw.code() >= 400 &&
+			(refusesInput(hw.code(), hw.errBody()) || unreadableItem.Match(hw.errBody())) {
+			// an input item turned away, the input named, or the item by
+			// its id — said as the stream's own error over a 200 OK, which
+			// a relay in front of OpenAI passes on as it came (#6013),
+			// where no 400 is read to retry over, and nothing of it is
+			// sent. An item named by its id (a seal lapsed, an id the
+			// relay minted) is left out and the rest asked again (#3062);
+			// the input named alone is reasoning with nothing sealed in
+			// it, which was never this vendor's to read (#1008): asked
+			// again without it, and never sent it again for that model.
+			// Nothing sealed is taken out that wasn't refused.
+			b, ok := []byte(nil), false
+			if nb, had := withoutUnreadable(body, hw.errBody()); had {
+				b, ok = nb, true
+				refused(stuck, c.vendor(), attemptBody, b)
+			} else if nb := withoutBareReasoning(body); !bytes.Equal(nb, body) {
+				b, ok = nb, true
+				s.markUnfit(c.p.ID, bareReasoningRefused(c.model), from)
+			}
+			if ok {
+				resealed++
+				body = b
+				try.Fail = failForeign
+				s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
+				i--
+				continue
+			}
+		}
 		if updated && !outgrew && !hw.passing && hw.code() == 400 {
 			// the upstream turned the update items away: asked again as
 			// the agent sent it, and if that goes, never sent them again
@@ -6367,7 +6396,19 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		if codexAsSent(p, r.Header) {
 			// as Codex sent it, its model name alone swapped: a relay
 			// that checks it is Codex's own turns away the shape fitted
-			// for other backends (#1758)
+			// for other backends (#1758). What was never Codex's own
+			// goes all the same, as sent or not: a reasoning item with
+			// nothing sealed in it is a fallback turn's left in the
+			// rollout, which the relay's OpenAI looks up with store
+			// false and doesn't find (#6013), nor its reasoning text,
+			// nor a citation without the offsets OpenAI's schema wants.
+			// A model that wants its reasoning text back is sent it
+			// still.
+			if !replay {
+				body = withoutBareReasoning(body)
+				body = withoutReasoningText(body)
+			}
+			body = withoutOffsetlessCitations(body)
 			break
 		}
 		if p.RejectsTemperature(model) {

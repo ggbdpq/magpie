@@ -27,6 +27,10 @@ type relayUpstream struct {
 	status  int
 	errMsg  string
 	inputs  [][]map[string]any
+	// streamRefuse: a sealed reasoning item in the input is turned away as
+	// #6013's relay passes its upstream's answer on — the first frame of a
+	// 200 OK stream, event: error
+	streamRefuse bool
 }
 
 func (u *relayUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -46,6 +50,12 @@ func (u *relayUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, it := range q.Input {
 		enc, _ := it["encrypted_content"].(string)
+		if u.streamRefuse && it["type"] == "reasoning" && enc != "" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, sse(
+				`event: response.failed`+"\n"+`data: {"type":"response.failed","response":{"id":"r0","status":"failed","error":{"code":"invalid_request_error","message":"Item with id '`+it["id"].(string)+`' not found. Items are not persisted when store is set to false. Try again with store set to true, or remove this item from your input.","param":null}}}`))
+			return
+		}
 		if u.refuse && it["type"] == "reasoning" && enc == "" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
@@ -265,6 +275,97 @@ func TestBareReasoningKeptOverAnotherRefusal(t *testing.T) {
 	}
 	if got := u.asked(); len(got) != 1 || len(reasoningIDs(got[0])) != 3 {
 		t.Fatalf("asked %d times, reasoning %v", len(got), reasoningIDs(got[0]))
+	}
+}
+
+// #6013: an ordered group's Codex thread moved to a member whose reply
+// magpie translates, which left reasoning with nothing sealed in it in
+// the rollout, and back to a relay set codex=as-sent. Such a reasoning
+// item was never Codex's own (keepsSeal: its reasoning always carries its
+// seal), so it goes as sent without the bare items, the sealed one kept;
+// as it was, the relay's OpenAI looked the id up with store false, found
+// nothing and turned every later turn of the thread away.
+func TestCodexAsSentStripsBareReasoningBeforeSend(t *testing.T) {
+	for _, tc := range bareRequests("relay/gpt-5.4") {
+		t.Run(tc.name, func(t *testing.T) {
+			fresh(t)
+			u := &relayUpstream{refuse: true}
+			saveRelay(t, u)
+			p, err := provider.Find("relay")
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.CodexAsSent = true
+			if err := provider.Save(*p); err != nil {
+				t.Fatal(err)
+			}
+			s := New()
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(tc.body))
+			req.Header.Set("User-Agent", "codex_cli_rs/0.162.0 (Mac OS 26.2.0; arm64)")
+			req.Header.Set("originator", "codex_cli_rs")
+			s.Handler().ServeHTTP(rec, req)
+			if rec.Code != 200 || !strings.Contains(rec.Body.String(), "SUMMARY") && !strings.Contains(rec.Body.String(), "U1VNTUFSWQ") {
+				t.Fatalf("%d %s", rec.Code, rec.Body)
+			}
+			got := u.asked()
+			if len(got) != 1 {
+				t.Fatalf("asked the relay %d times, want one, the bare items stripped before the first ask", len(got))
+			}
+			if ids := strings.Join(reasoningIDs(got[0]), ","); ids != "rs_sealed" {
+				t.Errorf("as sent, the relay was sent reasoning %s, want the sealed only", ids)
+			}
+			if after := kinds(got[0]); after["message"] != 4 || after["function_call"] != 1 || after["function_call_output"] != 1 || after["custom_tool_call"] != 1 || after["custom_tool_call_output"] != 1 {
+				t.Errorf("the rest of the turn didn't go as sent: %v", after)
+			}
+		})
+	}
+}
+
+// #6013: a relay that passes its upstream's answer on as it came tells of
+// an item it can't read as the stream's own error event, over a 200 OK —
+// not as the 400 the retried statuses read, and a group holds that error
+// to ask again. What it refuses is left out and the same one asked again:
+// the item it names (a seal lapsed, an id the relay minted), or reasoning
+// with nothing sealed in it (#1008), and the rest of the turn stands. The
+// group's next member isn't moved in on, the refusal being of one item.
+func TestRefusedItemInStreamErrorAskedAgain(t *testing.T) {
+	fresh(t)
+	u := &relayUpstream{streamRefuse: true}
+	srv := httptest.NewServer(u)
+	t.Cleanup(srv.Close)
+	v := &relayUpstream{}
+	vsrv := httptest.NewServer(v)
+	t.Cleanup(vsrv.Close)
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Models: []string{"gpt-5.4"}, Responses: srv.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Save(provider.Provider{ID: "spare", Name: "Spare", Key: "k", Models: []string{"gpt-5.4"}, Responses: vsrv.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SaveGroup(provider.Group{Name: "pair", Members: []string{"relay/gpt-5.4", "spare/gpt-5.4"}, Routing: provider.Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"group/pair","stream":true,"store":false,"input":[`+bareConversation+`,{"type":"message","role":"user","content":[{"type":"input_text","text":"count the lines"}]}]}`))
+	req.Header.Set("session_id", "thread-6013")
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "SUMMARY") && !strings.Contains(rec.Body.String(), "U1VNTUFSWQ") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	got := u.asked()
+	if len(got) != 2 {
+		t.Fatalf("asked the relay %d times, want 2: the first refused as the stream's error, then without the item it named", len(got))
+	}
+	if ids := strings.Join(reasoningIDs(got[0]), ","); ids != "rs_18dbe693b3dce4800000003c,rs_18dbe693b3dce4800000003d,rs_sealed" {
+		t.Errorf("first ask's reasoning: %s", ids)
+	}
+	if ids := strings.Join(reasoningIDs(got[1]), ","); ids != "rs_18dbe693b3dce4800000003c,rs_18dbe693b3dce4800000003d" {
+		t.Errorf("asked again with reasoning %s, want the item it named gone", ids)
+	}
+	if got := v.asked(); len(got) != 0 {
+		t.Errorf("the group's next member was asked %d times, want none", len(got))
 	}
 }
 

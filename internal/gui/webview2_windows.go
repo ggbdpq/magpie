@@ -8,6 +8,7 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/yetone/magpie/internal/settings"
+	"github.com/yetone/magpie/internal/update"
 	"golang.org/x/sys/windows"
 )
 
@@ -49,4 +50,38 @@ func webView2Box(title, body string) int {
 		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(title))),
 		webView2BoxStyle)
 	return int(r)
+}
+
+// webview2Exit is what ErrorHandler does with the WebView2 initialisation
+// failures Wails follows with os.Exit(1) (#5773, BHXGGGGG: the controller
+// wait timing out ended magpie 0.1.3226, its gateway with it, with no word
+// on screen). The desktop build has no console for the reason to land in
+// (#1806), and the box can't be shown from here — ErrorHandler runs on the
+// thread Wails makes its windows on, and a box shown there never finishes
+// (ufec measured it hanging 122s in #1806). The box goes up on a thread of
+// its own, this one waits a bounded webview2ExitWait for the answer, Yes
+// starts magpie again beside this one, and onShutdown runs either way: the
+// tidying os.Exit would have skipped.
+func webview2Exit(err error, onShutdown func()) {
+	if !webView2Fatal(err) {
+		return
+	}
+	title, body := webView2ExitNotice(trayLang(settings.Load().Lang, systemLang))
+	runWebview2Exit(
+		func() bool { return webView2Box(title, body) == idYes },
+		restartMagpie,
+		onShutdown,
+		webview2ExitWait,
+	)
+}
+
+// restartMagpie starts magpie again with its window (none ever showed):
+// the new process waits for this one to exit (MAGPIE_REPLACES,
+// AwaitPredecessor) before it takes the gateway's port.
+func restartMagpie() error {
+	exe, err := update.Executable()
+	if err != nil {
+		return err
+	}
+	return update.RelaunchBinary(exe, "", true, "")
 }

@@ -145,13 +145,46 @@ func (ho *handover) failed(err error) {
 	(<-ho.quit)()
 }
 
-// leave quits once a handover under way is done, else at once.
+// leave quits once a handover under way is done, else takes the gateway
+// this one served off the port and quits.
 func leave(quit func()) {
 	if ho := pending.Load(); ho != nil {
 		ho.quit <- quit
 		return
 	}
+	stopServingForRestart()
 	quit()
+}
+
+// restartStopWait bounds how long a restart's quit waits for the gateway
+// it served to be off the port. A var for tests.
+var restartStopWait = 30 * time.Second
+
+// stopServingForRestart takes the gateway this process serves off the
+// port before a restart's quit (#5922): the port lives exactly as long
+// as the process does, and the old app of an update on Windows whose
+// exit wedged — hung inside ExitProcess, a callback re-entering the
+// runtime while the gateway's Accept and Serve goroutines were still
+// parked — kept :3425 bound and unanswered until it was killed by hand,
+// the new build only able to say the port was taken and wait. A restart
+// is only asked for once the gateway is idle (#577), so what the wait
+// leaves to the gateway's own end is the cut of a stray late request;
+// past restartStopWait the caller quits anyway, cutting it as the exit
+// would have, rather than trade the wedge for a hang of its own.
+func stopServingForRestart() {
+	gatewayMu.Lock()
+	defer gatewayMu.Unlock()
+	gw := served.Load()
+	if gw == nil || servedRun.stop == nil {
+		return // this one serves nothing on the port
+	}
+	servedRun.stop()
+	select {
+	case <-servedRun.done:
+		served.CompareAndSwap(gw, nil)
+	case <-time.After(restartStopWait):
+		log.Printf("update: the gateway still ending after %s; quitting with it cut", restartStopWait)
+	}
 }
 
 // run hands the gateway over and quits: once the new magpie serves on its

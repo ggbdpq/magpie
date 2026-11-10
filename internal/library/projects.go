@@ -459,9 +459,20 @@ func RemoveProject(dir string, keep bool) (*Result, error) {
 		// that answers with an error) isn't known to be gone: its records
 		// stay, and the removal goes as before.
 		if fi, err := os.Stat(p.Dir); errors.Is(err, os.ErrNotExist) || err == nil && !fi.IsDir() {
-			// Claude Code's record of it isn't in the folder
+			// Claude Code's record of it isn't in the folder, and goes with
+			// the entry; one the record's cleanup couldn't clear (a lock
+			// held, a file unreadable) keeps the entry, its ledger with it,
+			// so a later removal tries again (#6008)
 			p.ServersOff = nil
-			l.syncClaudeLocal(p, nil, func(string, error) {})
+			var cleanup error
+			l.syncClaudeLocal(p, nil, func(_ string, err error) {
+				if cleanup == nil {
+					cleanup = err
+				}
+			})
+			if cleanup != nil {
+				return fmt.Errorf("clearing Claude Code's record of %s: %w", p.Dir, cleanup)
+			}
 			l.Projects = slices.DeleteFunc(l.Projects, func(x *Project) bool { return x == p })
 			return nil
 		}

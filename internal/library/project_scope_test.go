@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"time"
+
+	"github.com/yetone/magpie/internal/claudelock"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
 )
@@ -260,5 +263,40 @@ func TestProjectWorktreeFollows(t *testing.T) {
 	keepProjectTrees()
 	if v, _ := Read(nil); len(v.Projects[0].Trees) != 0 {
 		t.Errorf("trees after: %v", v.Projects[0].Trees)
+	}
+}
+
+// A gone project's removal clears Claude Code's record of it first, and a
+// cleanup that failed must not take the project's ledger with it (#6008):
+// the entry stays on the list, the error surfaces, and removing it again
+// once the record answers finishes the job.
+func TestRemoveProjectWhoseFolderIsGoneKeepsItWhenTheCleanupFails(t *testing.T) {
+	h, proj := scopeProject(t)
+	ok(t)(ProjectServerOff(proj, "fs", []string{"claude", "codex"}))
+	if err := os.RemoveAll(proj); err != nil {
+		t.Fatal(err)
+	}
+	// Claude Code holds its save lock over ~/.claude.json: the cleanup can't run
+	lock := filepath.Join(h, ".claude.json.lock")
+	if err := os.MkdirAll(lock, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wait := claudelock.Wait
+	claudelock.Wait = 300 * time.Millisecond
+	t.Cleanup(func() { claudelock.Wait = wait })
+	if _, err := RemoveProject(proj, false); err == nil {
+		t.Fatal("the removal went through while the record's cleanup failed")
+	}
+	if v, _ := Read(nil); len(v.Projects) != 1 || len(v.Projects[0].ServersOff["fs"]) == 0 {
+		t.Fatalf("projects after the failed cleanup: %+v", v.Projects)
+	}
+	// the lock let go, the removal finishes and the record is cleared
+	os.RemoveAll(lock)
+	ok(t)(RemoveProject(proj, false))
+	if v, _ := Read(nil); len(v.Projects) != 0 {
+		t.Errorf("projects after the retry: %+v", v.Projects)
+	}
+	if got := anyStrs(claudeRecord(t, h, proj)["disabledMcpServers"]); len(got) != 0 {
+		t.Errorf("disabledMcpServers after the retry: %v", got)
 	}
 }

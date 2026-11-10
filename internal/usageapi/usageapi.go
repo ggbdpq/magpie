@@ -6,6 +6,7 @@ package usageapi
 
 import (
 	"cmp"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -216,12 +217,20 @@ func inKeyOrder(groups []Group) []Group {
 }
 
 // PeriodOf is the period a ?period= names: a preset, or days picked as
-// "2026-10-01..2026-10-07" (#1492); 30 days for anything else.
-func PeriodOf(s string) usage.Period {
+// "2026-10-01..2026-10-07" (#1492). No value at all is the month it has
+// always defaulted to. Anything else that no period parses to is an error:
+// a caller asking for a period magpie doesn't know must not be silently
+// answered with another period's data (#5985) — reference.md once named
+// week and month, which the HTTP layer never took, and an app asking for
+// one of those was told 30 days as if it had asked for them.
+func PeriodOf(s string) (usage.Period, error) {
 	if p := usage.Period(s); p.Known() {
-		return p
+		return p, nil
 	}
-	return usage.Month
+	if s == "" {
+		return usage.Month, nil
+	}
+	return "", fmt.Errorf("unknown period %q: want today|7d|30d|all, a from..to day range like 2026-11-08..2026-11-09, or last:<duration>", s)
 }
 
 // FilterOf is the filter a request's query names. A found routing group's

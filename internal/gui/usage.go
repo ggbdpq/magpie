@@ -103,7 +103,12 @@ func requestContent(agent, session string, from, to, at time.Time) contentJSON {
 func usageRoutes(mux *http.ServeMux, w Windows) {
 	mux.HandleFunc("GET /api/usage", coldTurn(func(rw http.ResponseWriter, r *http.Request) {
 		// the days and hours of the reader's zone, which the page names
-		writeJSON(rw, usageState(periodOf(r.URL.Query().Get("period")), usageapi.ZoneOf(r)))
+		p, err := periodOf(r.URL.Query().Get("period"))
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, usageState(p, usageapi.ZoneOf(r)))
 	}))
 	// the providers a deleted one's calls can be merged into: those there
 	// are now and shown, by name
@@ -181,9 +186,14 @@ func usageRoutes(mux *http.ServeMux, w Windows) {
 	// the ledger: the period's calls, newest first, a page at a time
 	mux.HandleFunc("GET /api/usage/requests", coldTurn(func(rw http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
+		p, err := periodOf(q.Get("period"))
+		if err != nil {
+			fail(rw, err)
+			return
+		}
 		offset, _ := strconv.Atoi(q.Get("offset"))
 		limit, _ := strconv.Atoi(q.Get("limit"))
-		writeJSON(rw, ledgerPage(periodOf(q.Get("period")), ledgerFilter(r), offset, limit))
+		writeJSON(rw, ledgerPage(p, ledgerFilter(r), offset, limit))
 	}))
 	// the gateway's bytes up and down so far and its requests in flight,
 	// which the Requests read a moment apart for how fast its traffic flows
@@ -218,7 +228,11 @@ func usageRoutes(mux *http.ServeMux, w Windows) {
 	// the same CSV to a browser (magpie web), which saves it itself
 	mux.HandleFunc("GET /api/usage/requests.csv", func(rw http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		p := periodOf(q.Get("period"))
+		p, err := periodOf(q.Get("period"))
+		if err != nil {
+			fail(rw, err)
+			return
+		}
 		// one moment for the rows and the day in the file's name, the
 		// reader's day
 		f := ledgerFilter(r)
@@ -231,7 +245,11 @@ func usageRoutes(mux *http.ServeMux, w Windows) {
 	// the rows the ledger shows, all its pages, as a CSV in Downloads
 	mux.HandleFunc("POST /api/usage/requests/export", func(rw http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		p := periodOf(q.Get("period"))
+		p, err := periodOf(q.Get("period"))
+		if err != nil {
+			fail(rw, err)
+			return
+		}
 		f := ledgerFilter(r)
 		now := usage.Clock().In(f.Zone)
 		rows := usage.LedgerOfAt(p, f, now).Rows

@@ -62,7 +62,12 @@ func (s *Server) usageSummary(w http.ResponseWriter, r *http.Request) {
 	if refuseHeld(w, r, "this gateway key is held to a budget, models or accounts, so it is told its own calls alone: GET /v1/magpie/usage/requests") {
 		return
 	}
-	out := usageapi.State(usageapi.PeriodOf(r.URL.Query().Get("period")))
+	p, err := usageapi.PeriodOf(r.URL.Query().Get("period"))
+	if err != nil {
+		writeError(w, provider.Chat, http.StatusBadRequest, err.Error())
+		return
+	}
+	out := usageapi.State(p)
 	if !local(r) {
 		out.Path = "" // where the log is on this machine
 	}
@@ -75,14 +80,19 @@ func (s *Server) usageRequests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
+	p, err := usageapi.PeriodOf(q.Get("period"))
+	if err != nil {
+		writeError(w, provider.Chat, http.StatusBadRequest, err.Error())
+		return
+	}
 	offset, _ := strconv.Atoi(q.Get("offset"))
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	f := usageapi.FilterOf(q)
 	who := access.Caller(r.Context())
 	if !heldKey(who) {
-		writeJSON(w, 200, withoutClientIPs(usageapi.LedgerPage(usageapi.PeriodOf(q.Get("period")), f, offset, limit)))
+		writeJSON(w, 200, withoutClientIPs(usageapi.LedgerPage(p, f, offset, limit)))
 		return
 	}
 	f.CallerKey = who.KeyID
-	writeJSON(w, 200, withoutClientIPs(usageapi.OwnPage(usageapi.LedgerPage(usageapi.PeriodOf(q.Get("period")), f, offset, limit), who.KeyID)))
+	writeJSON(w, 200, withoutClientIPs(usageapi.OwnPage(usageapi.LedgerPage(p, f, offset, limit), who.KeyID)))
 }

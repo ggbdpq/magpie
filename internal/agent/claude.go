@@ -283,6 +283,12 @@ const claudeContextEnv = "CLAUDE_CODE_MAX_CONTEXT_TOKENS"
 // model, which Anthropic runs to its whole window.
 const claudeCompactEnv = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
 
+// claudeCompactPctEnv is the share of the window Claude Code compacts a
+// conversation at (2.1.285). magpie never writes it, so one present is
+// the user's declaration of where compaction goes: magpie's default
+// windows give way to it (#5969), as to a window the user set (#876).
+const claudeCompactPctEnv = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"
+
 // claudeOutputEnv is the longest reply Claude Code asks a model for. One it
 // doesn't know (any but Claude's own names) it asks for 32000 at most
 // (claudeUnknownOutput), whatever the model can write, so a model that
@@ -1014,8 +1020,10 @@ func claudeIn(at place) *Agent {
 			// So does it to a window the user typed for the main model, on
 			// its group or its provider: Claude Code then runs to the window
 			// it is told (claudeContextEnv), as Codex is (provider.CompactFor,
-			// #1809)
-			if s.CompactAt == 0 && (claudeOwnCompact(path, main) || provider.WindowTyped(main)) {
+			// #1809). A compaction share the user declared goes first too:
+			// the env here would hold every window to the working one
+			// instead of the declared share of it (#5969)
+			if s.CompactAt == 0 && (claudeOwnCompact(path, main) || provider.WindowTyped(main) || env(claudeCompactPctEnv) != "") {
 				n = 0
 			}
 		}
@@ -1426,7 +1434,10 @@ func claudeIn(at place) *Agent {
 	// all. One the user set is theirs.
 	writeWindow := func(main string, tiers map[string]string) error {
 		budgeted = false
-		if env(claudeContextEnv) != "" && !windowOurs() {
+		// a compaction share the user declared governs the window too, so
+		// the plan's default holds it to the working window: theirs stands,
+		// as with a window of their own the plan would overwrite (#5969)
+		if (env(claudeContextEnv) != "" && !windowOurs()) || env(claudeCompactPctEnv) != "" {
 			forget(windowKey)
 			return dropBudgets()
 		}

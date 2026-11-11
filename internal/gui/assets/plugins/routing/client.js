@@ -738,7 +738,7 @@ function routingPage(part) {
   // from its vendor does — relays list each key its own group's models
   // or the user set the account or key to serve other models only (#474)
   // or it is held at the usage cap the user set on the account
-  const unlistedWord = (w) => w.heldOwn ? t("another account is named for this model in {group}", { group: w.heldBy }) : w.heldBy ? t("not an account {group} may use", { group: w.heldBy }) : w.held ? t("not an account the gateway key may use") : w.noCredits ? t("held: its allowance used up, set not to spend credits") : w.capped ? t("held at its {cap}% usage cap", { cap: w.capped }) : w.standIn ? t("set never to be another model's fallback") : w.barred ? t("set to serve other models, not {model}", { model: w.model }) : w.kind === "key" ? t("{name}'s list for this key has no {model}", { name: w.name, model: w.model }) : t("its plan doesn't list {model}", { model: w.model });
+  const unlistedWord = (w) => w.heldOwn ? t("another account is named for this model in {group}", { group: w.heldBy }) : w.heldBy ? t("not an account {group} may use", { group: w.heldBy }) : w.held ? t("not an account the gateway key may use") : w.noCredits ? t("held: its allowance used up, set not to spend credits") : w.unread ? (w.unread.indexOf("couldn't be read") >= 0 ? t("held: its usage couldn't be read, and an account whose usage is unknown counts as used up") : w.unread.indexOf("hasn't been read") >= 0 ? t("held: its usage hasn't been read yet, and an account whose usage is unknown counts as used up") : t("held: its usage was last read a while ago, and it is read again before it is used")) : w.capped ? t("held at its {cap}% usage cap", { cap: w.capped }) : w.standIn ? t("set never to be another model's fallback") : w.barred ? t("set to serve other models, not {model}", { model: w.model }) : w.kind === "key" ? t("{name}'s list for this key has no {model}", { name: w.name, model: w.model }) : t("its plan doesn't list {model}", { model: w.model });
   // noURLWord: its keys are all set to a protocol its provider has no URL
   // for, so it went out on the URLs it has (#1702)
   const noURLWord = (w) => t("key set to {api} only, no {api} URL · sent on the others", { api: API[w.noURL] || w.noURL });
@@ -1084,6 +1084,12 @@ function routingPage(part) {
     ? t("{who} is left out: this request is longer than its {n} context window, so it would only refuse it. It's asked only once every one with room is out of its allowance.", { who: who(x), n: ctxShort(x.window) })
     : x.noCredits
     ? t("{who} is left out: a usage window is used up, and the account is set not to spend its credits, so it counts as used up until that window renews.", { who: who(x) })
+    : x.unread
+    ? x.unread.indexOf("couldn't be read") >= 0
+    ? t("{who} is left out: its usage couldn't be read, and an account whose usage is unknown counts as used up until it is read again.", { who: who(x) })
+    : x.unread.indexOf("hasn't been read") >= 0
+    ? t("{who} is left out: its usage hasn't been read yet, and an account whose usage is unknown counts as used up until it is read.", { who: who(x) })
+    : t("{who} is left out: its usage was last read a while ago, and it is read again before it is used; this request went to another account meanwhile.", { who: who(x) })
     : x.capped
     ? t("{who} is left out: a usage window is at {n}, past the {cap}% cap set on the account, so it counts as used up until that window renews.", { who: who(x), n: pct(x.used), cap: x.capped })
     : x.standIn

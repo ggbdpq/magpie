@@ -617,6 +617,7 @@ var sysCache struct {
 	sync.Mutex
 	at     time.Time // when the last read ended; zero: nothing read yet
 	p      Proxy
+	quiet  int  // reads in a row that found no proxy, failed or empty alike
 	failed bool // the last read failed, so p is from one before it
 	// reading is closed when the read under way, begun at since, ends;
 	// nil while none is
@@ -625,28 +626,56 @@ var sysCache struct {
 }
 
 // How long a system proxy read stands: a proxy that is set, 15 seconds;
-// none, 2. magpie started at login comes up before the proxy app does
-// (#1518), and its requests went direct for up to 15 seconds after the
-// proxy app had set the system's proxy. A request waits for a read until
-// readWait after the read began, then takes what was read before: a
-// scutil that never answered held every request that asked for the
-// system's proxy for as long as it hung (#3421).
+// none, 2 — and none is put off longer each time a run of reads in a row
+// finds no proxy, the reads failing or coming back empty alike (#4169).
+// The machine the report came from reads scutil successfully and has no
+// proxy set, so "no proxy" is a successful answer there and the none
+// window had it fork a scutil every 2 seconds while requests flowed —
+// more often than a machine with a proxy set forks, and the fork is what
+// killed the process. The first read of a run stands the none window, the
+// second twice that, up to failKeep, so a proxy that turns up after a
+// short absence is taken at the old pace (#1518) and one that turns up on
+// a machine long without one is taken within failKeep; a read that finds
+// a proxy starts the run over. magpie started at login comes up before
+// the proxy app does (#1518), and its requests went direct for up to 15
+// seconds after the proxy app had set the system's proxy. A request waits
+// for a read until readWait after the read began, then takes what was
+// read before: a scutil that never answered held every request that asked
+// for the system's proxy for as long as it hung (#3421).
 var (
 	systemKeep = 15 * time.Second
 	noneKeep   = 2 * time.Second
+	failKeep   = time.Minute
 	readWait   = 2 * time.Second
 	readSystem = system
 )
 
+// quietKeep is how long a read that found no proxy stands after n such
+// reads in a row: noneKeep for the first, twice that for the second, and
+// so on up to failKeep — the pace a machine with a proxy set reads at, so
+// one with none set forks no more often than it.
+func quietKeep(n int) time.Duration {
+	k := noneKeep
+	for n > 1 && k < failKeep {
+		k <<= 1
+		n--
+	}
+	if k > failKeep {
+		k = failKeep
+	}
+	return k
+}
+
 // System reads the system proxy, at most every 15 seconds while one is
-// set and every 2 while none is. One read runs at a time, outside the
-// lock. A read that fails keeps what was read before, and the one after
-// it holds nobody.
+// set, every 2 while none is, and after a run of reads that find none,
+// less and less often (quietKeep) until a read finds one again. One read
+// runs at a time, outside the lock. A read that fails keeps what was read
+// before, and the one after it holds nobody.
 func System() Proxy {
 	sysCache.Lock()
 	keep := systemKeep
-	if sysCache.p.URL == "" {
-		keep = noneKeep
+	if sysCache.quiet > 0 {
+		keep = quietKeep(sysCache.quiet)
 	}
 	if !sysCache.at.IsZero() && time.Since(sysCache.at) <= keep {
 		p := sysCache.p
@@ -677,12 +706,19 @@ func System() Proxy {
 }
 
 // refreshSystem reads the system proxy into sysCache, then closes done.
-// A read that fails keeps what was read before, if anything was.
+// A read that fails keeps what was read before, if anything was; a run of
+// reads that find no proxy goes on the quiet count, and one that finds a
+// proxy ends it.
 func refreshSystem(done chan struct{}) {
 	p, ok := readSystem()
 	sysCache.Lock()
 	if ok || sysCache.at.IsZero() {
 		sysCache.p = p
+	}
+	if ok && p.URL != "" {
+		sysCache.quiet = 0
+	} else {
+		sysCache.quiet++
 	}
 	sysCache.at, sysCache.failed, sysCache.reading = time.Now(), !ok, nil
 	sysCache.Unlock()

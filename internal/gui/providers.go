@@ -2476,6 +2476,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					in.SwitchOnly, in.RestartApp = old.SwitchOnly, old.RestartApp // switchonly, restartapp
 					in.KeepSelf = old.KeepSelf                                    // keepself
 					in.ThisDevice = old.ThisDevice                                // thisdevice
+					in.CarryCid = old.CarryCid                                    // carry-cid
 					in.CapStop, in.CapCareful = old.CapStop, old.CapCareful       // capstop, capcareful
 					in.UseFirst = old.UseFirst                                    // usefirst
 					in.NoStandIn = old.NoStandIn                                  // standin

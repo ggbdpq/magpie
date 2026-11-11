@@ -1421,6 +1421,18 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			default:
 				return fmt.Errorf("fallback-for-others=yes|no, not %q", v)
 			}
+		case "carry-cid":
+			// yes: a translated request of it carries the caller's X-Cid
+			// header (provider.CarryCid, #4899); no, the default: none of
+			// the caller's correlations goes anywhere
+			switch strings.ToLower(v) {
+			case "yes", "on":
+				p.CarryCid = true
+			case "no", "off":
+				p.CarryCid = false
+			default:
+				return fmt.Errorf("carry-cid=yes|no, not %q", v)
+			}
 		case "free":
 			// yes: every model of it counts as free for Free first and
 			// Cheapest routing, by the user's word (jiabubu on Discord:

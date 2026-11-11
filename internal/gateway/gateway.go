@@ -6030,6 +6030,12 @@ func (s *Server) forward(ctx context.Context, p provider.Provider, to provider.P
 	return res, err
 }
 
+// callerCidKey is the caller's X-Cid a translated ask of a provider the
+// user marked carry-cid=yes carries (#4899): put on the translated route
+// alone (forwardTranslated), read where the request to the provider is
+// built; a relayed ask and a signed-in account's never hold it.
+type callerCidKey struct{}
+
 // forwardOnce is one request to the provider, as forward makes it.
 func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provider.Protocol, path string, body []byte, in http.Header) (*http.Response, error) {
 	reqCtx := ctx
@@ -6251,6 +6257,13 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 				req.Header[k] = slices.Clone(vs)
 			}
 		}
+	}
+	if v, ok := ctx.Value(callerCidKey{}).(string); ok && v != "" {
+		// the caller's correlation header, on the translated ask of a
+		// provider the user marked as taking it (provider.CarryCid,
+		// #4899); the user's own header for the provider is put in its
+		// place by the signing, after
+		req.Header.Set("X-Cid", v)
 	}
 	if provider.OpenCodeURL(req.URL.String()) {
 		if zenFree {
@@ -8288,6 +8301,16 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 			// told in X-Magpie-Effort: the body says only what Gemini's
 			// thinkingConfig can, and loses minimal and xhigh
 			fctx = provider.WithEffort(ctx, req.Effort)
+		}
+		if p.CarryCid && p.Account == nil {
+			// the user marked this provider as taking the caller's X-Cid
+			// (provider.CarryCid, #4899): the header rides this translated
+			// ask (forwardOnce puts it on), and a signed-in account's
+			// vendor — the one that could fingerprint magpie by it — never
+			// does
+			if v := in.Get("X-Cid"); v != "" {
+				fctx = context.WithValue(fctx, callerCidKey{}, v)
+			}
 		}
 		res, err := s.forward(fctx, p, to, path, p.Prepare(body), in)
 		if err != nil || res.StatusCode < 400 {

@@ -1382,6 +1382,26 @@ var dshSettle = 400 * time.Millisecond
 
 var dshWrites sync.Mutex
 
+// dshSettled is a read a writer's write cannot hide behind: a list that
+// reads as no entries at all right after the file was touched is that
+// writer's head, not dsh's own empty list — a fresh generation written
+// from it (a route, a start model, an effort) went back as head plus
+// magpie's entries alone, the user's gone with it (#5782, stevenpisces:
+// the half matched 4 of 51 lines of the real list). The list is reread
+// after a beat, and what is written comes from the settled read; a
+// still-empty one is dsh's own and written as it is.
+func dshSettledRead(path string, head []string, items []dshItem) ([]string, []dshItem, error) {
+	if len(items) != 0 {
+		return head, items, nil
+	}
+	st, err := os.Stat(path)
+	if err != nil || time.Since(st.ModTime()) >= dshJustWritten {
+		return head, items, nil
+	}
+	time.Sleep(dshSettle)
+	return dshRead(path)
+}
+
 // dshSet writes v as the model new sessions start on: a catalog model
 // through the gateway, one of dsh's own models directly, or "" for dsh's own
 // default. Every profile gets it; config.yaml only where there are none.
@@ -1751,6 +1771,9 @@ func dshSetFile(path, v string, modern bool, models []catalog.Model, gw string) 
 	if err != nil {
 		return err
 	}
+	if head, items, err = dshSettledRead(path, head, items); err != nil {
+		return err
+	}
 	ref, viaGateway := strings.CutPrefix(v, magpieID+"/")
 	effort := ""
 	if modern {
@@ -1827,6 +1850,11 @@ func dshSetFile(path, v string, modern bool, models []catalog.Model, gw string) 
 		drop("api-gateway")
 		drop("llm-deepseek")
 		put("agent-loop", dshLoopLines(v))
+	}
+	// the model-set path wrote silently; one line here would have found
+	// #5782's loss in minutes (stevenpisces)
+	if v != "" {
+		log.Printf("wrote dsh's route in %s", path)
 	}
 	return dshWrite(path, head, items)
 }
@@ -3075,6 +3103,9 @@ func dshFillNewProfiles(files []string, models []catalog.Model, gw string) error
 		if err != nil {
 			continue
 		}
+		if head, items, err = dshSettledRead(f, head, items); err != nil {
+			continue
+		}
 		if i := dshFind(items, "agent-default-model"); model != "" && (i < 0 || dshOurs(items[i])) {
 			if err := dshSetFile(f, magpieID+"/"+model, true, models, gw); err != nil {
 				return err
@@ -3356,6 +3387,9 @@ func dshSetEffort(dir, v, gw, lead string) error {
 		for _, f := range files {
 			head, items, err := dshRead(f)
 			if err != nil {
+				continue
+			}
+			if head, items, err = dshSettledRead(f, head, items); err != nil {
 				continue
 			}
 			// each profile keeps the model it starts on

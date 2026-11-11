@@ -211,6 +211,17 @@ type Provider struct {
 	// out, and what another computer's sync brings neither replaces nor
 	// removes it. For a local model that exists only here (treydtw on X).
 	ThisDevice bool `json:"thisDevice,omitempty"`
+	// CarryCid, on a translated provider, carries the caller's X-Cid
+	// correlation header to it (#4899). Off, the default, nothing of the
+	// caller's correlations goes anywhere, as it never has: the request's
+	// metadata (Claude Code's user_id in it, the account uuid and
+	// session) and its query string stay dropped, and no header is added.
+	// On, only the header rides, and only on the translated route — a
+	// relayed request, most of all to a signed-in account's vendor, which
+	// could fingerprint magpie by it, carries none, and a caller that
+	// sent no X-Cid gets none invented. The user's word that this one
+	// provider's endpoint takes the header.
+	CarryCid bool `json:"carryCid,omitempty"`
 
 	// MaxConcurrency is how many requests may be out at the vendor at once
 	// on each of its keys or accounts (Discord, Lemon: a Codex account is

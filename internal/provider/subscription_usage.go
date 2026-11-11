@@ -932,7 +932,16 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
 	// every allowance refreshed by hand since this saved account's last
 	// read (AskEveryClaudeUsage), as its own card's refresh would
 	every := !active && claudeEveryAsked.Load() > e.asked && now.Sub(time.Unix(0, claudeEveryAt.Load())) < claudeEveryFor
-	read := ((active || savedRefresh(ctx, user) || every) && due || spare || alive != nil) && (now.Sub(e.tried) >= claudeAskFloor || alive != nil) && !holding(ctx)
+	// a saved account a careful provider asked a fresh reading of
+	// (CarefulReask, the gateway's re-read, #5085): careful holds an
+	// account it cannot decide on — miniersliu's B, 30% of a 90% cap,
+	// sat held for days on a reading hours old — and the re-read never
+	// reached a saved account, whose reading only the card refresh, the
+	// spare read, the hand refresh or the keep-alive asked for (#5079).
+	// It rides the same floor between readings as the account Claude
+	// Code is on.
+	careful := !active && isCarefulReask("claude/"+key)
+	read := ((active || savedRefresh(ctx, user) || every) && due || spare || careful || alive != nil) && (now.Sub(e.tried) >= claudeAskFloor || alive != nil) && !holding(ctx)
 	c.Lock()
 	// one reading an ask or a wait, its first caller's; the others keep
 	// to it
@@ -940,6 +949,7 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
 		read, e = false, f
 	}
 	if read {
+		takeCarefulReask("claude/" + key) // one real reading answers the ask
 		if c.m == nil {
 			c.m = map[string]claudeUsageEntry{}
 		}

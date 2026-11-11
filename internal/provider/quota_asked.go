@@ -91,6 +91,58 @@ func isStaleRead(key string) bool {
 	return staleReads.m[key]
 }
 
+// carefulReasks are the accounts (agent/user) a careful provider
+// (Provider.CapCareful) asked a fresh reading of to decide on, by the
+// gateway's re-read (readCareful → ReadUsageNow): read for real even
+// while allowances are read only when asked — StaleAllowance, which
+// ReadUsageNow asks first, already says that — and, a saved Claude
+// account's reading being otherwise never asked for (claudeWindows
+// reads one only on its card's refresh, a switch's spare read, a hand
+// refresh of every card, or the keep-alive, #5079), past that gate
+// too. One real reading answers it (#5085).
+var carefulReasks struct {
+	sync.Mutex
+	m map[string]bool
+}
+
+// CarefulReask asks that the account's next reading under agent go out
+// for real, once, past the gates that would keep a saved account's
+// reading to what it was: a careful provider holds an account it cannot
+// decide on until its reading is fresh again, and nothing else was
+// asking (#5079, #5085).
+func CarefulReask(agent, user string) {
+	carefulReasks.Lock()
+	defer carefulReasks.Unlock()
+	if carefulReasks.m == nil {
+		carefulReasks.m = map[string]bool{}
+	}
+	carefulReasks.m[agent+"/"+strings.ToLower(user)] = true
+}
+
+// takeCarefulReask says whether key is a careful re-ask, and forgets it:
+// one real reading answers it.
+func takeCarefulReask(key string) bool {
+	carefulReasks.Lock()
+	defer carefulReasks.Unlock()
+	if carefulReasks.m[key] {
+		delete(carefulReasks.m, key)
+		return true
+	}
+	return false
+}
+
+func isCarefulReask(key string) bool {
+	carefulReasks.Lock()
+	defer carefulReasks.Unlock()
+	return carefulReasks.m[key]
+}
+
+// CarefulReasked says whether a careful re-ask of the account stands
+// (planted, not yet answered by a reading).
+func CarefulReasked(agent, user string) bool {
+	return isCarefulReask(agent + "/" + strings.ToLower(user))
+}
+
 // holding is whether a read made with ctx sends nothing: held back
 // (heldRead), or made under one that was (quotaReading put the hold on).
 func holding(ctx context.Context) bool {

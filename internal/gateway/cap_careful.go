@@ -99,6 +99,11 @@ func readCareful(ctx context.Context, ps []provider.Provider, models []string) {
 				continue
 			}
 			carefulTried.at[key] = now
+			// the reading has to come back for real to decide on it: a
+			// saved Claude account's is otherwise never asked for
+			// (#5079), and one held (reads only when asked) goes out for
+			// an ask of its own or not at all (#1518)
+			provider.CarefulReask(a.UsageAgent(), a.User)
 			users[a.UsageAgent()] = append(users[a.UsageAgent()], a.User)
 		}
 	}

@@ -66,6 +66,31 @@ func (r *poolRead) askedFor() []string {
 	return slices.Clone(r.asked)
 }
 
+// The re-read asks for a real reading of the account it doubts
+// (provider.CarefulReask): a saved Claude account's reading is otherwise
+// never asked for (#5079), and one held (reads only when asked) goes out
+// for an ask of its own or not at all (#1518). The account the request
+// went to, whose reading told enough, gets no ask.
+func TestCarefulReaskPlantedForTheDoubtedAccount(t *testing.T) {
+	b := carefulPool(t, 50, 10, true)
+	r := standInReads(t)
+	r.set("me@example.com", time.Now().Add(-10*time.Minute), false) // doubted: stale
+	// an ask an earlier test left for the spare is not this request's
+	spareMarked := provider.CarefulReasked("codex", "spare@example.com")
+	if code, _ := resetPost(t, New()); code != 200 {
+		t.Fatal(code)
+	}
+	if tried, _ := b.seen(); tried != "acct-2" {
+		t.Fatalf("tried %s", tried)
+	}
+	if !provider.CarefulReasked("codex", "me@example.com") {
+		t.Fatal("no careful re-ask for the doubted account")
+	}
+	if !spareMarked && provider.CarefulReasked("codex", "spare@example.com") {
+		t.Fatal("a careful re-ask for the account the request went to")
+	}
+}
+
 // carefulPool: Codex's two accounts, me first in the order with a 90% cap
 // and spare with none, their five hours used as given.
 func carefulPool(t *testing.T, me, spare float64, careful bool) *resetBackend {

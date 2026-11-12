@@ -474,6 +474,15 @@ var (
 	trustSettle = 300 * time.Millisecond
 )
 
+// trustAsked says whether a screen draws the trust question, in the words
+// Claude Code has drawn it as: "Do you trust this folder?" once, and now
+// "Quick safety check: Is this a project you created or one you trust?"
+// — wzxglobal's app.log (#4919): the question stood drawn and a /usage
+// read still ended "showed no prompt", its 17s waited out unnamed.
+func trustAsked(s string) bool {
+	return strings.Contains(s, "trust this folder") || strings.Contains(s, "one you trust")
+}
+
 // lastAt is where re's last match in p starts, -1 with none.
 func lastAt(re *lazyre.RE, p string) int {
 	m := re.FindAllStringIndex(p, -1)
@@ -580,7 +589,7 @@ func (s *shim) ready() error {
 		now, _ := s.looks()
 		nowWords := strings.Join(strings.Fields(now+" "+p), " ")
 		doing := "showed no prompt"
-		if strings.Contains(nowWords, "trust this folder") {
+		if trustAsked(nowWords) {
 			doing = asking
 		} else if strings.Contains(nowWords, "Bypass Permissions mode") {
 			doing = bypassAsking
@@ -589,7 +598,7 @@ func (s *shim) ready() error {
 		}
 		s.doing.Store(doing)
 		switch {
-		case strings.Contains(p, "trust this folder") && os.Getenv(TrustEnv) != "1":
+		case trustAsked(p) && os.Getenv(TrustEnv) != "1":
 			return errUntrusted
 		case strings.Contains(words, "Bypass Permissions mode") && os.Getenv(BypassEnv) != "1":
 			return fmt.Errorf("Claude Code's interactive mode runs in Bypass Permissions mode and asks to accept it, which only its user answers: %s", s.lastScreen())
@@ -603,7 +612,7 @@ func (s *shim) ready() error {
 			if err := onboard("terminal", "\x1b"); err != nil {
 				return err
 			}
-		case (strings.Contains(p, "trust this folder") || strings.Contains(words, "Bypass Permissions mode")) && answered < 3:
+		case (trustAsked(p) || strings.Contains(words, "Bypass Permissions mode")) && answered < 3:
 			// the choice is the last one drawn after ❯, "No, exit" at
 			// first. A key sent as the question is first drawn can be lost
 			// to its being drawn again on No, so Enter goes only to a Yes

@@ -89,6 +89,25 @@ func fakeTrust(r *bufio.Reader, always bool) {
 	}
 }
 
+// fakeNewTrust asks whether to trust the folder as a newer Claude Code
+// words it: "Quick safety check: Is this a project you created or one you
+// trust?", its options not the ones the shim's answer keys match —
+// wzxglobal's app.log (#4919): the question stood on the screen and the
+// log still said "showed no prompt", the read waiting its window out.
+// With always, it never listens, as a question whose answer never goes
+// through.
+func fakeNewTrust(r *bufio.Reader, always bool) {
+	draw := func() {
+		fmt.Printf("Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team.) If not, take a moment to review what's in this folder first. Claude Code'll be able to read, edit, and execute files here. 安全指南 ›\r\n\x1b[38;2;177;185;249m❯\x1b[39m 否，退出。\r\n  是，我信任此文件夹\r\n")
+	}
+	draw()
+	for {
+		if _, err := r.ReadByte(); err != nil {
+			os.Exit(0)
+		}
+	}
+}
+
 // fakeBypass shows Claude Code's Bypass Permissions disclaimer, drawn
 // where it runs with --dangerously-skip-permissions and its config
 // folder hasn't accepted it once (2.1.295): "No, exit" chosen, and drawn
@@ -289,6 +308,9 @@ func fakeClaude(args []string) {
 	}
 	if v := os.Getenv("FAKE_TRUST"); v != "" {
 		fakeTrust(r, v == "deaf")
+	}
+	if v := os.Getenv("FAKE_NEWTRUST"); v != "" {
+		fakeNewTrust(r, v == "deaf")
 	}
 	if v := os.Getenv("FAKE_BYPASS"); v != "" {
 		fakeBypass(r, v == "deaf")
@@ -947,6 +969,13 @@ func TestShimEndsAtItsCallersDeadline(t *testing.T) {
 		// the question a saved account's reads waited out on (#4830,
 		// mydosu): said, with the folder, never "showed no prompt"
 		{"trust unanswered", `{"type":"user","message":{"role":"user","content":"hello"}}`, "asked whether to trust " + wd + ", not answered in the", "trust this folder", []string{"FAKE_TRUST=deaf", TrustEnv + "=1"}},
+		// the same question as a newer Claude Code words it — "Quick
+		// safety check: Is this a project you created or one you trust?",
+		// its options not the ones the answer keys match — said with the
+		// folder, never "showed no prompt" (#4919, wzxglobal's app.log:
+		// the question stood drawn and the read waited its 17s out
+		// unnamed)
+		{"new trust unanswered", `{"type":"user","message":{"role":"user","content":"hello"}}`, "asked whether to trust " + wd + ", not answered in the", "one you trust", []string{"FAKE_NEWTRUST=deaf", TrustEnv + "=1"}},
 		// the disclaimer the spawned claude sat on for 45s, then died in a
 		// loop of them (#5042): said, never "showed no prompt"
 		{"bypass disclaimer unanswered", `{"type":"user","message":{"role":"user","content":"hello"}}`, "asked to accept running in Bypass Permissions mode, not answered in the", "Bypass Permissions mode", []string{"FAKE_BYPASS=deaf", BypassEnv + "=1"}},
@@ -976,6 +1005,25 @@ func TestShimEndsAtItsCallersDeadline(t *testing.T) {
 				t.Fatalf("ended after %s, the deadline 3s", d)
 			}
 		})
+	}
+}
+
+// The new-form trust question is the user's to answer as the old one is:
+// asked with no TrustEnv, the run ends at once saying so — not at its
+// caller's deadline, "showed no prompt", as it read while the question
+// stood drawn and unnamed (#4919, wzxglobal's app.log).
+func TestShimNewTrustIsTheUsers(t *testing.T) {
+	by := time.Now().Add(30 * time.Second).UnixMilli()
+	start := time.Now()
+	_, stderr, err := runEnds(t, t.TempDir(), []string{"FAKE_NEWTRUST=deaf", DeadlineEnv + "=" + strconv.FormatInt(by, 10)})
+	if err == nil {
+		t.Fatal("the run ended nil")
+	}
+	if !strings.Contains(stderr, Untrusted) {
+		t.Fatalf("stderr %q", stderr)
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("ended after %s, the question was up at once", d)
 	}
 }
 

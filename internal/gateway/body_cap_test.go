@@ -289,3 +289,69 @@ func compactionOverByteCapEveryTime(t *testing.T, header ...string) {
 		}
 	}
 }
+
+// longTextTurn is a Responses turn to model of about n bytes of text, no
+// image in it: nothing its history holds can be left out to fit it.
+func longTextTurn(model string, n int) string {
+	return `{"model":"` + model + `","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"` + strings.Repeat("word ", n/5) + `"}]}]}`
+}
+
+// bare400Least mirrors the threshold the gate reads a bare 400 at, pinned
+// here on its own: 768 KiB, under the about 880 KB the ceiling was
+// measured at in #6214.
+const bare400Least = 768 << 10
+
+// bare400 is the ChatGPT backend's refusal of a big request: a bare 400,
+// its body empty, no error of its own in it (#6214, where the ceiling was
+// measured at about 880 KB — a thread past it is refused so on every
+// turn, and Codex's compaction, triggered on tokens, never comes;
+// #6305's control: the same bytes as random text reach the model check,
+// so the refusal is of the body, before any of the API's own errors are
+// said).
+func TestBigBodyBare400IsByteCap(t *testing.T) {
+	fresh(t)
+	up := &capped{proto: provider.Responses, most: bare400Least, status: 400, ctype: "", body: ""}
+	cappedOn(t, up)
+	body := longTextTurn("fake/m1", bare400Least+(16<<10))
+	code, out := postResponses(t, New(), body)
+	if code != 200 || failedCode(out) != "context_length_exceeded" {
+		t.Fatalf("Codex wasn't told to compact: %d %.600s", code, out)
+	}
+	for _, want := range []string{
+		"the request is " + mb(len(body)),
+		"answered a bare 400 with nothing in it",
+		"no earlier image",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the error lacks %q: %.600s", want, out)
+		}
+	}
+	if n := len(up.calls()); n != 1 {
+		t.Fatalf("the same body was sent %d times", n)
+	}
+}
+
+// A refusal with words in it says what refused the request, however big
+// it is — the model check's own refusal, as #6305's random-text control
+// got — and a small request's bare 400 is the API's own answer as it
+// came. Neither is a byte cap.
+func TestBare400NotAByteCap(t *testing.T) {
+	fresh(t)
+	up := &capped{proto: provider.Responses, most: bare400Least, status: 400, ctype: "application/json",
+		body: `{"error":{"code":"model_not_found","message":"The model does-not-exist does not exist or you do not have access to it."}}`}
+	cappedOn(t, up)
+	code, out := postResponses(t, New(), longTextTurn("fake/m1", bare400Least+(16<<10)))
+	if code != 400 || !strings.Contains(out, "model_not_found") || strings.Contains(out, "no earlier image") {
+		t.Fatalf("a refusal with words in it: %d %.600s", code, out)
+	}
+	if n := len(up.calls()); n != 1 {
+		t.Fatalf("asked %d times", n)
+	}
+	fresh(t)
+	small := &capped{proto: provider.Responses, most: 64, status: 400, ctype: "", body: ""}
+	cappedOn(t, small)
+	code, out = postResponses(t, New(), `{"model":"fake/m1","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"a small ask"}]}]}`)
+	if code != 400 || !strings.Contains(out, "Bad Request") || strings.Contains(out, "no earlier image") {
+		t.Fatalf("a small request's bare 400: %d %.300s", code, out)
+	}
+}

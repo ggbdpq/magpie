@@ -123,14 +123,16 @@ func (f agyFile) wired() bool {
 }
 
 // antigravityGateway is the gateway block magpie writes at path. The wire
-// protocol stays the file's once it holds one: on the app's openai stream
-// its own accumulator folds a turn's parallel calls into one, their ids,
-// names and arguments lost (#5908), and on genai it reads them whole, so
-// the protocol of a wired file is the user's to pick (a Gemini-native
-// provider's row wants genai). A file with none is put on openai, as
-// before, and so is a block magpie starts.
+// protocol stays the file's once it holds one. A file with none, and a
+// block magpie starts, go on genai: on the app's openai stream its own
+// accumulator folds a turn's parallel calls into one, their ids, names
+// and arguments lost, and the turn retries for good (#5908 — the
+// reporter's A/B had the same provider and model finish on genai and
+// retry on openai), while on genai — the wire magpie serves its
+// Antigravity-native accounts on — the app reads the same calls whole.
+// openai stays the user's to set: a file naming it keeps it.
 func antigravityGateway(path string) map[string]any {
-	proto := "openai"
+	proto := "genai"
 	if path != "" {
 		if v, _ := edit.GetJSON(path, "gateway.wireProtocol"); strings.TrimSpace(v) != "" {
 			proto = v

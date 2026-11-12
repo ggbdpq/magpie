@@ -210,10 +210,154 @@ func TestAntigravityAppDeploymentName(t *testing.T) {
 		"gemini-4-argon-D":      "gemini-4-argon-D",
 	} {
 		for _, field := range []int{19, 21, 22} {
-			if got := agAppModel(gen(field, in)); got != want {
+			if got, _ := agAppModel(gen(field, in)); got != want {
 				t.Errorf("field %d %q: %q, want %q", field, in, got, want)
 			}
 		}
+	}
+}
+
+// agPBVarint is a protobuf field of a varint value; agPBBytes one of bytes.
+func agPBVarint(num int, v uint64) []byte {
+	return binary.AppendUvarint(binary.AppendUvarint(nil, uint64(num)<<3), v)
+}
+
+func agPBBytes(num int, b []byte) []byte {
+	out := binary.AppendUvarint(nil, uint64(num)<<3|2)
+	out = binary.AppendUvarint(out, uint64(len(b)))
+	return append(out, b...)
+}
+
+// #6021 (YOUYUDAWANG): the generator's field 19 names the served model and
+// its effort word, and field 21 names the picker's label with the level in
+// parentheses — the level the effort column shows. A -tiered or -trial id
+// is Google's serving of the base model, as the gateway names it
+// (collapseAntigravityModels), and it prices as the base. An id whose last
+// word is an effort, or "thinking", is that model at that effort
+// (catalog.Unsuffixed's words). Without field 19 the label stands alone:
+// its parentheses still say the effort, and its words slug to the id form.
+// The literal bytes are the report's, read out of real desktop databases.
+func TestAntigravityAppModelEffort(t *testing.T) {
+	type gf struct {
+		field int
+		m     string
+	}
+	for _, c := range []struct {
+		name        string
+		gen         []gf
+		model, want string
+		effort      string
+	}{
+		{"19 and the label's level", []gf{{19, "gemini-4-carbon"}, {21, "Gemini 4 Carbon (High)"}},
+			"gemini-4-carbon", "gemini-4-carbon", "high"},
+		{"thinking id and label", []gf{{19, "claude-opus-4-6-thinking"}, {21, "Claude Opus 4.6 (Thinking)"}},
+			"claude-opus-4-6", "claude-opus-4-6", "thinking"},
+		{"tiered", []gf{{19, "gemini-3.8-flash-tiered"}},
+			"gemini-3.8-flash", "gemini-3.8-flash", ""},
+		{"trial", []gf{{19, "gemini-4-argon-trial"}},
+			"gemini-4-argon", "gemini-4-argon", ""},
+		{"label alone", []gf{{21, "Gemini 4 Argon (High)"}},
+			"gemini-4-argon", "gemini-4-argon", "high"},
+		{"label alone, no level", []gf{{21, "Gemini 3.5 Flash"}},
+			"gemini-3.5-flash", "gemini-3.5-flash", ""},
+		{"effort id alone", []gf{{19, "claude-opus-5-5-high"}},
+			"claude-opus-5-5", "claude-opus-5-5", "high"},
+		{"deployment still first", []gf{{19, "gemini-3.8-flash-n"}},
+			"gemini-3.8-flash", "gemini-3.8-flash", ""},
+		{"lite is no suffix", []gf{{19, "gemini-3.8-flash-lite"}},
+			"gemini-3.8-flash-lite", "gemini-3.8-flash-lite", ""},
+		{"a capital letter is no deployment", []gf{{19, "gemini-4-argon-D"}},
+			"gemini-4-argon-D", "gemini-4-argon-D", ""},
+	} {
+		var b []byte
+		for _, p := range c.gen {
+			inner := append(binary.AppendUvarint(nil, uint64(p.field)<<3|2), byte(len(p.m)))
+			inner = append(inner, p.m...)
+			b = append(b, append([]byte{1<<3 | 2, byte(len(inner))}, inner...)...)
+		}
+		model, effort := agAppModel(b)
+		if model != c.model || effort != c.effort {
+			t.Errorf("%s: model %q effort %q, want %q %q", c.name, model, effort, c.model, c.effort)
+		}
+	}
+}
+
+// #6021: the usage message's field 9 is the thinking tokens, inside the
+// output — the report's real row reads 176 thinking of 356 output, 26094
+// in, 16781 read from the cache.
+func TestAntigravityAppReasoningTokens(t *testing.T) {
+	usage, _ := hex.DecodeString("08930B10EECB0118E402288D8301301848B00150B401")
+	b := agPBBytes(1, agPBVarint(1, 1791860318))
+	b = append(b, agPBBytes(9, usage)...)
+	c, _, ok := agAppStep(b)
+	if !ok {
+		t.Fatal("no call")
+	}
+	if c.reasoning != 176 {
+		t.Errorf("reasoning %d, want 176 (inside the output 356)", c.reasoning)
+	}
+	if c.tokens.Input != 26094 || c.tokens.Output != 356 || c.tokens.CacheRead != 16781 {
+		t.Errorf("tokens %+v", c.tokens)
+	}
+}
+
+// #6021: executor_metadata names the model the turn asked for
+// (field 10.1.28, "gemini-4-carbon-high"), keyed by its execution id
+// (field 9), which the step's field 20.4 carries. The call shows it as
+// Requested, as Claude Code's rows show theirs.
+func TestAntigravityAppRequestedModel(t *testing.T) {
+	claude, _ := setup(t)
+	home := filepath.Join(filepath.Dir(claude), "home")
+	const id = "5e7b1c2a-3d40-4e58-8a19-6b0c9d2e3f40"
+	path := antigravityFixture(t, home, id)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	gen := func(field int, m string) []byte {
+		inner := append(binary.AppendUvarint(nil, uint64(field)<<3|2), byte(len(m)))
+		inner = append(inner, m...)
+		return append([]byte{1<<3 | 2, byte(len(inner))}, inner...)
+	}
+	genData := append(gen(19, "gemini-4-carbon"), gen(21, "Gemini 4 Carbon (High)")...)
+	if _, err := db.Exec("INSERT INTO gen_metadata (idx, data, size) VALUES (10, ?, ?)", genData, len(genData)); err != nil {
+		t.Fatal(err)
+	}
+	asked := append(agPBVarint(1, 1427), agPBBytes(28, []byte("gemini-4-carbon-high"))...)
+	exRow := append(agPBVarint(3, 21), agPBBytes(9, []byte("exec-1"))...)
+	exRow = append(exRow, agPBBytes(10, agPBBytes(1, asked))...)
+	if _, err := db.Exec("INSERT INTO executor_metadata (idx, data) VALUES (0, ?)", exRow); err != nil {
+		t.Fatal(err)
+	}
+	usage, _ := hex.DecodeString("08930B10EECB0118E402288D8301301848B00150B401")
+	ts := agPBBytes(1, agPBVarint(1, 1791860400))
+	step := append(ts, agPBBytes(9, usage)...)
+	step = append(step, agPBBytes(20, append(agPBVarint(3, 10), agPBBytes(4, []byte("exec-1"))...))...)
+	if _, err := db.Exec("INSERT INTO steps (idx, step_type, metadata) VALUES (21, 15, ?)", step); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := antigravityRead(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c *agAppCall
+	for i := range calls {
+		if calls[i].step == 21 {
+			c = &calls[i]
+		}
+	}
+	if c == nil {
+		t.Fatalf("no call at step 21 in %+v", calls)
+	}
+	if c.model != "gemini-4-carbon" || c.effort != "high" {
+		t.Errorf("model %q effort %q, want gemini-4-carbon high", c.model, c.effort)
+	}
+	if c.requested != "gemini-4-carbon-high" {
+		t.Errorf("requested %q, want gemini-4-carbon-high", c.requested)
+	}
+	if c.reasoning != 176 {
+		t.Errorf("reasoning %d, want 176", c.reasoning)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/dirent"
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -133,11 +134,15 @@ func antigravityCallFiles() []file { return antigravityFiles() }
 
 // agAppCall is one model call of a conversation.
 type agAppCall struct {
-	step     int64
-	at       time.Time
-	model    string
-	tokens   Tokens
-	response string
+	step      int64
+	at        time.Time
+	model     string
+	effort    string
+	requested string
+	tokens    Tokens
+	reasoning int
+	response  string
+	execution string
 }
 
 // errAgApp is a protobuf that can't be read.
@@ -158,15 +163,48 @@ func antigravityRead(path string) ([]agAppCall, error) {
 		return nil, err
 	}
 	defer tx.Rollback()
-	models := map[int64]string{}
+	models := map[int64]agGen{}
 	if rows, err := tx.Query("SELECT idx, data FROM gen_metadata WHERE data IS NOT NULL"); err == nil {
 		for rows.Next() {
 			var idx int64
 			var b []byte
 			if rows.Scan(&idx, &b) == nil {
-				if m := agAppModel(b); m != "" {
-					models[idx] = m
+				if m, e := agAppModel(b); m != "" {
+					models[idx] = agGen{model: m, effort: e}
 				}
+			}
+		}
+		rows.Close()
+	}
+	// executor_metadata names the model each turn asked for (#6021): its
+	// field 9 is the turn's execution id, the same id the step's field
+	// 20.4 carries, and its field 10.1.28 the requested model's slug.
+	requested := map[string]string{}
+	if rows, err := tx.Query("SELECT data FROM executor_metadata WHERE data IS NOT NULL"); err == nil {
+		for rows.Next() {
+			var b []byte
+			if rows.Scan(&b) != nil {
+				continue
+			}
+			var exec, slug string
+			_ = pbWalk(b, func(num int, v uint64, d []byte) {
+				if num == 9 && d != nil {
+					exec = string(d)
+				}
+				if num == 10 && d != nil {
+					_ = pbWalk(d, func(n int, v uint64, d2 []byte) {
+						if n == 1 && d2 != nil {
+							_ = pbWalk(d2, func(n2 int, v2 uint64, d3 []byte) {
+								if n2 == 28 && d3 != nil {
+									slug = string(d3)
+								}
+							})
+						}
+					})
+				}
+			})
+			if exec != "" && slug != "" {
+				requested[exec] = slug
 			}
 		}
 		rows.Close()
@@ -188,7 +226,11 @@ func antigravityRead(path string) ([]agAppCall, error) {
 		if !ok {
 			continue
 		}
-		c.step, c.model = idx, models[gen]
+		c.step = idx
+		if g := models[gen]; g.model != "" {
+			c.model, c.effort = g.model, g.effort
+		}
+		c.requested = requested[c.execution]
 		if i, seen := byResponse[c.response]; seen && c.response != "" {
 			out[i] = c
 			continue
@@ -217,6 +259,8 @@ func agAppStep(b []byte) (c agAppCall, gen int64, ok bool) {
 			_ = pbWalk(d, func(n int, v uint64, d []byte) {
 				if n == 3 && d == nil {
 					gen = int64(v)
+				} else if n == 4 && d != nil {
+					c.execution = string(d)
 				}
 			})
 		}
@@ -235,6 +279,8 @@ func agAppStep(b []byte) (c agAppCall, gen int64, ok bool) {
 				c.tokens.CacheWrite = int(v)
 			case 5:
 				c.tokens.CacheRead = int(v)
+			case 9:
+				c.reasoning = int(v)
 			}
 		} else if num == 11 {
 			c.response = string(d)
@@ -245,9 +291,27 @@ func agAppStep(b []byte) (c agAppCall, gen int64, ok bool) {
 	return c, gen, true
 }
 
-// agAppModel is the model a generator's message names: its field 19, else
-// 21, else 22.
-func agAppModel(b []byte) string {
+// agGen is the model a generator names, with the thinking effort its
+// picker label or id carries.
+type agGen struct {
+	model, effort string
+}
+
+// agAppModel is the model a generator's message names, and the effort it
+// was asked for (#6021): field 19, else 21, else 22. Field 19 is the
+// served model's id, which may carry its effort as a suffix
+// (claude-opus-5-5-high, claude-opus-4-6-thinking — catalog.Unsuffixed's
+// words) or Google's serving of a base (gemini-3.8-flash-tiered,
+// gemini-4-argon-trial, which the gateway names and prices as their base,
+// collapseAntigravityModels). Field 21 is the picker's label, whose
+// parentheses hold the level ("Gemini 4 Carbon (High)") — the level rows
+// with a field 19 say nowhere else, so a bare 19 takes it from there. A
+// label with no field 19 slugs to the id form ("Gemini 4 Argon (High)" is
+// gemini-4-argon at high); a label of another maker keeps the version
+// spelling its label has, which may differ from the id's (Claude Opus 4.6
+// slugs to claude-opus-4.6, the id is claude-opus-4-6) and may then sit
+// unpriced.
+func agAppModel(b []byte) (string, string) {
 	var named [3]string
 	_ = pbWalk(b, func(num int, v uint64, d []byte) {
 		if num != 1 || d == nil {
@@ -267,15 +331,78 @@ func agAppModel(b []byte) string {
 			}
 		})
 	})
-	for _, m := range named {
-		if m != "" && len(m) <= 200 {
-			if base, ok := GeminiDeployment(m); ok {
-				return base
+	if m := named[0]; m != "" && len(m) <= 200 {
+		model, effort := agAppModelID(m)
+		if effort == "" {
+			if _, level, ok := agAppLabel(named[1]); ok {
+				effort = level
 			}
-			return m
+		}
+		return model, effort
+	}
+	for _, m := range named[1:] {
+		if m == "" || len(m) > 200 {
+			continue
+		}
+		if strings.ContainsRune(m, ' ') {
+			if base, level, ok := agAppLabel(m); ok {
+				return agAppSlug(base), level
+			}
+			return agAppSlug(m), ""
+		}
+		model, effort := agAppModelID(m)
+		return model, effort
+	}
+	return "", ""
+}
+
+// agAppModelID is m as a model id: its effort suffix taken off as the
+// effort (catalog.Unsuffixed's words), Google's -tiered and -trial
+// servings named as their base, and a deployment's lone letter off
+// (GeminiDeployment), in that order.
+func agAppModelID(m string) (string, string) {
+	if base, ok := catalog.Unsuffixed(m); ok {
+		return agAppDeployment(base), m[len(base)+1:]
+	}
+	for _, w := range []string{"-tiered", "-trial"} {
+		if b, ok := strings.CutSuffix(m, w); ok && strings.HasPrefix(b, "gemini-") {
+			return agAppDeployment(b), ""
 		}
 	}
-	return ""
+	return agAppDeployment(m), ""
+}
+
+// agAppDeployment is m with a deployment's lone letter off, when it is one.
+func agAppDeployment(m string) string {
+	if b, ok := GeminiDeployment(m); ok {
+		return b
+	}
+	return m
+}
+
+// agAppLabel is a picker label's words and the level its parentheses hold:
+// "Gemini 4 Carbon (High)" is "Gemini 4 Carbon" at high. False when m
+// carries no parenthesized level of a word's length.
+func agAppLabel(m string) (base, level string, ok bool) {
+	i := strings.LastIndex(m, " (")
+	if i < 0 || !strings.HasSuffix(m, ")") || len(m)-i < 4 {
+		return m, "", false
+	}
+	level = strings.ToLower(m[i+2 : len(m)-1])
+	for _, c := range level {
+		if c < 'a' || c > 'z' {
+			return m, "", false
+		}
+	}
+	return m[:i], level, true
+}
+
+// agAppSlug is a label's words as an id: lower case, hyphenated ("Gemini
+// 3.5 Flash" is gemini-3.5-flash). A label of the same words the id has,
+// spelled as the picker shows it; another maker's version spelling may
+// differ from its id's.
+func agAppSlug(m string) string {
+	return strings.ToLower(strings.Join(strings.Fields(m), "-"))
 }
 
 // GeminiDeployment is the Gemini model a Google deployment's name stands
@@ -399,6 +526,7 @@ func readAntigravityCalls(f file) (*callFile, bool) {
 	for _, c := range calls {
 		st.Calls = append(st.Calls, Call{
 			Agent: "antigravity", Time: c.at, Session: st.Session, Model: c.model, Tokens: c.tokens,
+			Requested: c.requested, Effort: c.effort, Reasoning: c.reasoning,
 			Msg: st.str("antigravity:" + st.Session + ":" + strconv.FormatInt(c.step, 10)),
 		})
 	}

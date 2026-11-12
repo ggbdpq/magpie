@@ -532,6 +532,71 @@ func TestHermesWithAKeyInItsEnvFile(t *testing.T) {
 	}
 }
 
+// #5260 (flmaximwang): a Hermes set up with key_env, holding a gateway key
+// of the user's in its .env, had api_key: magpie written over the setup on
+// every model write: Hermes sends a non-empty api_key first, so key_env
+// never got read, and behind Docker's port mapping the gateway takes no
+// loopback token from the bridge address, so every turn came back 401.
+// With key_env on the entry, magpie writes the key as a reference to that
+// variable: Hermes expands it from the .env as the user set up, the
+// variable stays theirs, and hermesKeptKey keeps the reference afterwards.
+func TestHermesWithAKeyEnvStaysAReference(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HERMES_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro"}}); err != nil {
+		t.Fatal(err)
+	}
+	dir := appdir.HermesHomeIn(home)
+	path := filepath.Join(dir, "config.yaml")
+	env := filepath.Join(dir, ".env")
+	os.MkdirAll(dir, 0o755)
+	secret, err := access.Update("add-key", access.Change{Name: "hermes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the reporter's provider, as he wrote it: key_env only, the key in
+	// the .env
+	os.WriteFile(path, []byte("model:\n  default: x\nproviders:\n  magpie:\n    name: magpie\n    api_mode: chat_completions\n    base_url: "+here(home).v1()+"\n    key_env: HERMES_CUSTOM_MAGPIE_API_KEY\n"), 0o644)
+	os.WriteFile(env, []byte("HERMES_CUSTOM_MAGPIE_API_KEY="+secret+"\n"), 0o600)
+	a := hermes(home)
+	ref := func(what string) {
+		t.Helper()
+		if v, _ := edit.GetYAML(path, "providers.magpie.api_key"); v != "${HERMES_CUSTOM_MAGPIE_API_KEY}" {
+			t.Fatalf("%s: api_key written as %q, want the key_env reference", what, v)
+		}
+	}
+	if err := a.Field("model").Set("magpie/deepseek/pro"); err != nil {
+		t.Fatal(err)
+	}
+	ref("a pick")
+	b, err := os.ReadFile(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "HERMES_CUSTOM_MAGPIE_API_KEY=" + secret + "\n"; string(b) != want {
+		t.Fatalf("the user's .env was touched:\n%s\nwant:\n%s", b, want)
+	}
+	if d := a.Check(); d != "" {
+		t.Fatalf("the entry with the user's key reads as drift: %s", d)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	ref("a sync")
+	// the state the reporter was left in heals: a literal token beside a
+	// key_env goes back to the reference on the next write
+	mine := "model:\n  default: deepseek/pro\n  provider: magpie\nproviders:\n  magpie:\n    name: magpie\n    api_key: " + gateway.Token + "\n    api_mode: chat_completions\n    base_url: " + here(home).v1() + "\n    key_env: HERMES_CUSTOM_MAGPIE_API_KEY\n"
+	os.WriteFile(path, []byte(mine), 0o644)
+	if err := a.Field("model").Set("magpie/deepseek/pro"); err != nil {
+		t.Fatal(err)
+	}
+	ref("the literal token beside a key_env, healed")
+}
+
 // keyHolds, which every agent's check of magpie's key goes through: a key
 // of the gateway's own stands in for magpie's, never for a URL or another
 // value, and one the gateway doesn't take doesn't.

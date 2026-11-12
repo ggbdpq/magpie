@@ -13,7 +13,7 @@ const library = () => ({
   dir: `${home}/.config/magpie/library`, backups: `${home}/.config/magpie/backups`, home,
   agents: [{ id: "claude", name: "Claude Code", skills: `${home}/.claude/skills`, mcp: `${home}/.claude.json` }],
   instructions: { agents: [], sets: [] }, servers: [], projects: [], foundServers: [], foundSkills: [],
-  skills: [{ name: "ui-taste", description: "UI taste", kind: "well-known", source, repo: "uizze.sh", agents: [] }],
+  skills: [{ name: "ui-taste", description: "UI taste", kind: "well-known", source, repo: source, agents: [] }],
 });
 
 function serve(lang, posts, data = library(), opened = []) {
@@ -84,7 +84,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const context = await browser.newContext({ viewport: { width: 980, height: 800 } });
     t.after(() => context.close());
     await context.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "skills"); } catch {} });
-    const origins = ["http://localhost:8080/kit", "http://example.com:8080/kit", "http://example.com:8081/kit", "https://example.com:8443/Kit"];
+    const origins = ["http://localhost:8080/kit", "http://example.com:8080/kit", "http://example.com:8081/kit", "https://example.com:8443/Kit", "https://example.com:8443/kit"];
     const data = library(), opened = [];
     data.skills = origins.map((address, i) => ({ name: `website-${i}`, description: "Website skill", kind: "well-known", source: address, repo: address, agents: [] }));
     const page = await context.newPage();

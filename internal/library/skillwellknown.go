@@ -202,13 +202,7 @@ func wellKnownGet(ctx context.Context, client *http.Client, address string, max 
 	if int64(len(body)) > max {
 		return nil, fmt.Errorf("%s is over the most magpie reads", address)
 	}
-	kind := strings.ToLower(resp.Header.Get("Content-Type"))
-	sniff := http.DetectContentType(body)
-	ext := strings.ToLower(filepath.Ext(req.URL.Path))
-	htmlFile := ext == ".html" || ext == ".htm" || ext == ".xhtml"
-	if !htmlFile && (strings.Contains(kind, "text/html") || strings.Contains(kind, "application/xhtml+xml") || strings.HasPrefix(sniff, "text/html")) {
-		return nil, fmt.Errorf("%s returned an HTML page instead of a skills file", address)
-	}
+	// Metadata has its own parsers; listed supporting files are opaque bytes.
 	return body, nil
 }
 

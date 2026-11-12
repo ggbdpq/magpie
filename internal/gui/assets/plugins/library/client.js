@@ -5233,7 +5233,7 @@ magpie.plugin("library", (ctx) => {
       rh.append(el("span", "label", t("In the library")));
       const box = el("div", "lib-groups");
       if (lib.skills.length > 8) rh.append(skillFilter(box, all));
-      const fresh = lib.skills.filter((s) => s.kind === "github" || s.kind === "git" || s.origin);
+      const fresh = lib.skills.filter((s) => remoteSkill(s) || s.origin);
       rh.append(el("span", "grow"));
       if (lib.skills.length > 1) rh.append(sortBy("libSkills", SKILL_SORTS(), () => { if (box.isConnected) drawSkills(box, all); }));
       // what is used now and then waits under ⋯ (ryanpascal on Discord):
@@ -5241,9 +5241,11 @@ magpie.plugin("library", (ctx) => {
       // found to do
       if (lib.skills.length > 1 && all.length) rh.append(pickButton("skills"));
       let check = false, again = false, updAll = false;
-      if (lib.checkFolders || lib.skills.some((s) => s.kind === "github" || s.kind === "git")) {
+      if (lib.checkFolders || lib.skills.some(remoteSkill)) {
         const c = button(checking ? t("Checking…") : t("Check for updates"), "lib-updall lib-check", () => checkSkills());
-        c.title = lib.checkFolders
+        c.title = lib.skills.some((s) => s.kind === "well-known")
+          ? t("Check for updates")
+          : lib.checkFolders
           ? t("Look in the repositories and folders your skills came from for changes and new skills")
           : lib.skills.some((s) => s.kind === "git")
           ? t("Ask the repositories your skills came from which skills changed since they were installed")
@@ -5283,7 +5285,8 @@ magpie.plugin("library", (ctx) => {
           await updateAllSkills(stale.map((s) => s.name));
           b.classList.remove("busy");
         });
-        u.title = n === 1 ? t("Fetch {name} from GitHub again", { name: stale[0].name }) : t("Fetch the {n} skills GitHub changed again", { n });
+        u.title = stale.some((s) => s.kind === "well-known") ? t("Update {n}", { n })
+          : n === 1 ? t("Fetch {name} from GitHub again", { name: stale[0].name }) : t("Fetch the {n} skills GitHub changed again", { n });
         rh.append(u);
       } else if (fresh.length > 1) {
         // picked from the menu: the bar says it is at work till it is done
@@ -5294,7 +5297,7 @@ magpie.plugin("library", (ctx) => {
           updatingAll = false;
           render();
         });
-        u.title = t("Fetch the {n} skills from GitHub again", { n: fresh.length });
+        u.title = fresh.some((s) => s.kind === "well-known") ? t("Update all") : t("Fetch the {n} skills from GitHub again", { n: fresh.length });
         u.disabled = updatingAll;
         if (updatingAll) { u.classList.add("busy"); rh.append(u); }
         else updAll = [u, GLYPH.down];
@@ -5462,7 +5465,8 @@ magpie.plugin("library", (ctx) => {
   const repoOf = (u) => (u || "").replace(/^https:\/\/github\.com\//, "").split("/").slice(0, 2).join("/");
   // the repository a skill from another git host (kind "git") came from,
   // as the page names it: its address, without https:// or a folder in it
-  const gitRepoOf = (s) => (s.kind === "git" ? (s.source || "").replace(/^https?:\/\//, "").replace(/\/-\/tree\/.*$/, "") : "");
+  const remoteSkill = (s) => s.kind === "github" || s.kind === "git" || s.kind === "well-known";
+  const gitRepoOf = (s) => (s.kind === "git" || s.kind === "well-known" ? (s.source || "").replace(/^https?:\/\//, "").replace(/\/-\/tree\/.*$/, "") : "");
   // the repository a skill came from, however it came in: magpie traces
   // one not installed from GitHub too (the skills CLI's lock, the git
   // checkout it's in), so a repository's skills are one group (White
@@ -5519,12 +5523,12 @@ magpie.plugin("library", (ctx) => {
     // author's repositories above are one group, each a part when many
     // (oil-oil/oil-ui, oil-oil/oil-ppt…): skills.sh lists many authors'
     // skills a repository each.
-    const online = (s) => s.kind === "github" || !!s.origin;
+    const online = (s) => s.kind === "github" || s.kind === "well-known" || !!s.origin;
     const repos = [...by.values()].filter((g) => g.key !== "local");
     const up = repos.filter((g) => g.skills.some(online)), down = repos.filter((g) => !g.skills.some(online));
     const owners = new Map();
     for (const g of up) {
-      if (/^[^/]+\.[^/]+\//.test(g.repo)) continue; // another git host's
+      if (/^[^/]+\.[^/]+(\/|$)/.test(g.repo)) continue; // another git host or a website
       const o = g.repo.split("/")[0].toLowerCase();
       if (!owners.has(o)) owners.set(o, []);
       owners.get(o).push(g);
@@ -7472,7 +7476,7 @@ magpie.plugin("library", (ctx) => {
         ? t("{repo} no longer has this skill: it was removed there. It stays here until you remove it.", { repo })
         : t("Its source no longer has this skill: it was removed there. It stays here until you remove it.")));
     } else if (c?.status === "update") {
-      const b = tag(t("Update available"), "lib-new", t("Changed on GitHub since it was installed") + "\n" + checkLine(c));
+      const b = tag(t("Update available"), "lib-new", (s.kind === "well-known" ? t("Update available") : t("Changed on GitHub since it was installed")) + "\n" + checkLine(c));
       if (c.url) {
         b.classList.add("link");
         b.onclick = (e) => { e.stopPropagation(); browse(c.url); };
@@ -7536,7 +7540,7 @@ magpie.plugin("library", (ctx) => {
         a.href = s.source;
         a.onclick = (e) => { e.preventDefault(); e.stopPropagation(); browse(s.source); };
         src.append(a);
-      } else if (s.kind === "git" && /^https?:\/\//.test(s.source)) {
+      } else if ((s.kind === "git" || s.kind === "well-known") && /^https?:\/\//.test(s.source)) {
         const a = el("a", "lib-srclink", s.source.replace(/^https:\/\//, ""));
         a.href = s.source;
         a.onclick = (e) => { e.preventDefault(); e.stopPropagation(); browse(s.source); };
@@ -7557,7 +7561,7 @@ magpie.plugin("library", (ctx) => {
     const acts = el("div", "lib-rowacts");
     // one its source no longer has has nothing to update from: Update all,
     // or a check, finds it there again if it comes back
-    if (!gone && (s.kind === "github" || s.kind === "git" || s.origin)) {
+    if (!gone && (remoteSkill(s) || s.origin)) {
       const u = button("", "lib-icon", async (e, b) => {
         if (s.edited) return confirmUpdateEdited(s);
         // spinning, with the row's actions kept in view while the fetch

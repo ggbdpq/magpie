@@ -121,12 +121,12 @@ func SkillNote(name, note string) (*Result, error) {
 }
 
 // Source is where a skill came from: a GitHub repository it can be updated
-// from, another git repository (fetched with the user's own git), or a
+// from, another git repository, a website's well-known index, or a
 // folder on this machine the library links to, so that editing the folder
 // is editing the skill.
 type Source struct {
-	Kind string `json:"kind"`           // github | git | folder
-	Repo string `json:"repo,omitempty"` // owner/repo for github, the address git fetches for git
+	Kind string `json:"kind"`           // github | git | well-known | folder
+	Repo string `json:"repo,omitempty"` // owner/repo for github, a repository or website address otherwise
 	Ref  string `json:"ref,omitempty"`
 	Path string `json:"path,omitempty"` // in the repository
 	Dir  string `json:"dir,omitempty"`  // the folder, for kind folder
@@ -146,6 +146,9 @@ func (s *Source) String() string {
 	}
 	if s.Kind == "git" {
 		return gitURL(s)
+	}
+	if s.Kind == "well-known" {
+		return s.Repo
 	}
 	u := "https://github.com/" + s.Repo
 	if s.Ref != "" || s.Path != "" {
@@ -1091,8 +1094,10 @@ var tarballURL = func(repo, ref string) string {
 }
 
 // remote is whether a skill's source is a repository it is fetched from
-// again to update: GitHub, or another git repository.
-func (s *Source) remote() bool { return s != nil && (s.Kind == "github" || s.Kind == "git") }
+// again to update: GitHub, another git repository, or a website.
+func (s *Source) remote() bool {
+	return s != nil && (s.Kind == "github" || s.Kind == "git" || s.Kind == "well-known")
+}
 
 // fetch downloads the repository into a new folder and gives it back; one
 // not on GitHub is fetched with the user's git (fetchGit). A
@@ -1109,6 +1114,10 @@ func fetch(src Source) (string, error) {
 }
 
 func fetchPart(src Source, name string) (dir string, part bool, err error) {
+	if src.Kind == "well-known" {
+		dir, err = fetchWellKnown(src)
+		return dir, false, err
+	}
 	if src.Kind == "git" {
 		dir, err = fetchGit(src)
 		return dir, false, err
@@ -1389,8 +1398,9 @@ func skillsCommand(input string) string {
 
 // ProbeSkills looks for skills at what the user typed: a GitHub repository
 // (or a folder in one), any other git repository (GitLab, one on a
-// company's own server; fetched with the user's git), a folder on this
-// machine, or a skills CLI command for one of them.
+// company's own server; fetched with the user's git), a website's
+// well-known skills index, a folder on this machine, or a skills CLI
+// command for one of them.
 func ProbeSkills(input string) (*Probe, error) { return probeSkills(input, "") }
 
 // probeSkills is ProbeSkills for the skill called name, when one is
@@ -1415,6 +1425,13 @@ func probeSkills(input, name string) (*Probe, error) {
 		}
 		p.Kind, p.root, p.src = "folder", dir, Source{Kind: "folder", Dir: dir}
 		p.Candidates = candidates(dir, "", filepath.Base(dir))
+	} else if src, tmp, found, err := probeWellKnown(input); found || err != nil {
+		if err != nil {
+			return nil, err
+		}
+		p.Kind, p.root, p.src = src.Kind, tmp, src
+		p.Candidates = candidates(tmp, "", srcFolder(src))
+		keepProbe(input, p, tmp)
 	} else if src, ok := githubSource(input); ok || isGit(input) {
 		if !ok {
 			src, _, _ = gitSource(input)
@@ -1554,6 +1571,8 @@ func fromSameSource(s *Skill, src Source, path, from string) bool {
 		return strings.EqualFold(s.Source.Repo, src.Repo) && s.Source.Path == path
 	case "git":
 		return sameGitRepo(s.Source.Repo, src.Repo) && s.Source.Path == path
+	case "well-known":
+		return s.Source.Repo == src.Repo && s.Source.Path == path
 	case "folder":
 		return realDir(s.Source.Dir) == realDir(from)
 	}
@@ -1699,7 +1718,7 @@ func installFrom(l *Library, p *Probe, paths, agents []string, shown bool, in *i
 		if src.Kind == "git" {
 			sk.Hash, sk.Own, sk.Commit = hashDir(dir), ownHash(dir), gitHeadOf(p.root)
 		}
-		if src.Kind == "github" {
+		if src.Kind == "github" || src.Kind == "well-known" {
 			sk.Hash, sk.Own = hashDir(dir), ownHash(dir)
 		}
 		l.offered(p, c.Path, shown)
@@ -1966,7 +1985,7 @@ type fetched struct {
 }
 
 func (f *fetcher) fetch(src Source) (string, error) {
-	key := src.Repo + "@" + src.Ref
+	key := src.Kind + "\x00" + src.Repo + "@" + src.Ref
 	g := f.get(key, src)
 	if g.part && !inRepoDir(src.Path, g.under) {
 		g = f.get(key+"@"+src.Path, src)

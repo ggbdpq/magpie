@@ -58,8 +58,10 @@ well-known file-list index: `skills` entries with `name`, `description` and
 The website address is kept as the source; discovery never visits its home
 page to replace it with a redirect's destination. A scoped address stays in
 that scope. Every listed supporting file is installed with `SKILL.md`, after
-the manifest's paths and limits have been checked. No downloaded content is
-executed, and no GitHub token or agent credential is sent to the website.
+the manifest's paths and limits have been checked. Only the declared catalog
+entries are offered as skills; supporting `SKILL.md` templates stay files of
+their entry. No downloaded content is executed, and no GitHub token or agent
+credential is sent to the website.
 
 These skills are grouped by their website, with a source link and the same
 update controls as repository skills. Checks compare the fetched content

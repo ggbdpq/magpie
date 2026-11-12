@@ -18,3 +18,19 @@ func TestWellKnownCatalogListsOnlyItsEntries(t *testing.T) {
 		t.Fatalf("only entries declared by the website are installable; supporting examples are files: %+v", p.Candidates)
 	}
 }
+
+func TestWellKnownGroupingKeepsWebsiteOrigin(t *testing.T) {
+	for _, address := range []string{
+		"http://localhost:8080/kit",
+		"http://example.com:8080/kit",
+		"http://example.com:8081/kit",
+		"https://example.com:8443/Kit",
+	} {
+		t.Run(address, func(t *testing.T) {
+			s := &Skill{Source: &Source{Kind: "well-known", Repo: address}}
+			if got := (&tracer{}).repoOf(s); got != address {
+				t.Fatalf("website grouping must keep the origin and path: got %q, want %q", got, address)
+			}
+		})
+	}
+}

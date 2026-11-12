@@ -480,6 +480,36 @@ func leadProvider(scope, parent string) string {
 	return id
 }
 
+// answeringProvider is the provider a conversation's answer in flight is
+// coming from, the thread parent names, in any scope magpie routed it in:
+// "" when nothing of the conversation is being answered now (#6330). A
+// first subagent reaches the sealed gate while its lead's reply is still
+// streaming, before any answerer is remembered; the upstream whose stream
+// has begun to pass is the one that seals what it emits, the task in the
+// subagent's request with it.
+func answeringProvider(scope, parent string) string {
+	parent = strings.TrimSpace(parent)
+	if parent == "" {
+		return ""
+	}
+	sticks.Lock()
+	defer sticks.Unlock()
+	st, had := sticks.answering[scope+"|"+parent]
+	if !had {
+		for k, v := range sticks.answering {
+			if strings.HasSuffix(k, "|"+parent) && (!had || v.at.After(st.at)) {
+				st, had = v, true
+			}
+		}
+	}
+	if !had {
+		return ""
+	}
+	id, _, _ := strings.Cut(st.who, "@") // an account: provider@user
+	id, _, _ = strings.Cut(id, "#")      // a key: provider#key
+	return id
+}
+
 // sealerKeep is how far back the usage log is read for who answered a
 // lead whose answerer affinity no longer remembers (#1367).
 const sealerKeep = 30 * 24 * time.Hour

@@ -2813,6 +2813,19 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			return isGroup && slices.ContainsFunc(ms, func(m provider.Member) bool { return s.sealedReader(m.Provider, m.Model, sealers) }) || !isGroup && s.sealedReader(p, model, sealers)
 		}
 		if !readable() {
+			// the lead's reply still coming (#6330): Codex hands a subagent
+			// its task while its lead's first answer is still streaming,
+			// before any answerer is remembered — the stick is written when
+			// the answer lands, and the usage row then too. Whoever the
+			// answer in flight is coming from is who sealed the task in it
+			if a := answeringProvider(scope, parent); a != "" {
+				sealers = append(sealers, a)
+				if sealedLead == "" {
+					sealedLead = a
+				}
+			}
+		}
+		if !readable() {
 			// affinity let the lead go (a day since, a restart, its reply
 			// broken off): the usage log still has who answered it (#1367)
 			logged := loggedAnswerers(parent, conv)
@@ -3721,6 +3734,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		// text, all at once, and never its "thinking with <effort>
 		// effort" (#4166). Set below, once hw.over is.
 		hw.ctx, hw.alive, hw.streams = r.Context(), kept, streams
+		// the try that begins to pass is the source of the conversation's
+		// answer in flight, its upstream the one that seals what it emits
+		// as the reply comes: remembered while the reply is out, for a
+		// first subagent to be sent to, before anyone is remembered to
+		// have answered the lead (#6330)
+		hw.onPass = func() { answeringBegin(stuck, c) }
 		// a Claude subscription account's refusal of a big conversation
 		// isn't told again to the subscription's other accounts
 		// (tooBigToRetell), decided before the try, for its refusal not to

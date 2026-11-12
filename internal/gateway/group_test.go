@@ -48,6 +48,7 @@ func fresh(t *testing.T) {
 	codexHolds.Unlock()
 	sticks.Lock()
 	sticks.m = map[string]stick{}
+	sticks.answering = map[string]stick{}
 	sticks.Unlock()
 	provider.ForgetReorders()
 	t.Cleanup(provider.ForgetReorders)

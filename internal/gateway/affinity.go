@@ -198,11 +198,17 @@ var sticks = struct {
 	// conversations spreads rather than all going to the one holding the
 	// fewest a moment before (#1342)
 	opening map[string]stick
+	// answering: scope|conversation → who a conversation's answer in
+	// flight is coming from, its stream having begun to pass (#6330): a
+	// first subagent arrives while its lead's reply is still streaming,
+	// before anyone is remembered to have answered the lead, and what its
+	// lead has been handed was sealed by the upstream answering now
+	answering map[string]stick
 	// the file as last read or written: another magpie's writes (the one
 	// handing over to this one) are read again when a conversation is missed
 	from string
 	mod  time.Time
-}{m: map[string]stick{}, opening: map[string]stick{}}
+}{m: map[string]stick{}, opening: map[string]stick{}, answering: map[string]stick{}}
 
 // sticksSaving keeps one write of the file at a time, the latest last.
 var sticksSaving sync.Mutex
@@ -1140,6 +1146,7 @@ func answeredStanding(key string, c candidate, turn int, u Usage, stoodIn bool) 
 	hour = hour.after(u, now)
 	sticks.m[key] = stick{rest: c.rest, who: c.who(), model: c.model, effort: c.effort, turn: turn, at: now, cacheRead: cacheRead, cacheWrite: cacheWrite, hour: hour, stoodIn: stoodIn}
 	delete(sticks.opening, key)
+	delete(sticks.answering, key)
 	if len(sticks.m) > 4096 {
 		for k, st := range sticks.m {
 			if now.Sub(st.at) > stickKeep {
@@ -1151,6 +1158,18 @@ func answeredStanding(key string, c candidate, turn int, u Usage, stoodIn bool) 
 	noteSticks()
 }
 
+// answeringBegin remembers that a conversation's answer in flight is
+// coming from c, its stream having begun to pass to the agent (#6330).
+// The last try that began passing names itself: a stream handed over to
+// the next candidate (refusal_handover) had said nothing of the answer
+// when it did — no call of its own went by — so a call in the reply
+// belongs to the try passing now, the one that sealed it.
+func answeringBegin(key string, c candidate) {
+	sticks.Lock()
+	sticks.answering[key] = stick{who: c.who(), at: time.Now()}
+	sticks.Unlock()
+}
+
 // unanswered forgets that c answered a conversation, when its reply to it
 // broke off (#733): the agent's retry goes by routing again, not back to
 // the one that just failed it. The account alone is enough: affine's
@@ -1158,10 +1177,11 @@ func answeredStanding(key string, c candidate, turn int, u Usage, stoodIn bool) 
 // has since left the group, so a stick that only matched by its model
 // would leave the next request kept on the account that just broke off.
 // opened ends a request's part in leastHeld's count of conversations being
-// opened, however it ended.
+// opened, and its answer in flight's, however it ended.
 func opened(key string) {
 	sticks.Lock()
 	delete(sticks.opening, key)
+	delete(sticks.answering, key)
 	sticks.Unlock()
 }
 

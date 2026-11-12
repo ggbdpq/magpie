@@ -2639,6 +2639,13 @@ type holdWriter struct {
 
 	first firstToken // when its first content and text came (#196)
 
+	// onPass, set by the gateway, is told when the try's reply has begun
+	// to pass to the agent (began): the try is then the source of the
+	// conversation's answer in flight, which a sealed subagent task's
+	// gate reads while nobody is remembered to have answered its lead
+	// yet (#6330)
+	onPass func()
+
 	// stop ends the try's request to the vendor: a stream whose error
 	// came before any content has failed, and one that kept its
 	// connection open after it — a 429 said as an event — kept the agent
@@ -2778,6 +2785,7 @@ func (h *holdWriter) pass() {
 	if h.alive != nil && h.alive.sent {
 		// the agent has the stream's headers already, from keepAlive
 		h.passing = true
+		h.began()
 		return
 	}
 	dst := h.w.Header()
@@ -2788,6 +2796,17 @@ func (h *holdWriter) pass() {
 	}
 	h.w.WriteHeader(h.status)
 	h.passing, h.wrote, h.atLine = true, time.Now(), true
+	h.began()
+}
+
+// began says the try's reply has begun to pass to the agent: who is
+// answering is known from here on (#6330), and the gateway's callback,
+// set, is told — it remembers the try as the answer in flight's source
+// while the reply comes.
+func (h *holdWriter) began() {
+	if h.onPass != nil {
+		h.onPass()
+	}
 }
 
 func (h *holdWriter) Write(b []byte) (int, error) {
@@ -3622,6 +3641,7 @@ func (h *holdWriter) release() {
 	}
 	if h.alive != nil && h.alive.sent && !h.stream {
 		h.passing = true
+		h.began()
 		switch {
 		case h.failure != 0:
 			// a 200 that is no reply of the protocol's (settle)

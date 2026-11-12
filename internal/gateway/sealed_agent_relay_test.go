@@ -1,12 +1,14 @@
 package gateway
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -163,6 +165,130 @@ func TestSealedReplyRefusedWhereTheLeadWasNotAnswered(t *testing.T) {
 	}
 	if n, m := len(relay.requests()), len(other.requests()); n != 1 || m != 0 {
 		t.Fatalf("third asked %d times, other %d", n, m)
+	}
+}
+
+// leadHold is a relay of the ChatGPT backend whose first request — the
+// lead's — is answered with one event and then held open, the way a lead's
+// reply is still coming while Codex hands its first subagent its task
+// (#6330). Later requests are answered whole, as relayOfChatGPT does.
+type leadHold struct {
+	asked   chan struct{} // closed when the lead's request reached the relay
+	release chan struct{} // closed to let the lead's reply end
+	once    sync.Once
+	mu      sync.Mutex
+	got     []string
+}
+
+func (f *leadHold) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	b, _ := io.ReadAll(r.Body)
+	f.mu.Lock()
+	f.got = append(f.got, string(b))
+	f.mu.Unlock()
+	first := false
+	f.once.Do(func() { first = true })
+	if first {
+		close(f.asked)
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	if !first {
+		io.WriteString(w, sse(`data: {"type":"response.output_text.delta","delta":"on it"}`,
+			`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}`))
+		return
+	}
+	io.WriteString(w, sse(`data: {"type":"response.output_text.delta","delta":"working"}`))
+	if fl, ok := w.(http.Flusher); ok {
+		fl.Flush()
+	}
+	<-f.release
+	io.WriteString(w, sse(`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}`))
+}
+
+func (f *leadHold) requests() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.got...)
+}
+
+// leadSeen is a lead turn's client: it says whether any of the reply's
+// content has come through magpie yet, the sync for a subagent sent while
+// its lead's answer is still coming (#6330).
+type leadSeen struct {
+	w   *httptest.ResponseRecorder
+	mu  sync.Mutex
+	got bytes.Buffer
+}
+
+func (l *leadSeen) Header() http.Header  { return l.w.Header() }
+func (l *leadSeen) WriteHeader(code int) { l.w.WriteHeader(code) }
+
+func (l *leadSeen) Write(b []byte) (int, error) {
+	n, err := l.w.Write(b)
+	l.mu.Lock()
+	l.got.Write(b)
+	l.mu.Unlock()
+	return n, err
+}
+
+// has says whether s has reached the lead's caller yet.
+func (l *leadSeen) has(s string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Contains(l.got.String(), s)
+}
+
+// #6330: Codex hands a subagent its task while its lead's reply is still
+// streaming — before any answerer is remembered anywhere (no stick yet:
+// the stick is written when the answer lands; no usage row yet: the row
+// is written then too). The relay answering the lead right now is the one
+// that sealed the task in the subagent's request, and the task goes back
+// to it, not refused with "magpie has no record of it answering the lead
+// in the last 30 days".
+func TestSealedTaskOpensWhereTheLeadIsBeingAnswered(t *testing.T) {
+	fresh(t)
+	hold := &leadHold{asked: make(chan struct{}), release: make(chan struct{})}
+	up := httptest.NewServer(hold)
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{ID: "s2a", Name: "S2A", Key: "sk-s2a", Models: []string{"gpt-6-astra"}, Responses: up.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	// the lead's first turn, its reply begun and held open by the relay
+	lw := &leadSeen{w: httptest.NewRecorder()}
+	let := sync.OnceFunc(func() { close(hold.release) })
+	defer let() // the relay's held reply ends even if the test fails first
+	leadDone := make(chan struct{})
+	go func() {
+		defer close(leadDone)
+		body := `{"model":"s2a/gpt-6-astra","stream":true,"tools":[{"type":"web_search","external_web_access":true}],"input":[` + leadAsk + `]}`
+		req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer chatgpt-token")
+		req.Header.Set("chatgpt-account-id", "acct-1")
+		req.Header.Set("session_id", "lead-1")
+		s.Handler().ServeHTTP(lw, req)
+	}()
+	<-hold.asked
+	// the reply has begun to pass: what Codex has in hand when it spawns
+	// its first subagent, the lead's stream still open
+	deadline := time.Now().Add(10 * time.Second)
+	for !lw.has("working") {
+		if time.Now().After(deadline) {
+			t.Fatal("the lead's reply never reached its caller")
+		}
+		time.Sleep(500 * time.Microsecond)
+	}
+	rec := codexSubTurn(s, "s2a/gpt-6-astra", "worker-1", "lead-1", sealedHandoff)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "on it") {
+		t.Fatalf("subagent while the lead's answer is out: %d %s", rec.Code, rec.Body.String())
+	}
+	let()
+	<-leadDone
+	if lw.w.Code != 200 {
+		t.Fatalf("lead: %d %s", lw.w.Code, lw.w.Body.String())
+	}
+	got := hold.requests()
+	if len(got) != 2 || !strings.Contains(got[1], `"encrypted_content":"gAAAAATest_ciphertext=="`) || !strings.Contains(got[1], `"agent_message"`) {
+		t.Fatalf("the relay was sent %d requests; the subagent's: %v", len(got), got[len(got)-1:])
 	}
 }
 

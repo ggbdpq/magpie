@@ -2244,6 +2244,15 @@ func unsaidOverflows(p provider.Provider, status int) bool {
 // a request that met one may well fit, and is asked again.
 var transportWords = lazyre.New(`(?i)dial (tcp|udp)|connectex|wsarecv|wsasend|i/o timeout|TLS handshake timeout|context deadline exceeded|Client\.Timeout|timeout awaiting response headers|connection (was )?(reset|refused|aborted|closed)|forcibly closed|broken pipe|unexpected EOF|no such host|network is unreachable|no route to host|server closed idle connection|Unable to connect|ConnectionRefused|ConnectionClosed|FailedToOpenSocket|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ECONNABORTED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|EPIPE`)
 
+// severedWords are a connection that came up and then dropped, in the words
+// the stack says it with: the request was underway and its read ended under
+// it — an unexpected EOF, a reset, a close, an abort, a broken pipe, or
+// magpie's own words for a reply severed mid-answer (#5252). A transport
+// failure that never connected at all, or one that timed out waiting, is
+// not here: those rest whatever status carried them, or a relay that
+// answers nothing would never be failed over from (yetone).
+var severedWords = lazyre.New(`(?i)unexpected EOF|connection lost mid-reply|connection (was )?(reset|aborted|closed)|forcibly closed|broken pipe|server closed idle connection|ConnectionClosed|ECONNRESET|ECONNABORTED|EPIPE`)
+
 // transportFailed says an error body is a transport failure rather than a
 // vendor's answer (transportWords), or one magpie made of a reply that
 // broke off or said nothing.

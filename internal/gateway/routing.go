@@ -1531,6 +1531,19 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// was, and is asked again once the network is back (offline.go)
 		return Rest{Why: failOffline, Status: status, By: "off", Until: now}
 	}
+	if severedWords.Match(wordsOf(body)) {
+		// a connection that came up and then dropped (severedWords), in
+		// the words the stack says it, whatever status carried it: a
+		// stream severed mid-reply ends under the 200 the vendor had
+		// already sent, as magpie's own words for it ("connection lost
+		// mid-reply (unexpected EOF)", #5252), and a read that failed ends
+		// a 502 with them. No vendor answer was read; the account is as
+		// good as it was, and the request is asked again. What never
+		// connected at all, or timed out waiting, is not here — those rest
+		// as they did, offlineFailure above taking the down network, the
+		// classifications below a relay that answers nothing
+		return Rest{Why: why, Status: status, By: "off", Until: now}
+	}
 	if regionRefused(status, wordsOf(body)) {
 		// the vendor refused where the request came from (regionWords):
 		// the network's doing, and the edge's the connection reached, not

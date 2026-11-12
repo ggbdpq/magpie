@@ -1430,7 +1430,11 @@ func probeSkills(input, name string) (*Probe, error) {
 			return nil, err
 		}
 		p.Kind, p.root, p.src = src.Kind, tmp, src
-		p.Candidates = candidates(tmp, "", srcFolder(src))
+		p.Candidates, err = wellKnownCandidates(tmp)
+		if err != nil {
+			os.RemoveAll(tmp)
+			return nil, err
+		}
 		keepProbe(input, p, tmp)
 	} else if src, ok := githubSource(input); ok || isGit(input) {
 		if !ok {

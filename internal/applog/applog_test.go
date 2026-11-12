@@ -82,6 +82,31 @@ func TestStartWritesTheLog(t *testing.T) {
 	}
 }
 
+// Quiet sends the standard logger to the log alone, for a command handing
+// the terminal to an interactive child (magpie claude run): what magpie
+// logs beside the session would overwrite the child's screen (#5923),
+// and restore brings stderr back afterwards.
+func TestQuiet(t *testing.T) {
+	before := log.Writer()
+	restore := Quiet()
+	if log.Writer() == before {
+		t.Fatal("the logger still wrote to the terminal beside the session")
+	}
+	log.Println("a line magpie logged beside the session")
+	restore()
+	if log.Writer() != before {
+		t.Fatalf("restore left the logger at %v, want it back where it was", log.Writer())
+	}
+	log.Println("a line after the session")
+	got := read(t, Path())
+	if !strings.Contains(got, "a line magpie logged beside the session") {
+		t.Errorf("the log has no line from beside the session:\n%s", got)
+	}
+	if strings.Contains(got, "a line after the session") {
+		t.Errorf("the log got a line written after restore:\n%s", got)
+	}
+}
+
 // The log goes to stderr as well, as before; a stderr that fails (the app
 // opened from Explorer has none) never keeps a line from the file.
 func TestStderrToo(t *testing.T) {

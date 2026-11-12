@@ -2,13 +2,17 @@ package cli
 
 import (
 	"errors"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/applog"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
@@ -103,5 +107,80 @@ func TestClaudeRun(t *testing.T) {
 	claudeFind = func() string { return "" }
 	if _, err := runOut(t, "claude", "run"); err == nil {
 		t.Fatal("no error without Claude Code")
+	}
+}
+
+// The terminal is claude's for a claude-magpie session: what magpie logs
+// beside it — an account's models asked again, the shape of the report's
+// lines (#5923) — goes to magpie's log, not to that screen, and the
+// logger is back on stderr once the session is done. What the launcher
+// itself has to say (the gateway down) is still on the terminal.
+func TestClaudeRunLogsBesideTheSessionGoToTheLog(t *testing.T) {
+	home := helpHome(t)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Anthropic: "https://example.test", Key: "k",
+		Models: []string{"claude-opus-4-6"}}); err != nil {
+		t.Fatal(err)
+	}
+	oldExec, oldFind, oldUp, oldStart, oldGo := claudeRunExec, claudeFind, claudeGatewayUp, startUp, claudeLetGo
+	t.Cleanup(func() {
+		claudeRunExec, claudeFind, claudeGatewayUp, startUp, claudeLetGo = oldExec, oldFind, oldUp, oldStart, oldGo
+	})
+	claudeFind = func() string { return filepath.Join(home, "bin", "claude") }
+	claudeGatewayUp = func() bool { return false } // the launcher has a word for the user
+	startUp = func() {}
+	claudeLetGo = func() {}
+
+	before := log.Writer()
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldErr := os.Stderr
+	os.Stderr = errW
+	t.Cleanup(func() { os.Stderr = oldErr })
+
+	// the session: claude is on its screen while this runs
+	inSession := make(chan io.Writer, 1)
+	resume := make(chan struct{})
+	claudeRunExec = func(b string, a, _ []string) error {
+		log.Printf("antigravity someone@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com: 20 models, 13 kept")
+		inSession <- log.Writer()
+		<-resume
+		return nil
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := runOut(t, "claude", "run")
+		done <- err
+	}()
+	var beside io.Writer
+	select {
+	case beside = <-inSession:
+	case <-time.After(20 * time.Second):
+		t.Fatal("claude never started")
+	}
+	if beside == before {
+		t.Error("the logger still wrote to the terminal beside claude's session")
+	}
+	logged, err := os.ReadFile(applog.Path())
+	if err != nil {
+		t.Fatalf("reading magpie's log: %v", err)
+	}
+	if !strings.Contains(string(logged), "fetchAvailableModels") {
+		t.Errorf("magpie's log has no line from beside the session:\n%s", logged)
+	}
+	close(resume) // the session is over
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	errW.Close()
+	said, _ := io.ReadAll(errR)
+	if !strings.Contains(string(said), "the gateway isn't running") {
+		t.Errorf("the launcher's word for a gateway down isn't on the terminal:\n%s", said)
+	}
+	if log.Writer() != before {
+		t.Fatalf("the logger is at %v, want it back where it was", log.Writer())
 	}
 }

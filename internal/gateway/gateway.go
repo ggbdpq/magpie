@@ -6611,6 +6611,11 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			body = mistralThinking(body)
 			body = mistralImageLimit(body)
 		}
+		// what an upstream has turned a field of this request away for is
+		// not sent again, on the relayed one too (#6327: Mistral's strict
+		// body and a top-level reasoning object a client that names its
+		// effort twice keeps sending)
+		body = s.withoutRefused(p.ID, proto, body)
 		if isKimi(p, proto) {
 			// another vendor's reasoning_details (MiMo's, with a stream's
 			// index in each entry), which Kimi turns away in any shape:
@@ -8694,7 +8699,7 @@ const tierField = "service_tier"
 // vendor, Kimi's and Qwen's thinking switches) take that a request does
 // without: an upstream that refuses one by name is asked again without it.
 var optionalFields = []string{"store", "metadata", tierField, cacheKeyField, "prompt_cache_retention",
-	"prompt_cache_options", "safety_identifier", "stream_options", "parallel_tool_calls", "verbosity", "thinking", "enable_thinking"}
+	"prompt_cache_options", "safety_identifier", "stream_options", "parallel_tool_calls", "verbosity", "thinking", "enable_thinking", "reasoning"}
 
 // refusedOptional lists optional fields an upstream explicitly rejects as
 // unsupported. An invalid value must reach the client without dropping the

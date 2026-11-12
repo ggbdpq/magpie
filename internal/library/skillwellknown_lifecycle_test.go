@@ -107,7 +107,7 @@ func TestWellKnownHTMLTemplateIsInstalled(t *testing.T) {
 	sandbox(t)
 	const template = "<!doctype html><title>Product page</title><main>Welcome</main>"
 	base, _ := websiteFixture(t, map[string]string{
-		"/.well-known/skills/index.json": `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md","templates/page.html"]}]}`,
+		"/.well-known/skills/index.json":                   `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md","templates/page.html"]}]}`,
 		"/.well-known/skills/ui-taste/SKILL.md":            websiteSkill,
 		"/.well-known/skills/ui-taste/templates/page.html": template,
 	})

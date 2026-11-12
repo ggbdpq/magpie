@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -225,5 +226,39 @@ func waitFor(t *testing.T, ok func() bool, what string) {
 			t.Fatalf("waited 10s for %s", what)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A request's client trace rides with it on a kept connection too: the
+// pool handing a kept connection out is where the built-in pool says
+// GetConn (its getConnCalled flag), and the gateway's netTrace reads a
+// request's way out — own, asks, first, the usage split riding the same
+// hooks — from GetConn above all (#6310: since the calmed pool, every
+// request that rode a kept HTTP/2 connection wrote no tries[].net, and
+// the Routing page's time said Masking alone).
+func TestCalmedPoolHandsAKeptConnectionOutWithGetConn(t *testing.T) {
+	srv, open := slowH2(t, 0)
+	tr := calmTransport(t)
+	url := "https://" + srv.Listener.Addr().String() + "/turn"
+	var dials, kept atomic.Int32
+	trace := func(n *atomic.Int32) context.Context {
+		return httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
+			GetConn: func(string) { n.Add(1) },
+		})
+	}
+	if _, err := calmAsk(tr, trace(&dials), url); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := calmAsk(tr, trace(&kept), url); err != nil {
+		t.Fatal(err)
+	}
+	if got := open.Load(); got != 1 {
+		t.Fatalf("%d connections open after two turns; want the second on the first's", got)
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("the dialed request said GetConn %d times; want once, net/http's own", got)
+	}
+	if got := kept.Load(); got == 0 {
+		t.Fatalf("the request on the kept connection said GetConn %d times (the dial's: %d); want it said for the kept one too", kept.Load(), dials.Load())
 	}
 }

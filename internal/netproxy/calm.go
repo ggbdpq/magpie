@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"sync"
 	"time"
 
@@ -131,6 +132,11 @@ type calmPool struct {
 type calmConn struct {
 	cc *http2.ClientConn
 	w  *watchedConn
+	// getConnCalled: net/http dialed this connection itself, and said the
+	// request's client trace's GetConn on the way — the first request on
+	// it must not hear GetConn twice (the built-in pool's own word for
+	// this, getConnCalled)
+	getConnCalled bool
 }
 
 func (p *calmPool) add(authority string, c *tls.Conn) error {
@@ -142,7 +148,7 @@ func (p *calmPool) add(authority string, c *tls.Conn) error {
 		return err
 	}
 	p.mu.Lock()
-	p.conns[authority] = append(p.conns[authority], &calmConn{cc: cc, w: w})
+	p.conns[authority] = append(p.conns[authority], &calmConn{cc: cc, w: w, getConnCalled: true})
 	p.mu.Unlock()
 	go watch(cc, w, PingAfter, PingWait, PingAgain)
 	return nil
@@ -166,6 +172,18 @@ func (p *calmPool) GetClientConn(req *http.Request, addr string) (*http2.ClientC
 	if got == nil {
 		return nil, http2.ErrNoCachedConn
 	}
+	// a request handed a kept connection hears GetConn, as one whose
+	// connection is dialed does from net/http: the trace's later times
+	// (gotConn, wrote, the vendor's first byte) hang off it, and a
+	// client tracing its way out — the gateway's netTrace, whose
+	// tries[].net the Routing page's time reads — heard nothing of a
+	// request that rode a kept connection without it (#6310)
+	if !got.getConnCalled {
+		if t := httptrace.ContextClientTrace(req.Context()); t != nil && t.GetConn != nil {
+			t.GetConn(addr)
+		}
+	}
+	got.getConnCalled = false
 	got.w.asked()
 	return got.cc, nil
 }

@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/filelock"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/lazyre"
@@ -72,6 +73,17 @@ type List struct {
 }
 
 var listMu sync.Mutex
+
+// listFileMu is held through every read a change is made from and its
+// write of plugins.json (the mutators below): the gateway that runs all
+// day and a magpie run from a terminal (`magpie plugin options …`, the
+// plugin manager) are separate processes, and listMu never saw the other
+// one, so the later whole-list write went out with what the other had
+// saved since its read (#4666). Under it every change reads the file
+// afresh, so both changes stand. A lock another magpie holds is waited
+// for up to filelock.Wait, then gone on without, as before there was
+// one; the same shape as mcpauth's fileMu.
+var listFileMu = filelock.Mutex{Path: func() string { return listPath() + ".lock" }}
 
 // bunMu is held through each bun command that changes plugins/ (add,
 // update, remove). Two at once read package.json and bun.lock before
@@ -461,8 +473,10 @@ func add(ctx context.Context, spec, version string) (Entry, error) {
 	if err := ensurePi(ctx, Target(spec)); err != nil {
 		return Entry{}, err
 	}
+	listFileMu.Lock()
 	listMu.Lock()
 	defer listMu.Unlock()
+	defer listFileMu.Unlock()
 	l := Load()
 	e := Entry{Spec: spec}
 	name := Name(spec)
@@ -606,11 +620,13 @@ func indexOf(l List, name string) int {
 
 // Remove takes a plugin off the list (and out of plugins/).
 func Remove(ctx context.Context, name string) error {
+	listFileMu.Lock()
 	listMu.Lock()
 	l := Load()
 	i := indexOf(l, name)
 	if i < 0 {
 		listMu.Unlock()
+		listFileMu.Unlock()
 		return fmt.Errorf("no plugin %q", name)
 	}
 	e := l.Plugins[i]
@@ -618,6 +634,7 @@ func Remove(ctx context.Context, name string) error {
 	maps.DeleteFunc(l.Prefer, func(_, s string) bool { return s == e.Spec })
 	err := save(l)
 	listMu.Unlock()
+	listFileMu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -632,8 +649,10 @@ func Remove(ctx context.Context, name string) error {
 
 // SetOff turns a plugin off or back on.
 func SetOff(name string, off bool) error {
+	listFileMu.Lock()
 	listMu.Lock()
 	defer listMu.Unlock()
+	defer listFileMu.Unlock()
 	l := Load()
 	i := indexOf(l, name)
 	if i < 0 {
@@ -653,8 +672,10 @@ func SetOff(name string, off bool) error {
 // with it; one switched off leaves the id to the others until it is on
 // again.
 func Prefer(name, id string) error {
+	listFileMu.Lock()
 	listMu.Lock()
 	defer listMu.Unlock()
+	defer listFileMu.Unlock()
 	l := Load()
 	i := indexOf(l, name)
 	if i < 0 {
@@ -677,8 +698,10 @@ func Prefer(name, id string) error {
 // SetOptions sets the options a plugin is handed (a middleware's
 // ctx.options); nil takes them away.
 func SetOptions(name string, opts map[string]any) error {
+	listFileMu.Lock()
 	listMu.Lock()
 	defer listMu.Unlock()
+	defer listFileMu.Unlock()
 	l := Load()
 	i := indexOf(l, name)
 	if i < 0 {

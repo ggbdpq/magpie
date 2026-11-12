@@ -6576,6 +6576,11 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		// a content of text parts, which a vendor's server that takes a
 		// string alone turns the whole request away for (Atria on Discord)
 		body = textPartsAsString(body)
+		// a file part of a video, which the Chat APIs that take a video
+		// read as the video_url the build gives one (#6135); relayed as it
+		// came, the vendor read the file block as a document — Qwen
+		// answered an MP4 with "does not support PDF file input" (#6210)
+		body = chatVideoFileAsURL(body)
 		// a turn the client cut off before it said anything, which
 		// DeepSeek and Kimi turn every later request away for (#2599)
 		body = silentAssistantsOut(body)

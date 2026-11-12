@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/tidwall/gjson"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -128,6 +129,81 @@ func unportableVideo(to provider.Protocol, r *Request) string {
 // that take video read (DashScope's Qwen, Kimi, Zhipu, OpenRouter, vLLM).
 func chatVideo(p Part) map[string]any {
 	return map[string]any{"type": "video_url", "video_url": map[string]any{"url": dataURL(p)}}
+}
+
+// chatVideoFileAsURL turns a Chat request relayed as the client sent it a
+// file part of a video into the video_url part the Chat APIs that take a
+// video read (DashScope's Qwen, Kimi, Zhipu, OpenRouter, vLLM). The build
+// gives a video a video_url on Chat (#6135); a relayed one kept the file
+// block, and the vendor read it as a document — Qwen answered an MP4 with
+// "The current model does not support PDF file input" (#6210).
+//
+// Only a file part whose file_data names a video becomes one, by the data:
+// URL's type, else by the filename's extension, as the parse reads the
+// part (videoFileType). A file of another type, or one held by its OpenAI
+// file id, stays as it came. Every other byte of the body stays as sent,
+// and a body with no file part comes back as it was.
+func chatVideoFileAsURL(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"file_data"`)) {
+		return body
+	}
+	msgs := gjson.GetBytes(body, "messages")
+	if !msgs.IsArray() {
+		return body
+	}
+	type edit struct {
+		at, n int
+		s     []byte
+	}
+	var edits []edit
+	msgs.ForEach(func(_, m gjson.Result) bool {
+		if !m.IsObject() {
+			return true
+		}
+		c := m.Get("content")
+		if !c.IsArray() || c.Index <= 0 || c.Index+len(c.Raw) > len(body) || string(body[c.Index:c.Index+len(c.Raw)]) != c.Raw {
+			return true
+		}
+		c.ForEach(func(_, p gjson.Result) bool {
+			if p.Get("type").Str != "file" || p.Index <= 0 || p.Index+len(p.Raw) > len(body) || string(body[p.Index:p.Index+len(p.Raw)]) != p.Raw {
+				return true
+			}
+			f := p.Get("file")
+			data := f.Get("file_data").Str
+			if data == "" {
+				return true
+			}
+			name := f.Get("filename").Str
+			mt := videoFileType(data, name)
+			if mt == "" {
+				return true
+			}
+			url := data
+			if !strings.HasPrefix(data, "data:") && !strings.Contains(data, "://") {
+				// bare base64, as some clients send it: named as the parse
+				// names it (chatFile's cmp.Or of the type from the name)
+				url = "data:" + mt + ";base64," + data
+			}
+			s, err := marshalPlain(map[string]any{"type": "video_url", "video_url": map[string]any{"url": url}})
+			if err != nil {
+				return true
+			}
+			edits = append(edits, edit{p.Index, len(p.Raw), s})
+			return true
+		})
+		return true
+	})
+	if len(edits) == 0 {
+		return body
+	}
+	out := make([]byte, 0, len(body))
+	last := 0
+	for _, e := range edits {
+		out = append(out, body[last:e.at]...)
+		out = append(out, e.s...)
+		last = e.at + e.n
+	}
+	return append(out, body[last:]...)
 }
 
 // videoBlock is a video as a Messages video block, the image block's shape

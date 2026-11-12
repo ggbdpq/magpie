@@ -293,3 +293,77 @@ func TestGroupVideoGoesToMembersThatTakeIt(t *testing.T) {
 		t.Errorf("group with no member that takes video: %d %s; upstream %v", rec.Code, rec.Body.String(), bodies)
 	}
 }
+
+// A Chat file of a video (#6210: the reporter's `file.file_data` data:
+// video/mp4 URI) relayed as the client sent it reaches a Chat upstream
+// that reads video_url as the file block it is — Qwen answered the MP4
+// with "The current model does not support PDF file input". It goes as
+// the video_url the build gives a video on Chat (#6135); a file of
+// another type, or one held by its OpenAI file id, stays as it came.
+func TestChatVideoFileGoesAsVideoURL(t *testing.T) {
+	fresh(t)
+	noVision(t)
+	up, upServer := videoUp(t)
+	p := provider.Provider{ID: "qv", Name: "QV", Chat: upServer.URL + "/v1", Key: "k", Models: []string{"v"}}
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive(p.ID, upServer.URL, []catalog.Model{
+		{ID: "v", Images: true, ImageInput: imageInputBool(true), InputModalities: videoKinds, OutputModalities: []string{"text"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+
+	rec := serveVideo(s, "/v1/chat/completions", `{"model":"qv/v","max_tokens":64,"messages":[{"role":"user","content":[`+
+		`{"type":"file","file":{"filename":"sample.mp4","file_data":"data:video/mp4;base64,`+videoData+`"}},`+
+		`{"type":"text","text":"Analyze this video."}]}]}`)
+	bodies, _ := up.sent()
+	if rec.Code != 200 || len(bodies) != 1 || !strings.Contains(bodies[0], `"video_url"`) || !strings.Contains(bodies[0], videoData) ||
+		strings.Contains(bodies[0], "file_data") {
+		t.Errorf("a Chat file of a video relayed: %d %q", rec.Code, bodies)
+	}
+
+	up.reset()
+	rec = serveVideo(s, "/v1/chat/completions", `{"model":"qv/v","max_tokens":64,"messages":[{"role":"user","content":[`+
+		`{"type":"file","file":{"filename":"notes.pdf","file_data":"data:application/pdf;base64,AAAA"}},`+
+		`{"type":"file","file":{"file_id":"file-1"}},`+
+		`{"type":"text","text":"Read these."}]}]}`)
+	bodies, _ = up.sent()
+	if rec.Code != 200 || len(bodies) != 1 || strings.Contains(bodies[0], "video_url") ||
+		!strings.Contains(bodies[0], "data:application/pdf") || !strings.Contains(bodies[0], `"file_id":"file-1"`) {
+		t.Errorf("a PDF file and one by id relayed: %d %q", rec.Code, bodies)
+	}
+}
+
+// The same file of a video through a routing group: the member whose list
+// takes video is the one asked, and it is asked with the video_url, not
+// the file block the vendor reads as a document (#6210).
+func TestGroupChatVideoFileGoesAsVideoURL(t *testing.T) {
+	fresh(t)
+	noVision(t)
+	up, upServer := videoUp(t)
+	p := provider.Provider{ID: "qg", Name: "QG", Chat: upServer.URL + "/v1", Key: "k", Models: []string{"v", "t"}}
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive(p.ID, upServer.URL, []catalog.Model{
+		{ID: "v", Images: true, ImageInput: imageInputBool(true), InputModalities: videoKinds, OutputModalities: []string{"text"}},
+		{ID: "t", Images: true, ImageInput: imageInputBool(true), InputModalities: []string{"text", "image"}, OutputModalities: []string{"text"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SaveGroup(provider.Group{Name: "vf", Members: []string{"qg/t", "qg/v"}, Routing: provider.Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+
+	rec := serveVideo(s, "/v1/chat/completions", `{"model":"group/vf","max_tokens":64,"messages":[{"role":"user","content":[`+
+		`{"type":"file","file":{"filename":"sample.mp4","file_data":"data:video/mp4;base64,`+videoData+`"}},`+
+		`{"type":"text","text":"Analyze this video."}]}]}`)
+	bodies, models := up.sent()
+	if rec.Code != 200 || len(bodies) != 1 || len(models) != 1 || models[0] != "v" ||
+		!strings.Contains(bodies[0], `"video_url"`) || strings.Contains(bodies[0], "file_data") {
+		t.Errorf("group file-of-video: %d bodies=%v models=%v", rec.Code, bodies, models)
+	}
+}

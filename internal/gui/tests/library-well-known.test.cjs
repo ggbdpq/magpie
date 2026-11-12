@@ -16,17 +16,21 @@ const library = () => ({
   skills: [{ name: "ui-taste", description: "UI taste", kind: "well-known", source, repo: "uizze.sh", agents: [] }],
 });
 
-function serve(lang, posts) {
+function serve(lang, posts, data = library(), opened = []) {
   return async (route) => {
     const req = route.request(), url = new URL(req.url());
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
     if (url.pathname === "/api/state") return route.fulfill({ json: { agents: [], profiles: [], settings: { lang } } });
     if (url.pathname === "/api/plugins") return route.fulfill({ json: { plugins: [] } });
-    if (url.pathname === "/api/library") return route.fulfill({ json: library() });
+    if (url.pathname === "/api/library") return route.fulfill({ json: data });
+    if (url.pathname === "/api/open") {
+      opened.push(req.postDataJSON().url);
+      return route.fulfill({ json: {} });
+    }
     if (url.pathname === "/api/library/skills/update") {
       posts.push(req.postDataJSON());
-      return route.fulfill({ json: { ...library(), result: { updated: ["ui-taste"], changed: [], problems: [] } } });
+      return route.fulfill({ json: { ...data, result: { updated: ["ui-taste"], changed: [], problems: [] } } });
     }
     if (url.pathname === "/api/usage/quotas") return route.fulfill({ json: [] });
     if (url.pathname === "/api/groups") return route.fulfill({ json: { groups: [] } });
@@ -72,5 +76,32 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         });
       }
     }
+  });
+
+  test(`${engine}: website groups preserve HTTP origins and ports`, async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    t.after(() => browser.close());
+    const context = await browser.newContext({ viewport: { width: 980, height: 800 } });
+    t.after(() => context.close());
+    await context.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "skills"); } catch {} });
+    const origins = ["http://localhost:8080/kit", "http://example.com:8080/kit", "http://example.com:8081/kit", "https://example.com:8443/Kit"];
+    const data = library(), opened = [];
+    data.skills = origins.map((address, i) => ({ name: `website-${i}`, description: "Website skill", kind: "well-known", source: address, repo: address, agents: [] }));
+    const page = await context.newPage();
+    page.setDefaultTimeout(5000);
+    await page.route("**/*", serve("en", [], data, opened));
+    await page.goto("http://magpie.test/");
+    await page.locator('button[data-view="library"]').click();
+    const groups = page.locator("#view-library .lib-group");
+    await groups.first().waitFor();
+    assert.equal(await groups.count(), origins.length, "different origins must remain different groups");
+    for (const address of origins) {
+      const group = groups.filter({ has: page.getByText(address, { exact: true }) });
+      await Promise.all([
+        page.waitForResponse((response) => new URL(response.url()).pathname === "/api/open"),
+        group.locator(".lib-grouphead .lib-rowacts > button.lib-icon").click(),
+      ]);
+    }
+    assert.deepEqual(opened, origins, "opening a website group must preserve its scheme, host, port and path");
   });
 }

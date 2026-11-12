@@ -531,11 +531,23 @@ func Put(b *Bundle) (*Result, error) {
 			// this one has found itself (Group again) for the same skill,
 			// which a bundle from before From was carried says nothing of
 			n.From = s.From
-			if cur := l.skill(s.Name); cur != nil && sameSource(cur.Source, s.Source) {
+			cur := l.skill(s.Name)
+			if cur != nil && sameSource(cur.Source, s.Source) {
 				if n.From == "" {
 					n.From = cur.From
 				}
 				n.Gone = cur.Gone // kept on this computer only
+			}
+			// a bundle that says nothing of where a skill came from — one
+			// from a computer that never grouped it — doesn't unbind what
+			// this computer found itself (noteFrom's Source, #6319): the
+			// finding stays until a bundle names a source of its own, as
+			// an ungroup here clears it
+			if cur != nil && s.Source == nil && cur.Source != nil {
+				n.Source = cur.Source
+				if n.From == "" {
+					n.From = cur.From
+				}
 			}
 			skills = append(skills, n)
 			if keep[s.Name] {

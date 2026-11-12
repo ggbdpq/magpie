@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -124,4 +125,92 @@ func TestRegroupAfterOldSync(t *testing.T) {
 	if r := repoIn(t)["b"]; r != "someone/pack" {
 		t.Errorf("b after a sync: %q", r)
 	}
+}
+
+// The maintainer's repro (#6319): without a file of its own in b's bundle,
+// the regroup binds b to the pack's repository (noteFrom sets the Source),
+// and the next sync of the same bundle — from a computer that never
+// grouped it, so it says nothing of where b came from — must not unbind
+// what this computer found.
+func TestRegroupStaysAfterASyncThatKnowsNothing(t *testing.T) {
+	h := sandbox(t)
+	pack := map[string]string{
+		"skills/a/SKILL.md": "---\nname: a\ndescription: A\n---\nA\n",
+		"skills/b/SKILL.md": "---\nname: b\ndescription: B\n---\nB\n",
+	}
+	tar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.TrimPrefix(r.URL.Path, "/tar/") != "someone/pack" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(tarball(t, pack))
+	}))
+	t.Cleanup(tar.Close)
+	oldT := tarballURL
+	tarballURL = func(repo, ref string) string { return tar.URL + "/tar/" + repo }
+	t.Cleanup(func() { tarballURL = oldT })
+
+	write(t, filepath.Join(h, "x/a/SKILL.md"), pack["skills/a/SKILL.md"])
+	write(t, filepath.Join(h, "x/b/SKILL.md"), pack["skills/b/SKILL.md"])
+	b := &Bundle{Skills: []*CarriedSkill{
+		{Name: "a", Source: &Source{Kind: "github", Repo: "someone/pack", Path: "skills/a"}, Agents: []string{}, Files: map[string][]byte{"SKILL.md": []byte(pack["skills/a/SKILL.md"])}},
+		{Name: "b", Agents: []string{}, Files: map[string][]byte{"SKILL.md": []byte(pack["skills/b/SKILL.md"])}}, // no extra file
+	}}
+	ok(t)(Put(b))
+	if r := repoIn(t)["b"]; r != "" {
+		t.Fatalf("b before: %q", r)
+	}
+	if n, err := RegroupSkills(); err != nil || n != 1 {
+		t.Fatalf("regroup: %d %v", n, err)
+	}
+	if r := repoIn(t)["b"]; r != "someone/pack" {
+		t.Errorf("b after: %q", r)
+	}
+	// and the next sync of the same old bundle doesn't undo it
+	raw, _ := os.ReadFile(path())
+	t.Logf("RAW BEFORE 2ND PUT: %s", raw)
+	ok(t)(Put(b))
+	if r := repoIn(t)["b"]; r != "someone/pack" {
+		t.Errorf("b after a sync: %q", r)
+	}
+}
+
+func TestRepro6319Probe(t *testing.T) {
+	h := sandbox(t)
+	pack := map[string]string{
+		"skills/a/SKILL.md": "---\nname: a\ndescription: A\n---\nA\n",
+		"skills/b/SKILL.md": "---\nname: b\ndescription: B\n---\nB\n",
+	}
+	tar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.TrimPrefix(r.URL.Path, "/tar/") != "someone/pack" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(tarball(t, pack))
+	}))
+	t.Cleanup(tar.Close)
+	oldT := tarballURL
+	tarballURL = func(repo, ref string) string { return tar.URL + "/tar/" + repo }
+	t.Cleanup(func() { tarballURL = oldT })
+	write(t, filepath.Join(h, "x/a/SKILL.md"), pack["skills/a/SKILL.md"])
+	write(t, filepath.Join(h, "x/b/SKILL.md"), pack["skills/b/SKILL.md"])
+	b := &Bundle{Skills: []*CarriedSkill{
+		{Name: "a", Source: &Source{Kind: "github", Repo: "someone/pack", Path: "skills/a"}, Agents: []string{}, Files: map[string][]byte{"SKILL.md": []byte(pack["skills/a/SKILL.md"])}},
+		{Name: "b", Agents: []string{}, Files: map[string][]byte{"SKILL.md": []byte(pack["skills/b/SKILL.md"])}},
+	}}
+	ok(t)(Put(b))
+	if n, err := RegroupSkills(); err != nil || n != 1 {
+		t.Fatalf("regroup: %d %v", n, err)
+	}
+	l, _ := Read(nil)
+	for _, s := range l.Skills {
+		t.Logf("before 2nd Put: %s Repo=%q", s.Name, s.Repo)
+	}
+	ok(t)(Put(b))
+	l2, _ := Read(nil)
+	for _, s := range l2.Skills {
+		t.Logf("after 2nd Put:  %s Repo=%q", s.Name, s.Repo)
+	}
+	raw, _ := os.ReadFile(path())
+	t.Logf("raw: %s", raw)
 }

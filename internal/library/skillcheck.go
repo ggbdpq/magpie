@@ -377,6 +377,8 @@ func CheckSkills() ([]SkillCheck, error) {
 				var sha, hash string
 				if s.Source.Kind == "git" {
 					c, sha, hash = checkGitSkill(s, f, heads)
+				} else if s.Source.Kind == "well-known" {
+					c = checkWellKnownSkill(s, f)
 				} else {
 					c, sha, hash = checkSkill(s, f, asked, &limited)
 				}

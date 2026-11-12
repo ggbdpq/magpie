@@ -90,7 +90,7 @@ func (e *EditedError) Error() string {
 // editedError is the refusal of an update of s, naming where it came from.
 func editedError(s *Skill) *EditedError {
 	e := &EditedError{Name: s.Name}
-	if s.Source != nil && s.Source.Kind == "git" {
+	if s.Source != nil && (s.Source.Kind == "git" || s.Source.Kind == "well-known") {
 		e.From = s.Source.Repo
 	}
 	return e

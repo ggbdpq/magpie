@@ -71,12 +71,16 @@ func upstreamOf(b []byte) string {
 // what the upstream said of it — a relay's "end_turn" after a few words,
 // or nothing at all (蓝猫 on Discord). "" when this one says none.
 func upstreamStop(b []byte) string {
-	if !bodyHas(b, `stop_reason"`) && !bodyHas(b, `finish_reason"`) && !bodyHas(b, `"response.`) {
+	if !bodyHas(b, `stop_reason"`) && !bodyHas(b, `finish_reason"`) && !bodyHas(b, `"response.`) && !bodyHas(b, `"finishReason"`) {
 		return ""
 	}
+	type geminiFinish struct {
+		Reason string `json:"finishReason"`
+	}
 	var v struct {
-		Type       string `json:"type"`
-		StopReason string `json:"stop_reason"`
+		Candidates []geminiFinish `json:"candidates"`
+		Type       string         `json:"type"`
+		StopReason string         `json:"stop_reason"`
 		Delta      struct {
 			StopReason string `json:"stop_reason"`
 		} `json:"delta"`
@@ -84,7 +88,8 @@ func upstreamStop(b []byte) string {
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Response struct {
-			Status            string `json:"status"`
+			Candidates        []geminiFinish `json:"candidates"`
+			Status            string         `json:"status"`
 			IncompleteDetails *struct {
 				Reason string `json:"reason"`
 			} `json:"incomplete_details"`
@@ -107,6 +112,11 @@ func upstreamStop(b []byte) string {
 	for _, c := range v.Choices {
 		if c.FinishReason != "" {
 			return c.FinishReason
+		}
+	}
+	for _, c := range append(v.Candidates, v.Response.Candidates...) {
+		if c.Reason != "" {
+			return c.Reason
 		}
 	}
 	return ""

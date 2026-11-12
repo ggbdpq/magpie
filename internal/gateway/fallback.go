@@ -2037,6 +2037,9 @@ func elsewhereWeighed(left []candidate, w []Weighed, c candidate) ([]candidate, 
 // that failed this way: the vendor was busy, out of quota or failing, or
 // this key or provider can't serve it — not the request itself at fault.
 func retryable(status int, body []byte) bool {
+	if geminiCallFailureTextOnly(string(wordsOf(body))) {
+		return false
+	}
 	raw := body
 	// the words are matched decoded, too (#1669)
 	body = wordsOf(body)
@@ -4743,6 +4746,9 @@ func magpieSaid(msg string) bool {
 // streamStatus is the status an error in a stream stands for, as a vendor
 // would have answered it before streaming.
 func streamStatus(msg string) int {
+	if geminiCallFailureTextOnly(msg) {
+		return http.StatusBadRequest
+	}
 	l := strings.ToLower(msg)
 	switch {
 	case tooLong(http.StatusBadRequest, msg):

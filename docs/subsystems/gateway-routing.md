@@ -3149,6 +3149,61 @@ classifier) get none. `TestModelSystemAfterTheAgentsPrompt`,
 `TestModelSystemReachesAPluginsModel` in
 [`model_system_test.go`](../../internal/gateway/model_system_test.go).
 
+## Deferred tools on Gemini
+
+An Anthropic client using tool search signals deferred tools even before one is
+loaded (`Request.DeferredTools`, including `DeferredToolPlaceholder`). Gemini
+translations keep one fixed `magpie_deferred_tool` declaration alongside the
+ordinary tools (`geminiDeferredRequest`). A loaded tool's definition is appended
+to the tool result that names it (`Part.Loads`), not to the top-level declarations.
+Thus successive loads preserve the previous request prefix. No system prompt or
+old user instruction is rewritten to advertise new tools.
+
+The decoder checks a bridge call's name against the current request's declared,
+loaded tools before returning the original tool name and arguments. The
+arguments are not checked against the tool's schema: like a native call's, they
+go to the client as written, so a mismatch comes back to the model as the
+client's tool error and it can call again, instead of ending the turn
+(`TestGeminiDeferredLeavesArgumentsToTheClient`). The call ID marks
+that it came through the bridge; replay reconstructs the bridge call and its
+result while retaining the thought signature. IDs, images and tool-error results
+otherwise follow the existing Gemini translation. Only request-local maps are
+used. A forced deferred tool keeps its name constraint; a collision with the
+bridge's reserved name is refused.
+
+Calls made natively before bridge activation stay native. When compaction removes
+a tool's load record, its existing declaration is retained natively, so the tool
+remains callable; the compacted prompt already has a new prefix. Ordinary clients,
+other wire protocols and Claude models served through Gemini retain their
+existing behavior. Genuine schema changes or removed tools can still invalidate
+cache; this is not a cache-hit guarantee. The Gemini API, Vertex and Code Assist
+translation paths share this behavior. `TestGeminiDeferredPrefix`,
+`TestGeminiDeferredDecodeAndSignature` and the related compatibility/validation
+tests cover these contracts.
+
+## Failed Gemini tool generation
+
+Gemini can end a successful HTTP stream with `MALFORMED_FUNCTION_CALL` or
+`UNEXPECTED_TOOL_CALL` after generating progress text. These are failed tool
+generations, not successful stops. `codeAssistDecoder` emits an error carrying
+the finish reason and retains the reported usage; it does not forward calls
+from the rejected candidate. Translated streaming clients receive a non-retryable `invalid_request_error`
+rather than a normal completion; non-streaming clients receive HTTP 400 even
+when progress text preceded it. This generation failure neither rests an account
+nor retries the same request on another account. The original finish reason is
+kept in the request ledger. Only a bounded tool name is extracted from Google's
+`finishMessage`: the raw rejected arguments and text-call markers are never
+included in the error. With no preceding content, Anthropic streams first
+show a clearly labelled gateway diagnostic and then the error: Claude Code would
+otherwise resend the empty failed stream as a non-streaming compatibility probe.
+No successful stop or synthetic tool call is generated. Content after failure is
+ignored while trailing usage is still counted. Ordinary `STOP`, tool
+calls, output limits and safety refusals retain their existing behavior.
+`TestGeminiFailedToolDecoder` and `TestGeminiFailedToolToAnthropic` exercise
+both the decoder and the Claude Code-facing path. This reports the failure;
+it neither repairs the model's generated arguments nor executes or replays
+those tools.
+
 ## Verification
 
 ```sh

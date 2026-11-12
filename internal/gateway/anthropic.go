@@ -275,6 +275,7 @@ func readAdvised(body []byte, clientMarks, facts, advised bool) (*Request, error
 		r.Messages = append(r.Messages, msg)
 	}
 	for _, t := range a.Tools {
+		r.DeferredTools = r.DeferredTools || t.DeferLoading
 		if t.Type != "" && t.Type != "custom" && len(t.InputSchema) == 0 {
 			// server-side tools mean nothing elsewhere; web search is
 			// noted for those that can search by themselves
@@ -1835,8 +1836,17 @@ func (e *anthropicEncoder) event(ev Event) {
 		e.w.event("content_block_stop", map[string]any{"type": "content_block_stop", "index": e.index})
 		e.index++
 	case KError:
+		if geminiCallFailureCode(ev.Code) && !saidAnything(e.col.res.Parts) {
+			// Claude Code otherwise replays an empty failed stream as a
+			// non-streaming compatibility probe. Show the terminal gateway
+			// diagnostic first, without inventing a tool call or a success.
+			e.event(Event{Kind: KText, Text: "Gateway error: " + ev.Text + "\n"})
+		}
 		e.close()
 		typ := "api_error"
+		if geminiCallFailureCode(ev.Code) {
+			typ = "invalid_request_error"
+		}
 		if ev.Status == http.StatusRequestEntityTooLarge && ev.Code != "context_length_exceeded" {
 			// the same type a 413 JSON body carries (writeErrorSaid)
 			typ = "request_too_large"

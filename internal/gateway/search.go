@@ -1499,7 +1499,7 @@ func (s *Server) askTranslated(p provider.Provider, to provider.Protocol, model 
 		go func() {
 			defer close(events)
 			defer res.Body.Close()
-			dec := decoderFor(p, actual, q.Tools)
+			dec := decoderFor(p, actual, &q)
 			send := func(ev Event) error {
 				select {
 				case events <- ev:

@@ -528,7 +528,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				return
 			}
 			failed, failedCode, failedStatus = ev.Text, ev.Code, ev.Status
-			if ev.Code == "" {
+			if ev.Code == "" || geminiCallFailureCode(ev.Code) {
 				// a refusal's status is magpie's, told by its code
 				errNamed = ev.Status
 			}
@@ -645,7 +645,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 					return writeError(w, from, 502, failed), failed
 				}
 			} else {
-				dec := carryReasoning(decoderFor(p, actual, request.Tools), from, actual)
+				dec := carryReasoning(decoderFor(p, actual, request), from, actual)
 				attemptSee := see
 				if names := textCallNames(request.Tools); names != nil {
 					t := &textCallSee{names: names, see: see}

@@ -1409,6 +1409,9 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	now := time.Now()
 	d := fallbackCooldown
 	why := failureOf(c, status, body)
+	if geminiCallFailureTextOnly(string(wordsOf(body))) {
+		return Rest{Why: why, Status: http.StatusBadRequest, By: "off", Until: now}
+	}
 	if why == failCut {
 		// a plugin ended the turn on purpose, its upstream's stream having
 		// died mid-call (plugins#38): the account is as good as it was, the

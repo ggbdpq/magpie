@@ -175,6 +175,9 @@ type Tool struct {
 
 // Request is a call to a model, whichever API it arrived in.
 type Request struct {
+	// DeferredTools records the client capability even before any tool is loaded.
+	DeferredTools bool
+
 	// clientCache is non-nil only for a request read with its client's
 	// marks: the Claude bridge's explicit opt-in, and a Messages ask
 	// translated to an Anthropic upstream (parseTranslated, #4571).

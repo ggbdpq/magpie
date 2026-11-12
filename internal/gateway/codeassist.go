@@ -1468,9 +1468,11 @@ func distinctNames(vs []any) []any {
 // codeAssistDecoder reads Code Assist's stream: Gemini chunks, each wrapped
 // in {response}.
 type codeAssistDecoder struct {
-	started bool
-	tools   bool
-	stopped bool
+	deferred *geminiDeferred
+	started  bool
+	tools    bool
+	stopped  bool
+	failed   bool // terminal for content, but trailing usage must still be read
 	// searched is a googleSearch's grounding told already: it is given
 	// again with each chunk after it
 	searched bool
@@ -1489,13 +1491,21 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
 		geminiChunk
 	}
 	if err := json.Unmarshal([]byte(data), &ch); err != nil {
+		if d.failed {
+			return nil
+		}
 		// an error in a shape of its own is still the reply's end (#1933)
 		if e, ok := carriedError(data); ok {
+			d.stopped, d.failed = true, true
 			emit(e)
 		}
 		return nil
 	}
 	if ch.Error != nil {
+		if d.failed {
+			return nil
+		}
+		d.stopped, d.failed = true, true
 		// at the status it names, Google's code: a 400 INVALID_ARGUMENT
 		// is the request's fault, never asked again nor the account's
 		// (sse_bare.go)
@@ -1523,7 +1533,32 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
 		emit(Event{Kind: KStart, MsgID: c.ResponseID, Model: c.ModelVersion, Usage: prompt})
 	}
 	for _, cand := range c.Candidates {
-		for _, p := range cand.Content.Parts {
+		if d.failed {
+			continue
+		}
+		// A MALFORMED_FUNCTION_CALL / UNEXPECTED_TOOL_CALL finish is a failed
+		// generation, not a successfully completed turn (#6288): the
+		// candidate's own parts are the rejected generation and are not
+		// forwarded. A call whole in finishMessage is still made below, where
+		// an unparsable one becomes an explicit failure instead of a stop.
+		rejectedCall := cand.FinishReason == "MALFORMED_FUNCTION_CALL" || cand.FinishReason == "UNEXPECTED_TOOL_CALL"
+		parts := cand.Content.Parts
+		if rejectedCall {
+			parts = nil
+		}
+		if d.deferred != nil {
+			var err error
+			parts, err = d.deferred.parts(parts)
+			if err != nil {
+				d.stopped, d.failed = true, true
+				emit(Event{Kind: KError, Status: http.StatusBadRequest, Code: "invalid_deferred_tool_call", Text: "Gemini deferred tool call rejected: " + err.Error()})
+				continue
+			}
+		}
+		for _, p := range parts {
+			if d.failed {
+				break
+			}
 			switch {
 			case p.FunctionCall != nil:
 				d.flush(emit)
@@ -1556,12 +1591,18 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
 				emit(Event{Kind: KImage, Name: p.InlineData.MimeType, Text: p.InlineData.Data})
 			case p.Text != "" || p.Signature != "":
 				d.text(p.Text, emit)
+				if d.failed {
+					break
+				}
 				if p.Signature != "" {
 					// Gemini's signature on its text, after it (#1445)
 					d.flush(emit)
 					emit(Event{Kind: KTextSig, Text: p.Signature})
 				}
 			}
+		}
+		if d.failed {
+			continue
 		}
 		if g := cand.GroundingMetadata; g != nil && !d.searched {
 			// what googleSearch found: the pages, by their site's name and
@@ -1593,13 +1634,23 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
 						emit(Event{Kind: KToolArgs, Text: string(args)})
 					}
 				}
+				if !d.tools {
+					// nothing whole came out of finishMessage: the turn made no
+					// call and Google rejected its generation — say so, never
+					// read it as a normal end (#6288)
+					d.stopped, d.failed = true, true
+					emit(Event{Kind: KError, Status: http.StatusBadRequest, Code: strings.ToLower(cand.FinishReason),
+						Text: geminiCallFailureText(cand.FinishReason, cand.FinishMessage)})
+				}
 			}
-			d.stopped = true
-			stop := stopFromGemini(cand.FinishReason)
-			if d.tools && stop == "stop" {
-				stop = "tool"
+			if !d.failed {
+				d.stopped = true
+				stop := stopFromGemini(cand.FinishReason)
+				if d.tools && stop == "stop" {
+					stop = "tool"
+				}
+				emit(Event{Kind: KStop, Stop: stop})
 			}
-			emit(Event{Kind: KStop, Stop: stop})
 		}
 	}
 	if d.stopped && d.usage != nil {
@@ -1683,8 +1734,19 @@ func (d *codeAssistDecoder) text(s string, emit func(Event)) {
 			say(s[:len(callMarker)])
 			s = s[len(callMarker):]
 		default:
+			id := "call_" + newID()
+			if name == geminiDeferredTool && d.deferred != nil {
+				var err error
+				name, args, err = d.deferred.decode(args)
+				if err != nil {
+					d.stopped, d.failed = true, true
+					emit(Event{Kind: KError, Status: http.StatusBadRequest, Code: "invalid_deferred_tool_call", Text: "Gemini deferred tool call rejected: " + err.Error()})
+					return
+				}
+				id += geminiDeferredID
+			}
 			d.tools = true
-			emit(Event{Kind: KToolStart, ID: "call_" + newID(), Name: name})
+			emit(Event{Kind: KToolStart, ID: id, Name: name})
 			emit(Event{Kind: KToolArgs, Text: string(args)})
 			s = s[n:]
 		}
@@ -1885,6 +1947,9 @@ func stopFromGemini(s string) string {
 	case "STOP", "FINISH_REASON_UNSPECIFIED", "OTHER":
 		return "stop"
 	case "MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL":
+		// a rejected generation reads as a stop only where a call was salvaged
+		// out of finishMessage (made "tool" by the caller); the unparsable rest
+		// fails explicitly before this is asked (#6288)
 		return "stop"
 	}
 	// SAFETY, RECITATION, BLOCKLIST, PROHIBITED_CONTENT, SPII, ...

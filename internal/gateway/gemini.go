@@ -140,6 +140,11 @@ func buildGemini(r *Request, model string) ([]byte, error) {
 // buildCodeAssistSent builds for agent, unwrapped, with no stream field
 // and a systemInstruction with no role.
 func geminiRequest(r *Request, model, agent string) (map[string]any, error) {
+	var err error
+	r, err = geminiDeferredRequest(r, model)
+	if err != nil {
+		return nil, err
+	}
 	var wrap struct {
 		Request map[string]any `json:"request"`
 	}

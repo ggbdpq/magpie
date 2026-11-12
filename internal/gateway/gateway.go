@@ -8274,7 +8274,11 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 			// the envelope is named in there, where the id it carries is
 			// known: on Antigravity that is the variant the effort picked,
 			// not the model magpie knows
-			body = codeAssistBody(p, req, model, wires)
+			bridgeRequest, err := geminiDeferredRequest(req, p.OwnModelID(model))
+			if err != nil {
+				return nil, to, err
+			}
+			body = codeAssistBody(p, bridgeRequest, model, wires)
 		} else if wire != model {
 			// the vendor's own name for the model goes in the model field
 			// and nowhere else: everything above shaped the request from
@@ -9241,7 +9245,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		}
 		return writeVendorErrorFrom(w, from, actual, p, res, msg, b), msg
 	}
-	dec := carryReasoning(decoderFor(p, actual, request.Tools), from, actual)
+	dec := carryReasoning(decoderFor(p, actual, request), from, actual)
 	rd, sse := eventStream(res)
 	if !sse {
 		// the provider ignored stream:true; read the whole reply as one
@@ -9274,8 +9278,9 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	err = readSSE(rd, func(_, data string) error {
 		tail.see([]byte(data))
 		found.see(actual, []byte(data))
-		u.add(Usage{Upstream: upstreamOf([]byte(data)), Tier: upstreamTier([]byte(data)), searches: found.count()})
-		ended = ended || replyEnds(actual, data, upstreamStop([]byte(data)))
+		st := upstreamStop([]byte(data))
+		u.add(Usage{Upstream: upstreamOf([]byte(data)), Stop: st, Tier: upstreamTier([]byte(data)), searches: found.count()})
+		ended = ended || replyEnds(actual, data, st)
 		return dec(data, see)
 	})
 	if fin := tail.finish(); err == nil && !ended && actual == provider.Chat && fin != "" && saysItsEnd(p, actual, model) {
@@ -9301,7 +9306,14 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		s.markThinkingNeeded(p, actual, model, provider.UpstreamNameIn(wiresOf(r.Context()), p.ID, model))
 		return s.translate(w, r, p, from, to, model, body, u)
 	}
-	if col.err != "" && (!saidAnything(col.res.Parts) || col.errSaid != nil) {
+	// Progress text is not a usable partial answer when the tool generation
+	// that should follow it failed; a JSON client must see the failure too.
+	failedTool := geminiCallFailureCode(col.errCode)
+	if col.err != "" && (!saidAnything(col.res.Parts) || col.errSaid != nil || failedTool) {
+		if failedTool {
+			u.add(col.res.Usage)
+			u.add(Usage{Served: col.res.Model})
+		}
 		said := col.err
 		if markAntigravityRefused(w, p, request.System, said) {
 			said += " — " + antigravityHint(request.System)
@@ -9623,8 +9635,12 @@ func build(proto provider.Protocol, r *Request, model, host string, rejectTemp b
 //
 // Each Gemini thought signature the reply gives is noted as p's
 // (signersNoted), so it goes back to p alone (ownSignatures).
-func decoderFor(p provider.Provider, proto provider.Protocol, tools []Tool) func(data string, emit func(Event)) error {
-	return signersNoted(decoderOf(p, proto, tools), p.ID)
+func decoderFor(p provider.Provider, proto provider.Protocol, request *Request) func(data string, emit func(Event)) error {
+	if proto == provider.Gemini || proto == provider.CodeAssist {
+		d := &codeAssistDecoder{deferred: deferredForGemini(request)}
+		return signersNoted(d.decode, p.ID)
+	}
+	return signersNoted(decoderOf(p, proto, request.Tools), p.ID)
 }
 
 func decoderOf(p provider.Provider, proto provider.Protocol, tools []Tool) func(data string, emit func(Event)) error {

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -77,6 +78,25 @@ func probeWellKnown(input string) (src Source, dir string, found bool, err error
 	src = Source{Kind: "well-known", Repo: input}
 	dir, err = downloadWellKnown(ctx, client, root, entries)
 	return src, dir, true, err
+}
+
+// wellKnownCandidates lists only the catalog entries. Listed SKILL.md
+// templates inside an entry are supporting files, not additional skills.
+func wellKnownCandidates(dir string) ([]Candidate, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Candidate, 0, len(entries))
+	for _, e := range entries {
+		m, ok := readMeta(filepath.Join(dir, e.Name()))
+		if !e.IsDir() || !ok {
+			return nil, fmt.Errorf("%s has no valid SKILL.md", e.Name())
+		}
+		out = append(out, Candidate{Path: e.Name(), Name: nameFor(e.Name(), m), Description: m.Description})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
 }
 
 // fetchWellKnown fetches the complete catalog again. Only a successful,

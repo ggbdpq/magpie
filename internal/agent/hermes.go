@@ -1056,16 +1056,36 @@ func hermesKey(at place, path, v string) (key string, known bool) {
 	return key, known
 }
 
+// hermesKeyEnvRef is the api_key reference the entry's key_env names,
+// where the user keeps the key in a variable of Hermes's own: written as a
+// reference, so Hermes reads the key from its .env as they set up, and
+// hermesKeptKey keeps it on the writes after. A literal api_key magpie
+// would write — the loopback token, which a gateway behind Docker's port
+// mapping refuses from the bridge address (#5260) — never reaches the
+// config while key_env is there.
+func hermesKeyEnvRef(path, entry string) string {
+	v, _ := edit.GetYAML(path, "providers."+entry+".key_env")
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	return "${" + v + "}"
+}
+
 // hermesKeptKey is the api_key magpie writes into the config at path, where
 // want is its own key: a reference the user put there stays, whenever the
 // key it names holds (keyHolds) or magpie can't see it. One naming a key
 // the gateway doesn't take stays too, and magpie's key goes into the .env
 // beside the config under its variable, which Hermes reads over the
 // environment; a value with more than the one reference in it is magpie's
-// key again.
+// key again. A key_env the user set on the entry names their variable: the
+// key goes as a reference to it, before any key of magpie's (hermesKeyEnvRef).
 func hermesKeptKey(at place, path, entry, want string) string {
 	raw, _ := edit.GetYAML(path, "providers."+entry+".api_key")
 	if !hermesEnvRef.MatchString(raw) {
+		if ref := hermesKeyEnvRef(path, entry); ref != "" {
+			return ref
+		}
 		return want
 	}
 	if key, known := hermesKey(at, path, raw); !known || keyHolds(key, want) {

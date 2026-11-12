@@ -88,7 +88,7 @@ func TestAntigravityGateway(t *testing.T) {
 	file := antigravityFile(t, path)
 	var gw map[string]any
 	json.Unmarshal(file["gateway"], &gw)
-	want := map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "openai"}
+	want := map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "genai"}
 	if !sameJSON(string(file["gateway"]), want) {
 		t.Errorf("gateway: %s, want %v", file["gateway"], want)
 	}
@@ -378,7 +378,7 @@ func TestAntigravityEffort(t *testing.T) {
 	if err := f.Set("hard"); err == nil {
 		t.Fatal("a word that isn't a level was kept")
 	}
-	if !sameJSON(string(antigravityFile(t, path)["gateway"]), map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "openai"}) {
+	if !sameJSON(string(antigravityFile(t, path)["gateway"]), map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "genai"}) {
 		t.Errorf("the pick touched the app's gateway: %s", readFile(path))
 	}
 	if err := f.Set(""); err != nil || provider.AgentEffort("antigravity") != "" {
@@ -483,7 +483,7 @@ func TestAntigravityConfigJSON(t *testing.T) {
 	if err := f.Set("magpie/anth/claude-sonnet-5"); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "openai"}
+	want := map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "genai"}
 	models := map[string]any{"defaultModelId": "anth/claude-sonnet-5", "listSource": gateway.URL() + "/v1/models?format=antigravity"}
 	for _, p := range []string{cfg, legacy} {
 		file := antigravityFile(t, p)
@@ -518,7 +518,9 @@ func TestAntigravityConfigJSON(t *testing.T) {
 // A settings.json a magpie before 2.30's file wired, beside the
 // config.json 2.30 wrote, gets the same block into config.json on the
 // next sync, at the level it starts on; turning it off then gives both
-// back.
+// back. The block's wire protocol is the one a wiring magpie starts on
+// now (genai) — the old file keeps the openai an older magpie put there,
+// and only the 2.29 app reads that one.
 func TestAntigravitySyncWiresConfigJSON(t *testing.T) {
 	home := antigravityHome(t)
 	cfg := filepath.Join(home, ".gemini", "config", "config.json")
@@ -534,7 +536,7 @@ func TestAntigravitySyncWiresConfigJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	file := antigravityFile(t, cfg)
-	want := map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "openai"}
+	want := map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "genai"}
 	if !sameJSON(string(file["gateway"]), want) {
 		t.Fatalf("config.json's gateway after sync: %s", readFile(cfg))
 	}
@@ -561,13 +563,15 @@ func TestAntigravitySyncWiresConfigJSON(t *testing.T) {
 	}
 }
 
-// The wire protocol of a file on magpie stays what the file holds: on the
-// app's openai stream its own accumulator folds a turn's parallel calls
-// into one (id, names and arguments lost, #5908), and on genai it reads
-// them whole, so the protocol is the user's to pick once magpie wired the
-// file (the reporter hand-set genai and had it work until magpie's next
-// write put openai back). What magpie writes still refreshes; a file with
-// no wire protocol of its own is put on openai, as before.
+// The wire protocol of a file on magpie stays what the file holds once it
+// holds one: on the app's openai stream its own accumulator folds a turn's
+// parallel calls into one (id, names and arguments lost, #5908), and on
+// genai it reads them whole. So a wiring magpie starts, and a file with no
+// wire protocol of its own, go on genai — the wire the app reads the same
+// calls whole on, as the reporter's A/B had it (openai kept retrying the
+// turn, genai finished) — and openai stays the user's to set: a file
+// naming it keeps it, and the reporter's hand-set genai survives magpie's
+// writes, as before.
 func TestAntigravityWireProtocolKept(t *testing.T) {
 	home := antigravityHome(t)
 	path := filepath.Join(home, ".antigravity", "settings.json")
@@ -577,8 +581,8 @@ func TestAntigravityWireProtocolKept(t *testing.T) {
 	if err := f.Set("magpie/anth/claude-sonnet-5"); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := edit.GetJSON(path, "gateway.wireProtocol"); got != "openai" {
-		t.Fatalf("a block magpie starts writes %q, want openai", got)
+	if got, _ := edit.GetJSON(path, "gateway.wireProtocol"); got != "genai" {
+		t.Fatalf("a block magpie starts writes %q, want genai", got)
 	}
 	// the reporter's pick, hand-set in magpie's own block
 	if err := edit.SetJSON(path, edit.KV{Path: "gateway.wireProtocol", Value: "genai"}); err != nil {
@@ -593,5 +597,17 @@ func TestAntigravityWireProtocolKept(t *testing.T) {
 	want := map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "genai"}
 	if file := antigravityFile(t, path); !sameJSON(string(file["gateway"]), want) {
 		t.Fatalf("the wire protocol didn't stay the user's: %s", readFile(path))
+	}
+	// an explicit openai keeps, too: the app's folding accumulator on
+	// that wire is the user's to accept if they name it
+	if err := edit.SetJSON(path, edit.KV{Path: "gateway.wireProtocol", Value: "openai"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	want = map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "openai"}
+	if file := antigravityFile(t, path); !sameJSON(string(file["gateway"]), want) {
+		t.Fatalf("an explicit openai didn't stay: %s", readFile(path))
 	}
 }

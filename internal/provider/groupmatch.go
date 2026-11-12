@@ -39,6 +39,20 @@ func IsPattern(s string) bool {
 	return strings.HasPrefix(s, RegexpPrefix) || strings.Contains(s, "*")
 }
 
+// IsMemberPattern reports whether a group member as typed is a pattern
+// rather than a model's id with an account of its own: the pattern is
+// judged on the model the member names, an account after the # being no
+// part of an id a pattern matches. A masked account's shown name carries
+// stars ("1276-762****491", #6131), and a member pinned to it was judged
+// whole and taken for a glob matching no id — dropped from the group
+// without a word.
+func IsMemberPattern(m string) bool {
+	if base, acct := MemberAccount(m); acct != "" {
+		return IsPattern(base)
+	}
+	return IsPattern(m)
+}
+
 // matcher is a compiled pattern.
 type matcher interface{ MatchString(string) bool }
 
@@ -238,7 +252,7 @@ func ownMembers(g Group) (members, match []string) {
 	for _, m := range g.Members {
 		switch m = strings.TrimSpace(m); {
 		case slices.Contains(g.Matched, m):
-		case IsPattern(m):
+		case IsMemberPattern(m):
 			match = append(match, m)
 		default:
 			members = append(members, m)

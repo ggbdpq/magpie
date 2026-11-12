@@ -415,7 +415,7 @@ func applyGroupPairs(g *provider.Group, pairs []string, resolve func(string) (st
 		var out []string
 		patterns = nil
 		for _, m := range splitIDs(v, func(m string) bool { _, err := resolve(m); return err == nil }) {
-			if provider.IsPattern(m) {
+			if provider.IsMemberPattern(m) {
 				ps, err := provider.CleanPatterns([]string{m})
 				if err != nil {
 					return nil, err
@@ -473,7 +473,7 @@ func applyGroupPairs(g *provider.Group, pairs []string, resolve func(string) (st
 			}
 		case "models-", "members-", "model-":
 			for _, m := range splitIDs(v, inGroup(g.Members)) {
-				if provider.IsPattern(m) {
+				if provider.IsMemberPattern(m) {
 					m = strings.TrimPrefix(strings.TrimSpace(m), "magpie/")
 					i := slices.Index(g.Match, m)
 					if i < 0 {

@@ -5473,7 +5473,7 @@ magpie.plugin("library", (ctx) => {
   // Immortal on Discord). owner/repo on GitHub, host/path elsewhere.
   const skillRepo = (s) => s.repo || (s.kind === "github" ? repoOf(s.source) : s.origin ? repoOf(s.origin) : "");
   // a host's (with a path, or a site's kit of skills alone, #1862) or GitHub's
-  const repoURL = (r) => (/^[^/]+\.[^/]+(\/|$)/.test(r) ? "https://" + r : "https://github.com/" + r);
+  const repoURL = (r) => (/^https?:\/\//i.test(r) ? r : /^[^/]+\.[^/]+(\/|$)/.test(r) ? "https://" + r : "https://github.com/" + r);
   const MANY = 40;   // a group bigger than this starts folded, and so do its parts
   const SPLIT = 8;   // a group bigger than this is split by folder, or by name
   // Heights the rows are held to (library.css): a list's room is known
@@ -5511,7 +5511,7 @@ magpie.plugin("library", (ctx) => {
       const own = inMine.get(s.name);
       if (own) { own.skills.push(s); continue; }
       const repo = skillRepo(s);
-      const key = repo ? "gh:" + repo.toLowerCase() : "local";
+      const key = repo ? "gh:" + (s.kind === "well-known" ? repo : repo.toLowerCase()) : "local";
       let g = by.get(key);
       if (!g) by.set(key, (g = { key, repo, skills: [] }));
       g.skills.push(s);
@@ -5528,7 +5528,7 @@ magpie.plugin("library", (ctx) => {
     const up = repos.filter((g) => g.skills.some(online)), down = repos.filter((g) => !g.skills.some(online));
     const owners = new Map();
     for (const g of up) {
-      if (/^[^/]+\.[^/]+(\/|$)/.test(g.repo)) continue; // another git host or a website
+      if (/^https?:\/\//i.test(g.repo) || /^[^/]+\.[^/]+(\/|$)/.test(g.repo)) continue; // another git host or a website
       const o = g.repo.split("/")[0].toLowerCase();
       if (!owners.has(o)) owners.set(o, []);
       owners.get(o).push(g);

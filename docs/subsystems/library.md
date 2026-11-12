@@ -63,8 +63,9 @@ entries are offered as skills; supporting `SKILL.md` templates stay files of
 their entry. No downloaded content is executed, and no GitHub token or agent
 credential is sent to the website.
 
-These skills are grouped by their website, with a source link and the same
-update controls as repository skills. Checks compare the fetched content
+These skills are grouped by their complete website address, retaining the
+scheme, port and path case, with a source link and the same update controls
+as repository skills. Checks compare the fetched content
 with the installed hash. Updates retain the existing protection for local
 edits and the existing backup and replacement path. An unreadable or invalid
 index, an incomplete download or an invalid skill is an error, not evidence

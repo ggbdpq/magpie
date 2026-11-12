@@ -409,6 +409,52 @@ func TestResponsesSocketInterrupt(t *testing.T) {
 	}
 }
 
+// An interrupt answered after the reply's terminal event went to the
+// client is refused, though the upstream's stream is still open (the
+// window between the terminal event and the handler's return): the reply
+// is over, and the completed reply stays one a later turn can name
+// (#6301). Before, the ask was accepted, the turn's context was cancelled,
+// and the completed reply was never kept — the next turn naming it was
+// previous_response_not_found.
+func TestResponsesSocketInterruptAfterCompleted(t *testing.T) {
+	fresh(t)
+	u := &respUp{}
+	release := make(chan struct{})
+	u.reply = func(w http.ResponseWriter, r *http.Request, n int) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse(
+			`data: {"type":"response.created","response":{"id":"resp_done","object":"response","status":"in_progress","output":[]}}`,
+			`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_done","role":"assistant","status":"completed","content":[{"type":"output_text","text":"OK"}]}}`,
+			`data: {"type":"response.completed","response":{"id":"resp_done","object":"response","status":"completed","output":[{"type":"message","id":"msg_done","role":"assistant","status":"completed","content":[{"type":"output_text","text":"OK"}]}],"usage":{"input_tokens":8,"output_tokens":1,"total_tokens":9}}}`))
+		w.(http.Flusher).Flush()
+		select {
+		case <-release: // the terminal went to the client; the stream is held open
+		case <-r.Context().Done():
+		}
+	}
+	sockUp(t, u)
+	_, ts := sockServer(t)
+	c, _, err := dialSock(t, ts, "/v1/responses", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.send(create("", userHi))
+	if got, err := c.until("response.completed"); err != nil || last(got).Get("response.id").String() != "resp_done" {
+		t.Fatalf("%v %v", got, err)
+	}
+	c.send(`{"type":"response.interrupt","response_id":"resp_done","mode":"discard_partial_items"}`)
+	if got, err := c.until("response.interrupt.failed"); err != nil || last(got).Get("response_id").String() != "resp_done" {
+		t.Fatalf("interrupt of a completed reply: %v %v", got, err)
+	}
+	close(release)
+	if got := c.turn(create("resp_done", userMore)); last(got).Get("type").String() != "response.completed" {
+		t.Fatalf("continuation after a refused interrupt: %v", got)
+	}
+	if u.calls() != 2 {
+		t.Fatalf("%d upstream calls", u.calls())
+	}
+}
+
 // A reply cut before its end is a failed turn, as the HTTP route tells
 // it; the socket goes on, and the failed reply isn't one to name.
 func TestResponsesSocketCutReplyFails(t *testing.T) {

@@ -380,6 +380,7 @@ type socketTurnRun struct {
 	ids       []string // the response ids it gave
 	cut       bool     // its reply ended before its end
 	cancelled bool
+	ended     bool // a terminal event of the reply went to the client
 }
 
 func (t *socketTurnRun) interrupt(id string) bool {
@@ -387,11 +388,26 @@ func (t *socketTurnRun) interrupt(id string) bool {
 	defer t.mu.Unlock()
 	for _, have := range t.ids {
 		if have == id {
+			if t.ended {
+				return false
+			}
 			t.cancelled = true
 			return true
 		}
 	}
 	return false
+}
+
+// finishing records a terminal event of the reply (completed, incomplete,
+// failed, cancelled, an error). The client has the reply's end; an
+// interrupt answered after it has nothing in flight to stop, and stopping
+// the turn would keep the completed reply from being kept (the context
+// turn checks before keep) — the anchor a later turn names was lost that
+// way (#6301).
+func (t *socketTurnRun) finishing() {
+	t.mu.Lock()
+	t.ended = true
+	t.mu.Unlock()
 }
 
 // held is the conversation a reply the socket holds ends.
@@ -484,6 +500,7 @@ func (rs *responsesSocket) turn(ctx context.Context, t *socketTurnRun, frame []b
 		resp["usage"] = map[string]any{"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 		b, _ = json.Marshal(map[string]any{"type": "response.completed", "response": resp})
 		if rs.write(ctx, b) == nil {
+			t.finishing()
 			rs.keep(id, held, fresh, nil)
 		}
 		return
@@ -810,8 +827,10 @@ func (w *socketTurnWriter) event(data []byte) error {
 	case "response.completed":
 		w.note(gjson.GetBytes(e.Response, "id").String())
 		w.ended, w.completed = true, true
+		w.run.finishing()
 	case "response.incomplete", "response.failed", "response.cancelled", "error":
 		w.ended = true
+		w.run.finishing()
 	case "codex.response.metadata":
 		// the model list's tag as magpie gives it (modelsEtag), which the
 		// reply's header has

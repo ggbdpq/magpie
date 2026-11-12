@@ -2,12 +2,15 @@ package cli
 
 import (
 	"errors"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/applog"
 	"github.com/yetone/magpie/internal/gateway"
 )
 
@@ -102,5 +105,57 @@ func TestAgyRun(t *testing.T) {
 	startLook = func(string) (string, error) { return "", errors.New("not found") }
 	if _, err := runOut(t, "agy", "run"); err == nil || !strings.Contains(err.Error(), "isn't installed") {
 		t.Fatalf("no agy: %v", err)
+	}
+}
+
+// The terminal is the agent's while `magpie agy run` runs: what magpie
+// logs beside it — an account's models asked again, the shape of #5923's
+// lines — goes to magpie's log, not to that screen, and the logger is
+// back on stderr once the agent is done.
+func TestStartRunLogsBesideTheAgentGoToTheLog(t *testing.T) {
+	home := helpHome(t)
+	t.Setenv("GEMINI_API_KEY", "users-own")
+	t.Setenv("GOOGLE_GEMINI_BASE_URL", "")
+	settings := filepath.Join(home, ".gemini", "antigravity-cli", "magpie-settings.json")
+	os.MkdirAll(filepath.Dir(settings), 0o755)
+	os.WriteFile(settings, []byte(`{"model": "magpie/deepseek/pro", "modelProvider": "gemini"}`), 0o644)
+
+	oldExec, oldLook := startExec, startLook
+	t.Cleanup(func() { startExec, startLook = oldExec, oldLook })
+	before := log.Writer()
+	inSession := make(chan io.Writer, 1)
+	startExec = func(b, n string, a, e []string) error {
+		log.Printf("antigravity someone@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com: 20 models, 13 kept")
+		inSession <- log.Writer()
+		return nil
+	}
+	real := filepath.Join(home, "bin", "agy")
+	startLook = func(b string) (string, error) {
+		if b != "agy" {
+			return "", errors.New("looked for " + b)
+		}
+		return real, nil
+	}
+
+	if _, err := runOut(t, "agy", "run", "-p", "hi"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case beside := <-inSession:
+		if beside == before {
+			t.Error("the logger still wrote to the terminal beside the agent's run")
+		}
+	default:
+		t.Fatal("the agent never started")
+	}
+	logged, err := os.ReadFile(applog.Path())
+	if err != nil {
+		t.Fatalf("reading magpie's log: %v", err)
+	}
+	if !strings.Contains(string(logged), "fetchAvailableModels") {
+		t.Errorf("magpie's log has no line from beside the agent's run:\n%s", logged)
+	}
+	if log.Writer() != before {
+		t.Fatalf("the logger is at %v, want it back where it was", log.Writer())
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/applog"
 	"github.com/yetone/magpie/internal/proc"
 )
 
@@ -89,6 +90,12 @@ var startExec = startExecOS
 var startLook = proc.Look
 
 func startRun(s agent.Starting, args []string) error {
+	// the terminal is the agent's while it runs, and on Windows magpie
+	// waits beside it (Unix replaces magpie with the agent): what magpie
+	// logs there would overwrite its screen, as it would claude-magpie's
+	// (#5923), so magpie's log goes to magpie's log file until it's done
+	restore := applog.Quiet()
+	defer restore()
 	path, err := startLook(s.Bin)
 	if err != nil {
 		return fmt.Errorf("%s isn't installed, or isn't on your PATH", s.Bin)

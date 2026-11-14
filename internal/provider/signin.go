@@ -914,6 +914,19 @@ func addLoginNamed(in *savedLogin) (using bool, err error) {
 			StaleAllowance(l.Agent, l.User)
 		}
 	}()
+	if l.Agent == "claude" {
+		// nor while a run is in the account's own directory: magpie's own
+		// (a /usage, a warm-up) ends first, and another magpie process's
+		// is refused past the wait (#4532's run marks) — the fresh sign-in
+		// removes the account's older saved directory below, and that
+		// would take it from under the run (#3254's sibling, #6602)
+		mu := claudeDirRun(l.User)
+		mu.Lock()
+		defer mu.Unlock()
+		if err := waitClaudeRuns(l.User); err != nil {
+			return false, err
+		}
+	}
 	loginsMu.Lock()
 	defer loginsMu.Unlock()
 	if l.Agent == "claude" {

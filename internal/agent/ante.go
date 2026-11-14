@@ -129,23 +129,32 @@ func anteAt(at place) *Agent {
 	// wiring out.
 	unwire := func() error {
 		if get(anteProviderKey) == magpieID {
-			was, mine := unstash(keyProvider), unstash(keyModel)
-			if err := set(anteProviderKey, was); err != nil {
+			// the originals are read and stay stashed until the writes
+			// that put them back have gone through: one that fails
+			// leaves them stashed for the next try (#6601)
+			peeked := peek(keyProvider, keyModel)
+			if err := set(anteProviderKey, peeked[keyProvider]); err != nil {
 				return err
 			}
-			if err := set(anteModelKey, mine); err != nil {
+			if err := set(anteModelKey, peeked[keyModel]); err != nil {
 				return err
 			}
+			forgetValues(peeked)
 		} else {
 			forget(keyProvider, keyModel)
 		}
 		// settings.json holding neither of magpie's keys, and magpie having
-		// made it, is magpie's file to take away
-		if get(anteProviderKey) == "" && get(anteModelKey) == "" && unstash(keyNewSettings) != "" {
+		// made it, is magpie's file to take away. The made-file marks are
+		// read and stay stashed until the removal they gate has gone
+		// through: one that fails leaves the mark for the next try (#6601)
+		marked := peek(keyNewSettings, keyNew)
+		newSettings, newFile := marked[keyNewSettings] != "", marked[keyNew] != ""
+		if get(anteProviderKey) == "" && get(anteModelKey) == "" && newSettings {
 			if raw, err := edit.Read(settingsPath); err == nil && len(gjson.ParseBytes(raw).Map()) == 0 {
 				if err := edit.Remove(settingsPath); err != nil {
 					return err
 				}
+				forget(keyNewSettings)
 			}
 		}
 		if !isFile(path) {
@@ -164,9 +173,12 @@ func anteAt(at place) *Agent {
 			}
 		}
 		// a file magpie made goes with its last entry
-		if unstash(keyNew) != "" {
+		if newFile {
 			if raw, err := edit.Read(path); err == nil && len(gjson.ParseBytes(raw).Map()) == 0 {
-				return edit.Remove(path)
+				if err := edit.Remove(path); err != nil {
+					return err
+				}
+				forget(keyNew)
 			}
 		}
 		return nil

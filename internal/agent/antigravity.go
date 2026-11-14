@@ -207,20 +207,26 @@ func (f agyFile) connect(ref string) error {
 // what they had (""); a file not there is made for v only when always
 func (f agyFile) leave(v string, always bool) error {
 	if f.wired() {
-		// back to what the user had
-		if err := f.putRaw("gateway", unstash(f.stashGateway)); err != nil {
+		// back to what the user had; the originals are read and stay
+		// stashed until the write that puts them back has gone through:
+		// one that fails leaves them stashed for the next try (#6601)
+		peeked := peek(f.stashGateway, f.stashList, f.stashSrc)
+		if err := f.putRaw("gateway", peeked[f.stashGateway]); err != nil {
 			return err
 		}
-		if err := f.putRaw(antigravityList, unstash(f.stashList)); err != nil {
+		if err := f.putRaw(antigravityList, peeked[f.stashList]); err != nil {
 			return err
 		}
-		if err := f.putRaw(antigravitySource, unstash(f.stashSrc)); err != nil {
+		if err := f.putRaw(antigravitySource, peeked[f.stashSrc]); err != nil {
 			return err
 		}
+		forgetValues(peeked)
 		if v == "" {
-			if err := f.putRaw(antigravityModel, unstash(f.stashModel)); err != nil {
+			was := peek(f.stashModel)
+			if err := f.putRaw(antigravityModel, was[f.stashModel]); err != nil {
 				return err
 			}
+			forgetValues(was)
 			return antigravityTidy(f.path)
 		}
 		forget(f.stashModel)

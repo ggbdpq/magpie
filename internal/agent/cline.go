@@ -110,7 +110,13 @@ func clineIn(at place) *Agent {
 	// restoreState puts back the extension's state from before magpie;
 	// magpie's keys go when nothing was stashed
 	restoreState := func() error {
-		saved, secret, stated := unstash(key+"state"), unstash(key+"secret"), unstash(key+"stated")
+		// the originals are read and stay stashed until the writes that
+		// put them back have gone through: one that fails leaves them
+		// stashed for the next try (#6601) — a retry reads the state's
+		// snapshot again, so it is taken out with the rest only once the
+		// whole restore has gone through
+		peeked := peek(key+"state", key+"secret", key+"stated")
+		saved, secret, stated := peeked[key+"state"], peeked[key+"secret"], peeked[key+"stated"]
 		if stated == "" && !stateOnMagpie() {
 			return nil
 		}
@@ -120,12 +126,18 @@ func clineIn(at place) *Agent {
 			}
 		}
 		if _, err := os.Stat(secrets); err != nil {
+			forgetValues(peeked)
 			return nil
 		}
 		if secret != "" {
-			return edit.SetJSON(secrets, edit.KV{Path: "openAiApiKey", Value: secret})
+			if err := edit.SetJSON(secrets, edit.KV{Path: "openAiApiKey", Value: secret}); err != nil {
+				return err
+			}
+		} else if err := edit.DelJSON(secrets, "openAiApiKey"); err != nil {
+			return err
 		}
-		return edit.DelJSON(secrets, "openAiApiKey")
+		forgetValues(peeked)
+		return nil
 	}
 	// restore puts back the openai-compatible provider and the provider in
 	// use the user had before magpie
@@ -133,8 +145,12 @@ func clineIn(at place) *Agent {
 		if err := restoreState(); err != nil {
 			return err
 		}
-		entry, last := unstash(key+"entry"), unstash(key+"lastUsedProvider")
-		if list := unstash(key + "models"); list != "" {
+		// the originals are read and stay stashed until the write that
+		// puts them back has gone through: one that fails leaves them
+		// stashed for the next try (#6601)
+		peeked := peek(key+"entry", key+"lastUsedProvider", key+"models")
+		entry, last := peeked[key+"entry"], peeked[key+"lastUsedProvider"]
+		if list := peeked[key+"models"]; list != "" {
 			if err := edit.SetJSON(models, edit.KV{Path: "providers." + clineSlot, Value: json.RawMessage(list)}); err != nil {
 				return err
 			}
@@ -149,9 +165,17 @@ func clineIn(at place) *Agent {
 			return err
 		}
 		if last != "" {
-			return edit.SetJSON(path, edit.KV{Path: "lastUsedProvider", Value: last})
+			if err := edit.SetJSON(path, edit.KV{Path: "lastUsedProvider", Value: last}); err != nil {
+				return err
+			}
+			forgetValues(peeked)
+			return nil
 		}
-		return edit.DelJSON(path, "lastUsedProvider")
+		if err := edit.DelJSON(path, "lastUsedProvider"); err != nil {
+			return err
+		}
+		forgetValues(peeked)
+		return nil
 	}
 	// own is the provider a model or effort of Cline's own is set on: the
 	// one in use, else Cline's default

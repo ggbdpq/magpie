@@ -317,3 +317,71 @@ func TestClaudeForgetRefusedWhileAnotherMagpieRunsTheFolder(t *testing.T) {
 		}
 	})
 }
+
+// Signing in afresh to an account whose directory a run of another magpie
+// process holds is refused (#6602, #3254's sibling): addLogin removes the
+// account's older saved directory, and the removal would take it from
+// under that run. The saved sign-in stays as it was. A mark whose run
+// ended holds nothing, and the fresh sign-in goes on, removing the older
+// directory.
+func TestClaudeFreshSignInRefusedWhileAnotherMagpieRunsTheFolder(t *testing.T) {
+	fresh := func(t *testing.T) savedLogin {
+		t.Helper()
+		l, err := claudeLogin(claudeCredentials{OAuth: claudeAuth{
+			AccessToken: "tok-max2", RefreshToken: "r-max2",
+			ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), SubscriptionType: "max",
+		}}, map[string]any{"emailAddress": "max@x.com"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l
+	}
+	t.Run("held", func(t *testing.T) {
+		claudeThree(t)
+		if err := os.MkdirAll(claudeAccountDir("max@x.com"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		w := claudeRunWait
+		claudeRunWait = 300 * time.Millisecond
+		t.Cleanup(func() { claudeRunWait = w })
+		unlock, held := filelock.Lock(claudeAccountDir("max@x.com")+".run-99999-1.lock", time.Second)
+		if !held {
+			t.Fatal("not held")
+		}
+		defer unlock()
+		if _, err := addLogin(fresh(t)); !errors.Is(err, errClaudeRunning) {
+			t.Fatalf("got %v", err)
+		}
+		if _, err := os.Stat(claudeAccountDir("max@x.com")); err != nil {
+			t.Fatalf("the account's directory was removed under the run: %v", err)
+		}
+		if a := savedAuth(t, "max@x.com"); !strings.Contains(a, "r-max") {
+			t.Fatalf("the fresh sign-in replaced the saved one under the refused run: %q", a)
+		}
+	})
+	t.Run("ended", func(t *testing.T) {
+		claudeThree(t)
+		if err := os.MkdirAll(claudeAccountDir("max@x.com"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		mark := claudeAccountDir("max@x.com") + ".run-99999-1.lock"
+		if err := os.MkdirAll(filepath.Dir(mark), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(mark, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := addLogin(fresh(t)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(claudeAccountDir("max@x.com")); !os.IsNotExist(err) {
+			t.Fatalf("the account's older directory kept: %v", err)
+		}
+		if _, err := os.Stat(mark); !os.IsNotExist(err) {
+			t.Fatalf("a left lock file kept: %v", err)
+		}
+		if a := savedAuth(t, "max@x.com"); !strings.Contains(a, "r-max2") {
+			t.Fatalf("the fresh sign-in wasn't kept: %q", a)
+		}
+	})
+}

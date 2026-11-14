@@ -203,9 +203,14 @@ func astrbotAt(at place) *Agent {
 			return nil
 		}
 		if ours() {
-			if err := setPick(unstash(keyPick)); err != nil {
+			// the original is read and stays stashed until the write that
+			// puts it back has gone through: one that fails leaves it
+			// stashed for the next try (#6601)
+			peeked := peek(keyPick)
+			if err := setPick(peeked[keyPick]); err != nil {
 				return err
 			}
+			forgetValues(peeked)
 		} else {
 			forget(keyPick)
 		}

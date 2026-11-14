@@ -289,11 +289,21 @@ func agyIn(at place) *Agent {
 		if !usesMagpie(m) {
 			return "", nil
 		}
-		if err := put("modelProvider", unstash(stashProvider)); err != nil {
+		// the originals are read and stay stashed until the write that
+		// puts them back has gone through: one that fails leaves them
+		// stashed for the next try (#6601)
+		peeked := peek(stashProvider, stashModel)
+		if err := put("modelProvider", peeked[stashProvider]); err != nil {
 			return m, err
 		}
-		if err := put("model", unstash(stashModel)); err != nil {
+		if v, ok := peeked[stashProvider]; ok {
+			forgetValues(map[string]string{stashProvider: v})
+		}
+		if err := put("model", peeked[stashModel]); err != nil {
 			return m, err
+		}
+		if v, ok := peeked[stashModel]; ok {
+			forgetValues(map[string]string{stashModel: v})
 		}
 		if ms := ownModels(); len(ms) > 0 {
 			return m, edit.SetJSON(path, edit.KV{Path: agyModels, Value: ms})

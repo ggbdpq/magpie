@@ -905,15 +905,22 @@ func desktopCarryMCP(p desktopPaths) error {
 
 // desktopUncarryMCP takes the servers desktopCarryMCP copied out of
 // Claude-3p again, each only while it is still as copied: one the user
-// changed since is theirs. An mcpServers left empty goes with them.
+// changed since is theirs. An mcpServers left empty goes with them. The
+// copy is read and stays stashed until the write that takes the servers
+// out has gone through: one that fails leaves it stashed for the next
+// try (#6601); one the user changed since, or a config gone, is given up
+// as it was when it was taken out up front.
 func desktopUncarryMCP(p desktopPaths) error {
-	prev := unstash(desktopMCP + p.key)
+	peeked := peek(desktopMCP + p.key)
+	prev := peeked[desktopMCP+p.key]
 	var carried map[string]json.RawMessage
 	if prev == "" || json.Unmarshal([]byte(prev), &carried) != nil || len(carried) == 0 {
+		forgetValues(peeked)
 		return nil
 	}
 	have := desktopServers(p.config3p)
 	if have == nil {
+		forgetValues(peeked)
 		return nil
 	}
 	gone := false
@@ -924,12 +931,21 @@ func desktopUncarryMCP(p desktopPaths) error {
 		}
 	}
 	if !gone {
+		forgetValues(peeked)
 		return nil
 	}
 	if len(have) == 0 {
-		return edit.DelJSON(p.config3p, "mcpServers")
+		if err := edit.DelJSON(p.config3p, "mcpServers"); err != nil {
+			return err
+		}
+		forgetValues(peeked)
+		return nil
 	}
-	return edit.SetJSON(p.config3p, edit.KV{Path: "mcpServers", Value: have})
+	if err := edit.SetJSON(p.config3p, edit.KV{Path: "mcpServers", Value: have}); err != nil {
+		return err
+	}
+	forgetValues(peeked)
+	return nil
 }
 
 func desktopSameJSON(a, b json.RawMessage) bool {
@@ -1005,10 +1021,14 @@ func desktopOff(p desktopPaths) error {
 		return err
 	}
 	k := p.key
-	stashed := unstash(desktopStashed+k) != ""
-	mode, mode3p, applied := unstash(desktopMode+k), unstash(desktopMode3p+k), unstash(desktopApplied+k)
+	// the originals are read and stay stashed until the writes that put
+	// them back have gone through: one that fails leaves them stashed for
+	// the next try (#6601)
+	peeked := peek(desktopStashed+k, desktopMode+k, desktopMode3p+k, desktopApplied+k, desktopMade+k, desktopLocale+k)
+	stashed := peeked[desktopStashed+k] != ""
+	mode, mode3p, applied := peeked[desktopMode+k], peeked[desktopMode3p+k], peeked[desktopApplied+k]
 	var made []string
-	if m := unstash(desktopMade + k); m != "" {
+	if m := peeked[desktopMade+k]; m != "" {
 		made = strings.Split(m, "\n")
 	}
 	if !stashed && !slices.ContainsFunc(entries, desktopOurs) {
@@ -1076,7 +1096,7 @@ func desktopOff(p desktopPaths) error {
 
 	// Claude-3p's config.json magpie made only to carry the language:
 	// gone again when it still holds nothing but that language
-	if loc := unstash(desktopLocale + k); loc != "" && slices.Contains(made, p.app3p) {
+	if loc := peeked[desktopLocale+k]; loc != "" && slices.Contains(made, p.app3p) {
 		if b, err := os.ReadFile(p.app3p); err == nil {
 			var m map[string]json.RawMessage
 			var only string
@@ -1101,6 +1121,9 @@ func desktopOff(p desktopPaths) error {
 			os.Remove(f)
 		}
 	}
+	// what was put back and taken away is taken out of the stash once the
+	// whole off has gone through (#6601)
+	forgetValues(peeked)
 	return nil
 }
 

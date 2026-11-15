@@ -1005,6 +1005,13 @@ func (p Provider) clone() Provider {
 	p.KeySpendCaps = maps.Clone(p.KeySpendCaps)
 	p.KeyOwnBalances = maps.Clone(p.KeyOwnBalances)
 	p.KeyPriceRates = maps.Clone(p.KeyPriceRates)
+	if p.Resolve != nil {
+		m := make(map[string][]string, len(p.Resolve))
+		for k, v := range p.Resolve {
+			m[k] = slices.Clone(v)
+		}
+		p.Resolve = m
+	}
 	if p.AccountWindowCaps != nil {
 		m := make(map[string]map[string]int, len(p.AccountWindowCaps))
 		for k, v := range p.AccountWindowCaps {

@@ -484,11 +484,14 @@ func (l *Library) syncInstructions(t *Target, all []*Target, b *backups, res *Re
 // holds when it is also the file of other agents in all: the first of
 // them switched on, "" when none is. Antigravity's app and agy both read
 // ~/.gemini/config/GEMINI.md; one switched off takes nothing out of the
-// file the other is switched on for.
+// file the other is switched on for. A link counts as the file it points
+// at: every extra Claude Code folder's CLAUDE.md linked to
+// ~/.claude/CLAUDE.md is one file with claude's, and a claude# row
+// switched off takes nothing out of it either (#6818).
 func (l *Library) instrOwner(t *Target, all []*Target) string {
-	p := filepath.Clean(t.Instructions)
+	p := realBelow(t.Instructions)
 	for _, o := range all {
-		if o.Instructions != "" && o.Field == t.Field && filepath.Clean(o.Instructions) == p && slices.Contains(l.Instructions.Agents, o.Agent.ID) {
+		if o.Instructions != "" && o.Field == t.Field && realBelow(o.Instructions) == p && slices.Contains(l.Instructions.Agents, o.Agent.ID) {
 			return o.Agent.ID
 		}
 	}

@@ -9509,9 +9509,12 @@ const modelAPIs = (p) => {
 function pickedOf(p) {
   const on = p.models.filter((m) => m.on);
   if (!Array.isArray(p.chosen)) return on.map((m) => m.id); // no picks said: those served, as before
-  const picks = new Set(p.chosen);
-  // one with no URL for its API stays picked (#2094)
-  return p.models.filter((m) => (m.on || m.noAPI) && picks.has(m.id)).map((m) => m.id);
+  // the saved picks as they are: one the account's list doesn't carry now
+  // stays picked and dormant — served again when the list has it (#4772) —
+  // and a save here must not take it out (#6811: picks synced from another
+  // device met an account whose list had none of them, the editor opened
+  // with the list drawn as served and a save wrote none)
+  return p.chosen.filter((id, i, all) => id && all.indexOf(id) === i);
 }
 
 // baseAPIOf: the API a saved Base URL is shown as, the saved pick first (01huadalang).

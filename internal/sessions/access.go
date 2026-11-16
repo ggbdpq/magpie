@@ -252,7 +252,8 @@ func Found() []string {
 	}
 	add("kimi", kimi...)
 	add("agy", filepath.Join(AgyDir(), "brain"))
-	add("antigravity", antigravityConversations(), filepath.Join(AntigravityInsidersDir(), "conversations"))
+	ag := []string{antigravityConversations(), filepath.Join(AntigravityInsidersDir(), "conversations")}
+	add("antigravity", append(ag, antigravityT3Conversations()...)...)
 	add("gemini", geminiTmpDir())
 	var devin []string
 	for _, d := range DevinCLIDirs() {

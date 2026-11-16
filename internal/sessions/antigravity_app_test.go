@@ -35,14 +35,26 @@ const antigravitySchema = "CREATE TABLE `trajectory_meta` (`trajectory_id` text,
 const antigravityModelField = "9A011267656D696E692D332E382D666C6173682D6E"
 
 // antigravityFixture makes a conversation database in the app's data
-// folder under home, in WAL mode as the app keeps it, with the four step
-// rows yygutn posted on #2190 (testdata/antigravity/steps.tsv, the bytes
-// as posted), a step with no metadata, a user's step whose metadata has
-// no model call, and generators 0 to 2. Step 11's generator (5) has no
-// row.
+// folder under home.
 func antigravityFixture(t *testing.T, home, id string) string {
 	t.Helper()
-	dir := filepath.Join(home, ".gemini", "antigravity", "conversations")
+	return antigravityDB(t, filepath.Join(home, ".gemini", "antigravity", "conversations"), id)
+}
+
+// antigravityT3Fixture makes the same conversation database in T3 Code's
+// managed Antigravity ACP store of profile, under home (#6884).
+func antigravityT3Fixture(t *testing.T, home, profile, id string) string {
+	t.Helper()
+	return antigravityDB(t, filepath.Join(home, ".t3", "userdata", "providers", "antigravity", profile, "antigravity-acp", "conversations"), id)
+}
+
+// antigravityDB makes a conversation database in dir, in WAL mode as the
+// app keeps it, with the four step rows yygutn posted on #2190
+// (testdata/antigravity/steps.tsv, the bytes as posted), a step with no
+// metadata, a user's step whose metadata has no model call, and generators
+// 0 to 2. Step 11's generator (5) has no row.
+func antigravityDB(t *testing.T, dir, id string) string {
+	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -308,5 +320,152 @@ func TestAntigravityAppParseBeforeFolderReadAgain(t *testing.T) {
 	}
 	if _, kept := files["/a.db"]; kept {
 		t.Fatal("a parse from before the folder was read is kept")
+	}
+}
+
+// #6884 (deepfry666): T3 Code's managed Antigravity ACP provider runs the
+// app's own engine (agy_acp_server), which keeps the desktop's
+// conversation databases per signed-in profile, under
+// ~/.t3/userdata/providers/antigravity/<profile id>/antigravity-acp
+// ($T3CODE_HOME's userdata). Its calls reach the Sessions page and Usage
+// under their models, keyed apart from the app's and Insiders' ("t3-"),
+// behind the same Antigravity session-read consent.
+func TestAntigravityT3CodeACP(t *testing.T) {
+	claude, _ := setup(t)
+	home := filepath.Join(filepath.Dir(claude), "home")
+	const id, profile = "37c3c786-9a11-44be-97df-b8fc1ccebc78", "11111111-2222-3333-4444-555555555555"
+	antigravityT3Fixture(t, home, profile, id)
+
+	// Found asks about Antigravity when only T3's store is there.
+	if !slices.Contains(Found(), "antigravity") {
+		t.Error("a T3-only install is missing from the session reading choice")
+	}
+	conv := filepath.Join(home, ".t3", "userdata", "providers", "antigravity", profile, "antigravity-acp", "conversations")
+	if !slices.Contains(Dirs(), conv) {
+		t.Errorf("the T3 ACP conversations folder is not listed in %v", Dirs())
+	}
+
+	files := antigravityFiles()
+	if len(files) != 1 || files[0].key != "antigravity:t3-"+id || files[0].path != filepath.Join(conv, id+".db") {
+		t.Fatalf("files = %+v, want one keyed antigravity:t3-%s at %s", files, id, filepath.Join(conv, id+".db"))
+	}
+
+	// Usage: the fixture's four calls, under T3's session id and its own
+	// call ids.
+	var got []Call
+	for _, c := range Calls(time.Time{}) {
+		if c.Agent == "antigravity" {
+			got = append(got, c)
+		}
+	}
+	slices.SortFunc(got, func(a, b Call) int { return a.Time.Compare(b.Time) })
+	want := []struct {
+		sec    int64
+		nanos  int64
+		model  string
+		tokens Tokens
+	}{
+		{1791860318, 193779000, "gemini-3.8-flash", Tokens{Input: 13317, Output: 621}},
+		{1791860328, 770822000, "gemini-3.8-flash", Tokens{Input: 14184, Output: 164}},
+		{1791860333, 626675000, "gemini-3.8-flash", Tokens{Input: 15531, Output: 194}},
+		{1791860353, 992204000, "", Tokens{Input: 4254, Output: 276, CacheRead: 18561}},
+	}
+	msgs := map[string]bool{}
+	if len(got) != len(want) {
+		t.Fatalf("want %d calls, got %d: %+v", len(want), len(got), got)
+	}
+	for i, w := range want {
+		c := got[i]
+		if !c.Time.Equal(time.Unix(w.sec, w.nanos)) || c.Session != "t3-"+id || c.Model != w.model || c.Tokens != w.tokens {
+			t.Errorf("call %d: %v %s %q %+v, want %v %s %q %+v", i, c.Time, c.Session, c.Model, c.Tokens, time.Unix(w.sec, w.nanos), "t3-"+id, w.model, w.tokens)
+		}
+		if !strings.HasPrefix(c.Msg, "antigravity:t3-"+id+":") || msgs[c.Msg] {
+			t.Errorf("call %d: call id %q off T3's session or taken", i, c.Msg)
+		}
+		msgs[c.Msg] = true
+	}
+
+	// The Sessions page: read only, its own store nowhere in it.
+	s := find(t, List(0), "antigravity", "t3-"+id)
+	if !s.ReadOnly || s.Resume != "" || s.Path != filepath.Join(conv, id+".db") {
+		t.Errorf("session read only/resume/path = %v/%q/%q", s.ReadOnly, s.Resume, s.Path)
+	}
+	if model(s, "gemini-3.8-flash").Tokens != (Tokens{Input: 43032, Output: 979}) {
+		t.Errorf("model tokens = %+v", model(s, "gemini-3.8-flash"))
+	}
+
+	// T3's calls sit behind the Antigravity switch, as the app's own.
+	if err := SetReads(nil, map[string]bool{"antigravity": false}); err != nil {
+		t.Fatal(err)
+	}
+	if len(antigravityFiles()) != 0 || len(antigravityCallFiles()) != 0 {
+		t.Error("turning off Antigravity still discovers T3 files")
+	}
+	for _, c := range Calls(time.Time{}) {
+		if c.Agent == "antigravity" {
+			t.Error("turning off Antigravity still counts a call")
+		}
+	}
+}
+
+// A UUID the desktop app's store has too is T3's own session, two
+// profiles' stores are read as they are, and a profile moved or restored
+// keeps its sessions' and calls' ids, so nothing counts twice (#6884).
+func TestAntigravityT3ProfilesApart(t *testing.T) {
+	claude, _ := setup(t)
+	home := filepath.Join(filepath.Dir(claude), "home")
+	const id, other = "37c3c786-9a11-44be-97df-b8fc1ccebc78", "b9eace9a-b15a-4dde-a440-b52e02016fa5"
+	appDB := antigravityFixture(t, home, id)
+	antigravityT3Fixture(t, home, "profile-a", id)
+	antigravityT3Fixture(t, home, "profile-b", other)
+
+	ss := List(0)
+	app, t3, t3b := find(t, ss, "antigravity", id), find(t, ss, "antigravity", "t3-"+id), find(t, ss, "antigravity", "t3-"+other)
+	if app.Path != appDB || t3.Path == app.Path {
+		t.Errorf("app and T3 sessions apart: %q and %q", app.Path, t3.Path)
+	}
+	for _, s := range []Session{app, t3, t3b} {
+		if model(s, "gemini-3.8-flash").Tokens != (Tokens{Input: 43032, Output: 979}) {
+			t.Errorf("%s: model tokens = %+v", s.ID, model(s, "gemini-3.8-flash"))
+		}
+	}
+	counts, msgs := map[string]int{}, map[string]bool{}
+	for _, c := range Calls(time.Time{}) {
+		if c.Agent != "antigravity" {
+			continue
+		}
+		counts[c.Session]++
+		if c.Msg == "" || msgs[c.Msg] {
+			t.Errorf("call id %q empty or taken", c.Msg)
+		}
+		msgs[c.Msg] = true
+	}
+	if counts[id] != 4 || counts["t3-"+id] != 4 || counts["t3-"+other] != 4 || len(msgs) != 12 {
+		t.Errorf("calls by session = %v over %d ids", counts, len(msgs))
+	}
+
+	// A profile moved keeps its sessions' and calls' ids.
+	before := make([]string, 0, len(msgs))
+	for m := range msgs {
+		before = append(before, m)
+	}
+	profiles := filepath.Join(home, ".t3", "userdata", "providers", "antigravity")
+	if err := os.Rename(filepath.Join(profiles, "profile-a"), filepath.Join(profiles, "profile-a-moved")); err != nil {
+		t.Fatal(err)
+	}
+	find(t, List(0), "antigravity", "t3-"+id)
+	after := map[string]bool{}
+	for _, c := range Calls(time.Time{}) {
+		if c.Agent == "antigravity" {
+			after[c.Msg] = true
+		}
+	}
+	if len(after) != len(msgs) {
+		t.Errorf("calls after the move = %d ids, want the same %d", len(after), len(msgs))
+	}
+	for _, m := range before {
+		if !after[m] {
+			t.Errorf("call id %q lost by the move", m)
+		}
 	}
 }

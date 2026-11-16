@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/dirent"
 )
 
@@ -78,12 +79,14 @@ func antigravityConversations() string {
 	return filepath.Join(AntigravityAppDir(), "conversations")
 }
 
-// antigravityFiles are stable and Insiders' conversations. Insiders' ids
-// have their own prefix so a UUID present in both stores is two sessions
-// with separate summaries and call ids. Stable's existing ids stay the same.
+// antigravityFiles are stable's, Insiders' and T3 Code's managed ACP
+// conversations. Insiders' and T3's ids have their own prefix so a UUID
+// present in another store is two sessions with separate summaries and
+// call ids. Stable's existing ids stay the same.
 func antigravityFiles() []file {
-	return append(antigravityFilesIn(antigravityConversations(), runtime.GOOS),
-		antigravityInsiders(filepath.Join(AntigravityInsidersDir(), "conversations"), runtime.GOOS)...)
+	out := antigravityFilesIn(antigravityConversations(), runtime.GOOS)
+	out = append(out, antigravityInsiders(filepath.Join(AntigravityInsidersDir(), "conversations"), runtime.GOOS)...)
+	return append(out, antigravityT3Files()...)
 }
 
 // antigravityInsiders are the Insiders app's conversation databases in dir,
@@ -92,6 +95,63 @@ func antigravityInsiders(dir, goos string) []file {
 	out := antigravityFilesIn(dir, goos)
 	for i := range out {
 		out[i].key = "antigravity:insiders-" + strings.TrimPrefix(out[i].key, "antigravity:")
+	}
+	return out
+}
+
+// T3 Code's managed Antigravity ACP provider keeps the app's own stores
+// (#6884, deepfry666): the provider runs the engine the desktop app's
+// language server is, agy_acp_server, which keeps the same conversation
+// databases per signed-in Google profile, one folder a profile, under
+// ~/.t3/userdata/providers/antigravity/<profile id>/antigravity-acp
+// ($T3CODE_HOME's userdata). Its calls are the app's own, read by the same
+// reader, keyed apart ("t3-") from the app's and Insiders': a profile
+// moved or restored keeps its sessions' and calls' ids, and a UUID another
+// store has too is a session of its own. The profiles are behind the
+// Antigravity session-read switch, as the app's stores are.
+
+// antigravityT3Profiles is T3 Code's folder of managed Antigravity
+// profiles.
+func antigravityT3Profiles() string {
+	base := appdir.Getenv("T3CODE_HOME")
+	if base == "" {
+		home, _ := os.UserHomeDir()
+		base = filepath.Join(home, ".t3")
+	}
+	return filepath.Join(expandHome(base), "userdata", "providers", "antigravity")
+}
+
+// antigravityT3Conversations are each profile's conversations folder, as
+// Found and Dirs name them.
+func antigravityT3Conversations() []string {
+	profiles := antigravityT3Profiles()
+	entries, _ := os.ReadDir(profiles)
+	var out []string
+	for _, e := range entries {
+		if !dirent.IsFolder(profiles, e) {
+			continue
+		}
+		out = append(out, filepath.Join(profiles, e.Name(), "antigravity-acp", "conversations"))
+	}
+	return out
+}
+
+// antigravityT3Files are T3 Code's managed ACP profiles' conversations,
+// keyed apart from the app's and Insiders'.
+func antigravityT3Files() []file {
+	var out []file
+	for _, dir := range antigravityT3Conversations() {
+		out = append(out, antigravityT3(dir, runtime.GOOS)...)
+	}
+	return out
+}
+
+// antigravityT3 are the conversations in dir, keyed apart from the app's
+// and Insiders'.
+func antigravityT3(dir, goos string) []file {
+	out := antigravityFilesIn(dir, goos)
+	for i := range out {
+		out[i].key = "antigravity:t3-" + strings.TrimPrefix(out[i].key, "antigravity:")
 	}
 	return out
 }

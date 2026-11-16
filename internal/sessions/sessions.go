@@ -1139,6 +1139,12 @@ func Dirs() []string {
 		}
 		out = append(out, d.dir)
 	}
+	// T3 Code's managed Antigravity ACP profiles (#6884)
+	for _, d := range antigravityT3Conversations() {
+		if _, err := os.Stat(d); err == nil {
+			out = append(out, d)
+		}
+	}
 	// Cindy's Pi sessions, by their own folder: Cindy's is the app's
 	// whole data
 	for _, d := range cindySessionDirs() {

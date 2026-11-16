@@ -26,9 +26,10 @@ var pngBytes = []byte("\x89PNG\r\n\x1a\n fake")
 // easel is a vendor with an images API model and a chat model that answers
 // with an image; what each path was sent is kept.
 type easel struct {
-	mu   sync.Mutex
-	sent map[string][]string
-	ct   map[string]string
+	mu          sync.Mutex
+	sent        map[string][]string
+	ct          map[string]string
+	imagesReply string // the images answer a test sets, instead of the usual
 }
 
 func (e *easel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +49,10 @@ func (e *easel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	switch r.URL.Path {
 	case "/v1/images/generations", "/v1/images/edits":
+		if e.imagesReply != "" {
+			io.WriteString(w, e.imagesReply)
+			return
+		}
 		io.WriteString(w, `{"created":1,"data":[{"b64_json":"`+b64+`"}],"usage":{"input_tokens":7,"output_tokens":100}}`)
 	case "/v1/chat/completions":
 		if !strings.Contains(string(body), `"modalities":["image","text"]`) {
@@ -93,8 +98,12 @@ type imagesAnswer struct {
 	} `json:"data"`
 	Text  string `json:"text"`
 	Usage struct {
-		Input  int `json:"input_tokens"`
-		Output int `json:"output_tokens"`
+		Input              int `json:"input_tokens"`
+		Output             int `json:"output_tokens"`
+		InputTokensDetails *struct {
+			TextTokens  int `json:"text_tokens"`
+			ImageTokens int `json:"image_tokens"`
+		} `json:"input_tokens_details"`
 	} `json:"usage"`
 }
 

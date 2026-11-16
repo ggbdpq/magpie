@@ -677,6 +677,10 @@ type drawn struct {
 	Revised string // the prompt as an images API rewrote it
 	Input   int
 	Output  int
+	// InputDetails is the vendor's usage.input_tokens_details, as it said
+	// it, when it did; nil otherwise, and the answer is given the input
+	// alone as text tokens (#6843)
+	InputDetails json.RawMessage
 }
 
 func (s *Server) images(edit bool) http.HandlerFunc {
@@ -876,8 +880,18 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 			}
 			data = append(data, e)
 		}
+		details := out.InputDetails
+		if len(details) == 0 {
+			// OpenAI's Images API names usage.input_tokens_details a member
+			// of the object, and a client that reads it calls the draw a
+			// failure when it is missing (#6843): a vendor that said none is
+			// given the input alone as text tokens
+			d, _ := json.Marshal(map[string]int{"text_tokens": out.Input, "image_tokens": 0})
+			details = d
+		}
 		res := map[string]any{"created": start.Unix(), "model": p.ID + "/" + model, "data": data,
-			"usage": map[string]int{"input_tokens": out.Input, "output_tokens": out.Output, "total_tokens": out.Input + out.Output}}
+			"usage": map[string]any{"input_tokens": out.Input, "output_tokens": out.Output, "total_tokens": out.Input + out.Output,
+				"input_tokens_details": json.RawMessage(details)}}
 		if out.Text != "" {
 			res["text"] = out.Text
 		}
@@ -1856,6 +1870,11 @@ func readImagesAnswer(p provider.Provider, url string, b []byte, code int) (draw
 			Output     int `json:"output_tokens"`
 			Prompt     int `json:"prompt_tokens"`
 			Completion int `json:"completion_tokens"`
+			// InputDetails goes through as the vendor said it: OpenAI's
+			// Images API names input_tokens_details a member of usage,
+			// and a client that reads it calls the draw a failure when
+			// it is missing (#6843)
+			InputDetails json.RawMessage `json:"input_tokens_details"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(b, &res); err != nil {
@@ -1868,7 +1887,7 @@ func readImagesAnswer(p provider.Provider, url string, b []byte, code int) (draw
 	if output == 0 {
 		output = res.Usage.Completion
 	}
-	out := drawn{Input: input, Output: output}
+	out := drawn{Input: input, Output: output, InputDetails: res.Usage.InputDetails}
 	for _, e := range res.Data {
 		if e.Revised != "" {
 			out.Revised = e.Revised

@@ -1756,6 +1756,7 @@ type chatEncoder struct {
 	created int64
 	started bool
 	tool    int
+	args    bool // the open tool call got arguments
 	col     collector
 }
 
@@ -1805,7 +1806,9 @@ func (e *chatEncoder) event(ev Event) {
 			e.chunk(map[string]any{"reasoning_content": ev.Text}, nil, nil)
 		}
 	case KToolStart:
+		e.closeArgs() // the open call's arguments end where the next call begins
 		e.tool++
+		e.args = false
 		id := ev.ID
 		if id == "" {
 			id = "call_" + newID()
@@ -1814,6 +1817,7 @@ func (e *chatEncoder) event(ev Event) {
 			"function": map[string]any{"name": ev.Name, "arguments": ""}}}}, nil, nil)
 	case KToolArgs:
 		if e.tool >= 0 && ev.Text != "" {
+			e.args = true
 			e.chunk(map[string]any{"tool_calls": []map[string]any{{"index": e.tool,
 				"function": map[string]any{"arguments": ev.Text}}}}, nil, nil)
 		}
@@ -1838,10 +1842,26 @@ func (e *chatEncoder) event(ev Event) {
 // Completions stream alive; its readers skip one.
 func (e *chatEncoder) keepalive() { e.w.comment("keepalive") }
 
+// closeArgs says the open tool call's arguments when none came: Chat's
+// calls begin as "" and grow by deltas, and "" is no JSON, so a client
+// that parses a call's arguments before it runs the tool (most do)
+// rejects the call (#6832). Chat has no event that ends a call: its
+// arguments complete where the next call begins, and at the reply's end.
+// Anthropic's encoder does the same at its block's close
+// (anthropicEncoder.close), Responses' at its item's (closeAs).
+func (e *chatEncoder) closeArgs() {
+	if e.tool >= 0 && !e.args {
+		e.args = true
+		e.chunk(map[string]any{"tool_calls": []map[string]any{{"index": e.tool,
+			"function": map[string]any{"arguments": "{}"}}}}, nil, nil)
+	}
+}
+
 func (e *chatEncoder) finish() {
 	if !e.started {
 		e.start(Event{})
 	}
+	e.closeArgs() // a call still open ends here, its arguments completed
 	res := e.col.finish()
 	e.chunk(nil, stopToChat(res.Stop), nil)
 	e.chunk(nil, nil, res.Usage.chat())

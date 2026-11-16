@@ -316,20 +316,25 @@ func fillsOutput(p provider.Provider, to provider.Protocol) bool {
 		(p.Account == nil || p.IsPlugin())
 }
 
-// outputFieldRefused is a request error about the reply limit itself
-// ("max_tokens must be at most 32768"), not the window it shares with the
-// prompt, which replyLeft reads and the request is asked again for.
-func outputFieldRefused(status int, body []byte) bool {
-	if !badRequest(status) {
-		return false
-	}
-	w := wordsOf(body)
+// outputFieldWords is whether decoded words of a request error name the
+// reply limit itself ("max_tokens must be at most 32768"), and not the
+// window it shares with the prompt, which replyLeft reads and the request
+// is asked again for. The limit a client named on a group is the longest
+// a member of it gives (buildGroupEntries), so a member whose own is
+// lower, and absent from the model list it serves, answers with this,
+// and another member may take the request (#6745).
+func outputFieldWords(w []byte) bool {
 	if replyLeft(w) > 0 {
 		return false
 	}
 	m := strings.ToLower(string(w))
 	return strings.Contains(m, "max_tokens") || strings.Contains(m, "max_output_tokens") ||
 		strings.Contains(m, "max_completion_tokens") || strings.Contains(m, "maxoutputtokens")
+}
+
+// outputFieldRefused is a request error about the reply limit itself.
+func outputFieldRefused(status int, body []byte) bool {
+	return badRequest(status) && outputFieldWords(wordsOf(body))
 }
 
 // outputFillRefused names, for markUnfit, a model whose vendor turned

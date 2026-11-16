@@ -1866,10 +1866,16 @@ var unsaidWords = lazyre.New(`(?i)(^|"|\\"|: )invalid request error trace_id: [0
 // mimi001234) is one: the member that gave it may take it.
 // One that also says the account is out of quota or credit (quotaWords,
 // creditWords: "请充值") is that, and rests it (#4095).
+// A reply limit the client named, turned away by a member whose own is
+// lower (outputFieldWords), is one too: the group tells agents the longest
+// a member of it gives (buildGroupEntries), so the client asks in that
+// member's words, and another member may take the request (#6745). The
+// window the reply shares with the prompt is not one: replyLeft reads it,
+// and the same member is asked again for what it has left.
 func shapeRefused(status int, body []byte) bool {
 	// the words are matched decoded, too (#1669)
 	body = wordsOf(body)
-	return (status == 400 || status == 422) && (shapeWords.Match(body) || unsaidWords.Match(body) || customToolRefusal.Match(body) || zhipuImageRefusal.Match(body) || wrongEndpoint(status, body) || upstreamFailedWords.Match(body) || reasoningBackRefused(body) || signatureRefused.Match(body)) &&
+	return (status == 400 || status == 422) && (shapeWords.Match(body) || unsaidWords.Match(body) || customToolRefusal.Match(body) || zhipuImageRefusal.Match(body) || wrongEndpoint(status, body) || upstreamFailedWords.Match(body) || reasoningBackRefused(body) || signatureRefused.Match(body) || outputFieldWords(body)) &&
 		!quotaWords.Match(body) && !creditWords.Match(body) && !unservedWords.Match(body) && !refusedWords.Match(body)
 }
 
@@ -2074,7 +2080,11 @@ func retryable(status int, body []byte) bool {
 			upstreamFailedWords.Match(body) ||
 			// a model's demand for an earlier turn's reasoning (EDwinpzy):
 			// another member's model may not make it
-			reasoningBackRefused(body)
+			reasoningBackRefused(body) ||
+			// the reply limit the client named, which a member whose own is
+			// lower turns away (outputFieldWords): another member may take
+			// the request (#6745)
+			outputFieldWords(body)
 	}
 	return false
 }

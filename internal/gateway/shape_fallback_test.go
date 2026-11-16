@@ -94,6 +94,75 @@ func TestGroupFailsOverASchemaTooDeep(t *testing.T) {
 	}
 }
 
+// relayLimit400 is a relay aggregate turning a request away over the reply
+// limit the client named: the group advertises the longest a member of it
+// gives, and this member's own — lower, and absent from the model list it
+// serves — went out as it was (#6745, YaoGuaiLi).
+const relayLimit400 = `{"error":{"message":"max_completion_tokens is outside the allowed range","type":"invalid_request_error"}}`
+
+// A member refusing the reply limit the client named is that member's own,
+// not the request's: the limit the client asks in is the longest a member
+// of the group gives, so another member may take the request, and the one
+// that refused doesn't rest. Before, the route ended on it with the later
+// members never asked (#6745).
+func TestGroupFailsOverAnOutputLimitRefusal(t *testing.T) {
+	fresh(t)
+	a := &scripted{replies: []reply{{400, "", relayLimit400}}}
+	b := &scripted{replies: []reply{{200, "", chatOK}}}
+	scriptedOn(t, "a", provider.Chat, a)
+	scriptedOn(t, "b", provider.Chat, b)
+	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	for i := 1; i <= 2; i++ {
+		code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":458752}`)
+		if code != 200 || !strings.Contains(body, "hello") || a.n != i || b.n != i {
+			t.Fatalf("request %d: %d %s (a %d, b %d)", i, code, body, a.n, b.n)
+		}
+	}
+	r := s.trace.routes[len(s.trace.routes)-1]
+	if len(r.Tries) != 2 || r.Tries[0].Status != 400 || r.Tries[0].Fail != failShape || r.Tries[0].Rest != nil {
+		t.Fatalf("tries %+v", r.Tries)
+	}
+
+	if err := provider.SaveGroup(provider.Group{Name: "Solo", Members: []string{"a/m"}, Routing: provider.Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	a.n = 0
+	if code, body := postAs(t, s, "", `{"model":"group/solo","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":458752}`); code != 400 || !strings.Contains(body, "outside the allowed range") || a.n != 1 {
+		t.Fatalf("alone: %d %s (a %d)", code, body, a.n)
+	}
+
+	for _, x := range []struct {
+		status int
+		body   string
+		want   bool
+	}{
+		{400, relayLimit400, true},
+		// OpenAI's own wording, which names the most it takes, reads as a
+		// model unserved too (unservedWords), whose own hand-off applies:
+		// the shape's no-rest doesn't
+		{400, `{"error":{"message":"max_completion_tokens is too large: 458752. This model supports at most 131072 completion tokens","type":"invalid_request_error"}}`, false},
+		{400, `{"error":{"message":"max_tokens must be at most 32768","type":"invalid_request_error"}}`, true},
+		// Gemini's, in the camelCase its API spells it with
+		{400, `{"error":{"message":"maxOutputTokens must be at most 8192"}}`, true},
+		// the window the reply shares with the prompt, which replyLeft
+		// reads and the same member is asked again for
+		{400, `{"error":{"message":"input length and ` + "`max_tokens`" + ` exceed context limit: 197202 + 21333 > 200000","type":"invalid_request_error"}}`, false},
+		{400, `{"error":{"message":"This model's maximum context length is 128000 tokens. However, you requested 130000 tokens (126000 in the messages, 2000 in the completion)","type":"invalid_request_error"}}`, false},
+		// a parameter that isn't the reply limit
+		{400, `{"error":{"message":"Invalid option: expected one of \"low\"|\"medium\"|\"high\"","type":"invalid_request_error","param":"reasoning_effort"}}`, false},
+		{422, relayLimit400, true},
+		{200, relayLimit400, false},
+		{500, relayLimit400, false},
+	} {
+		if got := shapeRefused(x.status, []byte(x.body)); got != x.want {
+			t.Errorf("shapeRefused(%d, %s) = %v", x.status, x.body, got)
+		}
+	}
+}
+
 // commandCodeBare400 is Command Code's Provider API turning a request away
 // with nothing but its trace id, as lqisgod's usage.jsonl has it (#2313).
 const commandCodeBare400 = `{"message":"invalid request error trace_id: 251c3c29761c17fdc459480ed9c68932","type":"invalid_request_error"}`

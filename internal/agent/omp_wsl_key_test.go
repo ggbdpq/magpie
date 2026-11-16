@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/yetone/magpie/internal/access"
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/testenv"
 	"gopkg.in/yaml.v3"
 )
@@ -17,7 +18,8 @@ import (
 // request without a named key is turned away (whqtian on Discord: it
 // connected only once auth: none was swapped for the key by hand). Its
 // models.yml carries the key the gateway is shared on the network with;
-// one on loopback stays keyless, and so does one while nothing is shared.
+// one on loopback carries gateway.Token, which the gateway takes there.
+// Every block says auth: apiKey (#6888).
 func TestOmpKeyBeyondLoopback(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -25,7 +27,7 @@ func TestOmpKeyBeyondLoopback(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	wsl := "http://172.23.80.1:3425"
-	if e := ompProviderAt(wsl, "18.4.8"); e.Auth != "none" || e.APIKey != "" {
+	if e := ompProviderAt(wsl, "18.4.8"); e.Auth != "apiKey" || e.APIKey != gateway.Token {
 		t.Fatalf("not shared, yet auth %q key %q", e.Auth, e.APIKey)
 	}
 	if err := access.ConfigureLAN(true, false); err != nil {
@@ -36,22 +38,22 @@ func TestOmpKeyBeyondLoopback(t *testing.T) {
 		t.Fatalf("LAN key %q", key)
 	}
 	e := ompProviderAt(wsl, "18.4.8")
-	if e.APIKey != key || e.Auth != "" {
+	if e.APIKey != key || e.Auth != "apiKey" {
 		t.Fatalf("WSL omp under NAT: auth %q key %q, want the LAN key", e.Auth, e.APIKey)
 	}
 	b, _ := yaml.Marshal(e)
-	if strings.Contains(string(b), "auth:") || !strings.Contains(string(b), "apiKey: "+key) {
+	if !strings.Contains(string(b), "auth: apiKey") || !strings.Contains(string(b), "apiKey: "+key) {
 		t.Errorf("models.yml entry:\n%s", b)
 	}
 	for _, gw := range []string{"http://127.0.0.1:3425", "http://localhost:3425"} {
-		if e := ompProviderAt(gw, "18.4.8"); e.Auth != "none" || e.APIKey != "" {
+		if e := ompProviderAt(gw, "18.4.8"); e.Auth != "apiKey" || e.APIKey != gateway.Token {
 			t.Errorf("%s: auth %q key %q", gw, e.Auth, e.APIKey)
 		}
 	}
 	if err := access.ConfigureLAN(false, false); err != nil {
 		t.Fatal(err)
 	}
-	if e := ompProviderAt(wsl, "18.4.8"); e.Auth != "none" || e.APIKey != "" {
+	if e := ompProviderAt(wsl, "18.4.8"); e.Auth != "apiKey" || e.APIKey != gateway.Token {
 		t.Errorf("sharing off, yet auth %q key %q", e.Auth, e.APIKey)
 	}
 }

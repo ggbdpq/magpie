@@ -617,9 +617,12 @@ type ompThinking struct {
 type ompProviderEntry struct {
 	BaseURL string `yaml:"baseUrl"`
 	API     string `yaml:"api"`
-	// Auth is none on loopback, where the gateway asks for no key; APIKey,
-	// for an omp that reaches it from beyond (a WSL distro under NAT), the
-	// key the gateway is shared on the network with
+	// Auth is apiKey: the block always points at magpie's own gateway,
+	// which always takes an API key, and without it omp takes a Claude on
+	// anthropic-messages for a subscription (#6888). APIKey is the key that
+	// reaches the gateway at the address it is written for: gateway.Token
+	// on loopback, beyond it the one the gateway is shared on the network
+	// with (a WSL distro under NAT)
 	Auth   string `yaml:"auth,omitempty"`
 	APIKey string `yaml:"apiKey,omitempty"`
 	// Headers name omp to the gateway: omp 16.x asks with Bun's User-Agent
@@ -738,19 +741,20 @@ func ompProviderAt(gw, version string) ompProviderEntry {
 	}
 	images := ompImageModels(version, ms)
 	ms = append(ms, images...)
-	e := ompProviderEntry{BaseURL: gw + "/v1", API: "openai-completions", Auth: "none",
+	// #6888: omp takes an anthropic-messages model of a provider with no
+	// auth: apiKey for a Claude subscription and cloaks every request as
+	// Claude Code (billing header, _-prefixed tools, context_management),
+	// which relays refuse. The block always points at magpie's own gateway,
+	// which always takes an API key, so it always says auth: apiKey and
+	// carries the key that reaches it: on loopback, where auth: none left
+	// the key unwritten and the decision to omp; beyond it, the named key
+	// a WSL omp under NAT needs (whqtian on Discord) — which generate_image
+	// wants too, a keyless provider's model it skips as "credentials
+	// unavailable" (image-gen.ts, omp 18.15.0 against a stand-in gateway).
+	e := ompProviderEntry{BaseURL: gw + "/v1", API: "openai-completions", Auth: "apiKey", APIKey: keyAt(gw),
 		Headers: map[string]string{"User-Agent": "omp"}, Models: ms}
 	if version != "" && !Newer(ompSessionSince, version) {
 		e.Compat = map[string]string{"promptCacheSessionHeader": "x-session-affinity"}
-	}
-	// whqtian on Discord: a WSL omp under NAT asks Windows' address, where
-	// the gateway turns a request without a named key away
-	// on loopback too once an image model is listed: omp's generate_image
-	// skips a model of a keyless provider as "credentials unavailable"
-	// (image-gen.ts, isAuthenticated turns auth: none's kNoAuth away; omp
-	// 18.15.0 run against a stand-in gateway), where chat goes without one
-	if key := keyAt(gw); key != gateway.Token || len(images) > 0 {
-		e.Auth, e.APIKey = "", key
 	}
 	return e
 }
@@ -812,8 +816,8 @@ func ompGeminiMode(id string) string {
 // context or cost), discovery, disableStrictTools, remoteCompaction, a
 // header or compat flag of their own (models-config-schema-bundle.ts
 // ProviderConfigSchema). Each stays; the address, API, auth, key and model
-// list are magpie's, an auth or key it no longer writes gone with it, so a
-// loopback's auth: none never sits beside the key a WSL omp needs (#2030).
+// list are magpie's, a key it no longer reaches the gateway with gone with
+// the rewrite (#2030).
 func ompKept(path string, e ompProviderEntry) any {
 	return yamlKept(path, "providers."+magpieID, e, "baseUrl", "api", "auth", "apiKey", "models")
 }

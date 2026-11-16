@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/gateway"
 	"gopkg.in/yaml.v3"
 )
 
@@ -36,8 +37,8 @@ func TestOmpListsImageModelsForItsImageRole(t *testing.T) {
 	}
 	e := f.Providers[magpieID]
 	// omp's generate_image skips a model of a keyless provider
-	if e.Auth != "" || e.APIKey != "magpie" {
-		t.Errorf("auth %q, apiKey %q: want the gateway's key, not auth: none", e.Auth, e.APIKey)
+	if e.Auth != "apiKey" || e.APIKey != "magpie" {
+		t.Errorf("auth %q, apiKey %q: want the gateway's key under auth: apiKey", e.Auth, e.APIKey)
 	}
 	if e.BaseURL != here(home).v1() {
 		t.Errorf("baseUrl = %q, want %q: omp posts to it + /images/generations", e.BaseURL, here(home).v1())
@@ -63,7 +64,7 @@ func TestOmpListsImageModelsForItsImageRole(t *testing.T) {
 
 	// omp before 18.7.0 turns the whole file away over openai-images, and
 	// one whose version isn't known is taken for an older one
-	// (and its chat stays keyless on loopback)
+	// (and its chat models list none of magpie's image models)
 	for _, v := range []string{"18.6.3", ""} {
 		e := ompProviderAt("http://127.0.0.1:3425", v)
 		for _, m := range e.Models {
@@ -71,8 +72,8 @@ func TestOmpListsImageModelsForItsImageRole(t *testing.T) {
 				t.Errorf("omp %q got %s (%s, %s)", v, m.ID, m.Kind, m.API)
 			}
 		}
-		if e.Auth != "none" || e.APIKey != "" {
-			t.Errorf("omp %q: auth %q, apiKey %q, want auth: none", v, e.Auth, e.APIKey)
+		if e.Auth != "apiKey" || e.APIKey != gateway.Token {
+			t.Errorf("omp %q: auth %q, apiKey %q, want auth: apiKey", v, e.Auth, e.APIKey)
 		}
 	}
 	got := 0

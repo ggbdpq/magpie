@@ -9,6 +9,7 @@ import (
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/usage"
 	"gopkg.in/yaml.v3"
@@ -56,7 +57,7 @@ func TestOmp(t *testing.T) {
 	m, raw := read(modelsPath)
 	ps := providers(m)
 	mp, ok := ps["magpie"].(map[string]any)
-	if !ok || ps["mine"] == nil || mp["auth"] != "none" || mp["api"] != "openai-completions" || !strings.HasSuffix(mp["baseUrl"].(string), "/v1") {
+	if !ok || ps["mine"] == nil || mp["auth"] != "apiKey" || mp["api"] != "openai-completions" || !strings.HasSuffix(mp["baseUrl"].(string), "/v1") {
 		t.Fatalf("models:\n%s", raw)
 	}
 	ids := map[string]bool{}
@@ -785,7 +786,7 @@ func TestOmpKeepsTheUsersSettings(t *testing.T) {
 		for _, m := range mp.Models {
 			ids = append(ids, m.ID)
 		}
-		if mp.BaseURL == "http://127.0.0.1:1/v1" || mp.Auth != "none" || mp.APIKey != nil || mp.Headers["User-Agent"] != "omp" ||
+		if mp.BaseURL == "http://127.0.0.1:1/v1" || mp.Auth != "apiKey" || mp.APIKey == nil || *mp.APIKey != gateway.Token || mp.Headers["User-Agent"] != "omp" ||
 			slices.Contains(ids, "gone/old") || !slices.Contains(ids, "kimi/k3") {
 			t.Errorf("%s: magpie's own parts not written:\n%s", when, raw)
 		}

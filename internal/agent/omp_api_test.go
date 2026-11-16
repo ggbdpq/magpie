@@ -54,7 +54,7 @@ func TestOmpModelsAskedOnTheirNativeAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	pm := file["providers"].(map[string]any)["magpie"].(map[string]any)
-	if pm["api"] != "openai-completions" || pm["baseUrl"] != gatewayV1() || pm["auth"] != "none" {
+	if pm["api"] != "openai-completions" || pm["baseUrl"] != gatewayV1() || pm["auth"] != "apiKey" || pm["apiKey"] != gateway.Token {
 		t.Fatalf("provider: %v", pm)
 	}
 	entries := map[string]map[string]any{}
@@ -99,11 +99,42 @@ func TestOmpModelsAskedOnTheirNativeAPI(t *testing.T) {
 	}
 }
 
+// #6888: omp takes an anthropic-messages model of a provider with no
+// auth: apiKey for a Claude subscription and cloaks every request as
+// Claude Code (billing header, _-prefixed tools, context_management),
+// which relays refuse. magpie's block always points at magpie's own
+// gateway, which always takes an API key, so it always says auth: apiKey
+// and carries the key that reaches it — on loopback too, where auth: none
+// left the key unwritten and the decision to omp.
+func TestOmpWritesApiKeyAuth(t *testing.T) {
+	home := syncHome(t)
+	was := ompVersion
+	ompVersion = func() string { return "18.4.8" }
+	t.Cleanup(func() { ompVersion = was })
+	if err := provider.Save(provider.Provider{ID: "anth", Name: "Anth", Key: "k", Anthropic: "http://127.0.0.1:1", Models: []string{"claude-haiku-5.5"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := omp(home).Field("model").Set("magpie/anth/claude-haiku-5.5"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".omp", "agent", "models.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file map[string]any
+	if err := yaml.Unmarshal(b, &file); err != nil {
+		t.Fatal(err)
+	}
+	pm := file["providers"].(map[string]any)["magpie"].(map[string]any)
+	if pm["auth"] != "apiKey" || pm["apiKey"] != gateway.Token {
+		t.Fatalf("magpie block: %v", pm)
+	}
+}
+
 // #4277: omp asks a Gemini model on Gemini's own API, as OmO does: its
 // google-generative-ai posts to baseUrl/models/<id>:streamGenerateContent,
-// so baseUrl is the gateway's /v1beta. Under auth: none omp hands the
-// Google client its "N/A" no-auth key, which it sends as x-goog-api-key and
-// loopback takes, so the provider stays keyless. Gemini 3 thinks by
+// so baseUrl is the gateway's /v1beta. The Google client sends the key
+// magpie wrote as x-goog-api-key, which loopback takes. Gemini 3 thinks by
 // thinkingLevel (google-level), 2.5 by a budget, which refuses a level. A
 // model the provider serves on Chat, and a group, stay on Chat.
 func TestOmpGeminiModelsAskedOnGeminisAPI(t *testing.T) {
@@ -144,7 +175,7 @@ func TestOmpGeminiModelsAskedOnGeminisAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	pm := file["providers"].(map[string]any)["magpie"].(map[string]any)
-	if pm["api"] != "openai-completions" || pm["baseUrl"] != gatewayV1() || pm["auth"] != "none" || pm["apiKey"] != nil {
+	if pm["api"] != "openai-completions" || pm["baseUrl"] != gatewayV1() || pm["auth"] != "apiKey" || pm["apiKey"] != gateway.Token {
 		t.Fatalf("provider: %v", pm)
 	}
 	entries := map[string]map[string]any{}

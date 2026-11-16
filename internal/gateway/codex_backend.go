@@ -4336,9 +4336,11 @@ func localSummary(body []byte, why string) string {
 }
 
 type compactOutput struct {
-	Type    string `json:"type"`
-	Name    string `json:"name"` // a call's tool
-	Content []struct {
+	Type      string `json:"type"`
+	Name      string `json:"name"`      // a call's tool
+	CallID    string `json:"call_id"`   // a function_call's, the id its answer names (#4942)
+	Arguments string `json:"arguments"` // a function_call's, as the model wrote them
+	Content   []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`

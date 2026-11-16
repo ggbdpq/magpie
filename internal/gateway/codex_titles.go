@@ -289,6 +289,81 @@ func replyCheck(ctx context.Context) func(reply string) string {
 	return f
 }
 
+// codexTitleTool is the one tool a title request may offer: Codex's title
+// hook names it set_thread_title. The thread's other tools belong to its
+// own turns; offered on a title request, a model may call one and Codex
+// gets no title.
+const codexTitleTool = "set_thread_title"
+
+// codexSideBody is body for one of Codex's hidden side turns, which answers
+// in text: only the tool named tool, if any, is offered, since a model that
+// could call one of the thread's own tools may call it instead of
+// answering. Responses Lite offers tools in an additional_tools input item,
+// which goes too. tools stays an empty list, not left out, as a compaction's
+// request sends it (#1511), and tool_choice is auto for a relay in front of
+// the ChatGPT backend (#292).
+func codexSideBody(body []byte, tool string) []byte {
+	var q map[string]json.RawMessage
+	if json.Unmarshal(body, &q) != nil {
+		return body
+	}
+	var tools []json.RawMessage
+	if raw, ok := q["tools"]; ok {
+		var all []json.RawMessage
+		if json.Unmarshal(raw, &all) == nil {
+			for _, t := range all {
+				var named struct {
+					Name string `json:"name"`
+				}
+				if tool != "" && json.Unmarshal(t, &named) == nil && named.Name == tool {
+					tools = append(tools, t)
+				}
+			}
+		}
+	}
+	if tools == nil {
+		tools = []json.RawMessage{}
+	}
+	b, _ := json.Marshal(tools)
+	q["tools"] = b
+	q["tool_choice"] = json.RawMessage(`"auto"`)
+	q["parallel_tool_calls"] = json.RawMessage("false")
+
+	if raw, ok := q["input"]; ok {
+		var items []json.RawMessage
+		if json.Unmarshal(raw, &items) == nil {
+			kept := items[:0]
+			for _, it := range items {
+				var item struct {
+					Type string `json:"type"`
+				}
+				if json.Unmarshal(it, &item) == nil && item.Type == additionalToolsItem {
+					continue
+				}
+				kept = append(kept, it)
+			}
+			b, _ := json.Marshal(kept)
+			q["input"] = b
+		}
+	}
+	out, err := marshalJSON(q)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// codexSideBodyFor is codexSideBody for a request going to to, unless that
+// provider takes Codex's requests as Codex sent them: such a relay checks
+// the Lite shape, and changing its tools would turn the request away
+// (#1511).
+func codexSideBodyFor(r *http.Request, to string, body []byte, tool string) []byte {
+	if p, _, ok := provider.Resolve(to); ok && codexAsSent(p, r.Header) {
+		return body
+	}
+	return codexSideBody(body, tool)
+}
+
 // codexTitle answers a request for a thread's title as codexTitlesTo
 // says: "off" here, with no title; a model's id by that model, its answer
 // handed back as the {"title": …} Codex asked for. Either way the call is
@@ -302,9 +377,10 @@ func (s *Server) codexTitle(w http.ResponseWriter, r *http.Request, body []byte,
 	}
 	shape := titleShapeOf(body)
 	body, _ = codexInput(body, true)
+	body = codexSideBodyFor(r, to, body, codexTitleTool)
 	rec := &recorder{header: http.Header{}, status: 200}
 	check := func(reply string) string {
-		if res, err := compactReply([]byte(reply)); err == nil && titleJSON(messageText(res), shape) == "" {
+		if res, err := compactReply([]byte(reply)); err == nil && !titleCalled(res.Output) && titleJSON(messageText(res), shape) == "" {
 			return noTitle(messageText(res))
 		}
 		return ""
@@ -335,7 +411,11 @@ func (s *Server) codexTitle(w http.ResponseWriter, r *http.Request, body []byte,
 		id = fmt.Sprintf("resp_magpie_%d", time.Now().UnixNano())
 	}
 	var out []any
-	if t := titleJSON(messageText(res), shape); t != "" {
+	if calls := titleCallItems(res.Output); len(calls) > 0 {
+		// a title hook's set_thread_title: the call goes to Codex as a
+		// normal turn's would, ahead of any text (#4942)
+		out = append(out, calls...)
+	} else if t := titleJSON(messageText(res), shape); t != "" {
 		out = append(out, map[string]any{"type": "message", "id": "msg_" + strings.TrimPrefix(id, "resp_"), "role": "assistant", "status": "completed",
 			"content": []any{map[string]any{"type": "output_text", "text": t, "annotations": []any{}}}})
 	} else if res.Status == "incomplete" {
@@ -381,6 +461,7 @@ func (s *Server) codexSummary(w http.ResponseWriter, r *http.Request, body []byt
 // model in its settings rather than the caller (magpieChose).
 func (s *Server) codexShaped(w http.ResponseWriter, r *http.Request, body []byte, to, what string, chose bool, shaped func(said string) string, missing func(said string) string) {
 	body, _ = codexInput(body, true)
+	body = codexSideBodyFor(r, to, body, "")
 	rec := &recorder{header: http.Header{}, status: 200}
 	check := func(reply string) string {
 		if res, err := compactReply([]byte(reply)); err == nil && shaped(messageText(res)) == "" {
@@ -432,6 +513,7 @@ func (s *Server) codexPrediction(w http.ResponseWriter, r *http.Request, body []
 		return
 	}
 	body, _ = codexInput(body, true)
+	body = codexSideBodyFor(r, to, body, "")
 	rec := &recorder{header: http.Header{}, status: 200}
 	check := func(reply string) string {
 		if res, err := compactReply([]byte(reply)); err == nil {
@@ -641,6 +723,41 @@ func messageText(res compactResult) string {
 		}
 	}
 	return said.String()
+}
+
+// titleCalled is whether a title reply holds a function call, which
+// titleCallItems hands back instead of a title.
+func titleCalled(out []compactOutput) bool {
+	for _, o := range out {
+		if o.Type == "function_call" {
+			return true
+		}
+	}
+	return false
+}
+
+// titleCallItems is a title reply's function calls as Responses function_call
+// items, their call_id, name and arguments as the model made them and an
+// item id minted as a normal turn's is (itemPrefix, #4942). A title request
+// that offers Codex's title tool may be answered with the call; the title
+// wrapper rebuilt the reply by hand and dropped it, where a normal turn's
+// encoder hands every call through.
+func titleCallItems(out []compactOutput) []any {
+	var items []any
+	for _, o := range out {
+		if o.Type != "function_call" {
+			continue
+		}
+		callID := o.CallID
+		if callID == "" {
+			callID = "call_" + newID()
+		}
+		item := map[string]any{"type": "function_call", "status": "completed",
+			"call_id": callID, "name": o.Name, "arguments": o.Arguments}
+		item["id"] = itemPrefix(item) + newID()
+		items = append(items, item)
+	}
+	return items
 }
 
 // noTitle is why an answer to a title request gave Codex no title: what

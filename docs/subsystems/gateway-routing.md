@@ -111,6 +111,15 @@ not an error) and keeps the thread's as it was. Title Off does not turn
 descriptions off, nor the other way round (cybercaius on Discord asked for
 the description's).
 
+A title request offers Codex's title tool (`set_thread_title`) alone when
+it sends one, and no tools otherwise; the thread's other tools are left
+off, because a model that could call one may answer with a coding tool
+call instead of a title (`codexSideBody`). A title hook's call comes back
+as a normal turn's `function_call` item, its `call_id`, name and arguments
+as the model made them (`titleCallItems`); a text answer is wrapped as
+before. Descriptions, summaries, commit messages and composer predictions
+answer in text and are asked with no tools.
+
 The Codex app's "generate commit message" and pull request text
 (`commit_message`, `pull_request_message`, `commit_pull_request_message`) are
 side turns of the same kind, each asked for in a schema of its own

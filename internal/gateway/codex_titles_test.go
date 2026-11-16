@@ -252,6 +252,197 @@ func TestCodexTitleOnMagpieProvider(t *testing.T) {
 	}
 }
 
+// codexTitleToolsRequest is a title request that offers the thread's tools
+// and an additional_tools item, as Codex's app does when it starts a title
+// thread with its conversation's tool set (#4942).
+func codexTitleToolsRequest(t *testing.T, s *Server) *httptest.ResponseRecorder {
+	t.Helper()
+	body := `{"model":"fake/m1","stream":true,"input":[` +
+		`{"type":"additional_tools","tools":[{"type":"function","name":"exec_command","description":"Run a command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}]},` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"Generate a concise title. User prompt:\nfix the login bug"}]}],` +
+		`"tools":[` +
+		`{"type":"function","name":"exec_command","description":"Run a command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}},` +
+		`{"type":"function","name":"set_thread_title","description":"Set the thread's title","parameters":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}}],` +
+		`"tool_choice":"auto","parallel_tool_calls":true,` +
+		`"text":{"format":{"type":"json_schema","name":"codex_output_schema","strict":true,"schema":{"type":"object","properties":{"title":{"type":"string","maxLength":36}},"required":["title"],"additionalProperties":false}}}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+	req.Header.Set("x-codex-turn-metadata", `{"thread_source":"thread_title","parent_thread_id":"main-chat"}`)
+	s.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// codexSideToolsRequest is one of Codex's hidden side turns with the
+// thread's tools and an additional_tools item, which none of them may offer.
+func codexSideToolsRequest(t *testing.T, s *Server, source, schema string) *httptest.ResponseRecorder {
+	t.Helper()
+	body := `{"model":"fake/m1","stream":true,"input":[` +
+		`{"type":"additional_tools","tools":[{"type":"function","name":"exec_command","description":"Run a command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}]},` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"Latest message: fixed the login bug"}]}],` +
+		`"tools":[{"type":"function","name":"exec_command","description":"Run a command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}],` +
+		`"tool_choice":"auto","parallel_tool_calls":true,` +
+		`"text":{"format":{"type":"json_schema","name":"codex_output_schema","strict":true,"schema":` + schema + `}}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+	req.Header.Set("x-codex-turn-metadata", `{"thread_source":"`+source+`"}`)
+	s.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// sentToolNames is the tools a Chat or Responses request sent upstream.
+func sentToolNames(t *testing.T, body []byte) []string {
+	t.Helper()
+	var q struct {
+		Tools []map[string]any `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &q); err != nil {
+		t.Fatalf("upstream body: %v: %s", err, body)
+	}
+	var names []string
+	for _, tool := range q.Tools {
+		name, _ := tool["name"].(string)
+		if name == "" {
+			if fn, ok := tool["function"].(map[string]any); ok {
+				name, _ = fn["name"].(string)
+			}
+		}
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// A title request offers Codex's title tool alone, not the thread's own
+// tools, so a model cannot answer with exec_command instead of a title.
+func TestCodexTitleOffersOnlyItsTool(t *testing.T) {
+	f := &fake{t: t, reply: sse(
+		`data: {"id":"c1","choices":[{"index":0,"delta":{"content":"Fix login bug"}}]}`,
+		`data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":30,"completion_tokens":4}}`,
+		`data: [DONE]`)}
+	setup(t, provider.Chat, f)
+	s := New()
+	rec := codexTitleToolsRequest(t, s)
+	if text, _ := outputText(t, rec.Body.String()); rec.Code != 200 || text != `{"title":"Fix login bug"}` {
+		t.Fatalf("title: %d %q", rec.Code, rec.Body.String())
+	}
+	if names := sentToolNames(t, f.got); len(names) != 1 || names[0] != codexTitleTool {
+		t.Fatalf("tools %v, want only %s: %s", names, codexTitleTool, f.got)
+	}
+	var sent struct {
+		Parallel *bool `json:"parallel_tool_calls"`
+		Input    []struct {
+			Type string `json:"type"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(f.got, &sent); err != nil {
+		t.Fatalf("upstream body: %v: %s", err, f.got)
+	}
+	if sent.Parallel != nil && *sent.Parallel {
+		t.Errorf("parallel_tool_calls: %v", sent.Parallel)
+	}
+	for _, it := range sent.Input {
+		if it.Type == additionalToolsItem {
+			t.Errorf("additional_tools reached the upstream: %s", f.got)
+		}
+	}
+}
+
+// A title request that offers set_thread_title may be answered with the call:
+// it goes back as a normal turn's function_call item, its call_id, name and
+// arguments as the model made them, and the turn is not a failed title
+// (#4942). A text answer still comes back the {"title": …} Codex reads.
+func TestCodexTitleForwardsAFunctionCall(t *testing.T) {
+	toolCall := sse(
+		`data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"set_thread_title","arguments":"{\"title\":\"Fix login bug\"}"}}]}}]}`,
+		`data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":30,"completion_tokens":4}}`,
+		`data: [DONE]`)
+	f := &fake{t: t, reply: toolCall}
+	setup(t, provider.Chat, f)
+	s := New()
+	rec := codexTitleToolsRequest(t, s)
+	if rec.Code != 200 {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	var call map[string]any
+	for _, ev := range events(rec.Body.String()) {
+		if ev["type"] != "response.completed" {
+			continue
+		}
+		resp, _ := ev["response"].(map[string]any)
+		out, _ := resp["output"].([]any)
+		if len(out) != 1 {
+			t.Fatalf("output %#v, want the one function_call", out)
+		}
+		call, _ = out[0].(map[string]any)
+	}
+	if call == nil {
+		t.Fatalf("no response.completed in %s", rec.Body.String())
+	}
+	if call["type"] != "function_call" || call["call_id"] != "call_1" ||
+		call["name"] != "set_thread_title" || call["arguments"] != `{"title":"Fix login bug"}` {
+		t.Fatalf("the call went back as %#v", call)
+	}
+	if id, _ := call["id"].(string); !strings.HasPrefix(id, "fc_") {
+		t.Errorf("the call's item id %q, want the fc_ prefix a normal turn's has", id)
+	}
+	var last usage.Record
+	for _, u := range usage.Load(time.Time{}) {
+		last = u
+	}
+	if last.Kind != "thread_title" || last.Error != "" {
+		t.Errorf("the ledger's tool-called title %+v", last)
+	}
+
+	f.reply = sse(
+		`data: {"id":"c1","choices":[{"index":0,"delta":{"content":"Fix login bug"}}]}`,
+		`data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":30,"completion_tokens":4}}`,
+		`data: [DONE]`)
+	rec = codexTitleToolsRequest(t, s)
+	if text, _ := outputText(t, rec.Body.String()); text != `{"title":"Fix login bug"}` {
+		t.Fatalf("a text answer came back %q", text)
+	}
+}
+
+// Descriptions, summaries, commit messages and predictions answer in text;
+// none offers a tool, so none can answer with a call instead.
+func TestCodexSideCallsOfferNoTools(t *testing.T) {
+	f := &fake{t: t, reply: sse(
+		`data: {"id":"c1","choices":[{"index":0,"delta":{"content":"Fixed the login bug"}}]}`,
+		`data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":30,"completion_tokens":4}}`,
+		`data: [DONE]`)}
+	setup(t, provider.Chat, f)
+	s := New()
+	for _, c := range []struct{ source, schema string }{
+		{"thread_title", `{"type":"object","properties":{"title":{"type":"string","maxLength":36}},"required":["title"],"additionalProperties":false}`},
+		{"thread_description", sideDescriptionSchema},
+		{"thread_summary", sideSummarySchema},
+		{"commit_message", `{"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false}`},
+		{"composer_predictions", `{"type":"object","properties":{"suggestion":{"type":["string","null"]}},"required":["suggestion"],"additionalProperties":false}`},
+	} {
+		rec := codexSideToolsRequest(t, s, c.source, c.schema)
+		if rec.Code != 200 {
+			t.Fatalf("%s: %d %s", c.source, rec.Code, rec.Body.String())
+		}
+		if names := sentToolNames(t, f.got); len(names) != 0 {
+			t.Fatalf("%s offered %v: %s", c.source, names, f.got)
+		}
+		var sent struct {
+			Input []struct {
+				Type string `json:"type"`
+			} `json:"input"`
+		}
+		if err := json.Unmarshal(f.got, &sent); err != nil {
+			t.Fatalf("%s upstream body: %v: %s", c.source, err, f.got)
+		}
+		for _, it := range sent.Input {
+			if it.Type == additionalToolsItem {
+				t.Fatalf("%s sent additional_tools: %s", c.source, f.got)
+			}
+		}
+	}
+}
+
 func strconvQuote(s string) string { b, _ := json.Marshal(s); return string(b) }
 
 func TestTitleJSON(t *testing.T) {

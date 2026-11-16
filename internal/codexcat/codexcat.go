@@ -253,6 +253,7 @@ type model struct {
 	// what official Codex sends that model, as it sends it
 	Messages      map[string]any `json:"model_messages,omitempty"`
 	DefaultEffort *string        `json:"default_reasoning_level"`
+	EffortUpdates bool           `json:"supports_reasoning_effort_updates,omitempty"`
 	Efforts       []level        `json:"supported_reasoning_levels"`
 	Shell         string         `json:"shell_type"`
 	Visibility    string         `json:"visibility"`
@@ -389,6 +390,7 @@ func entriesAt(ms []catalog.Model, after int, effort string) []any {
 			ApplyPatch: "freeform", Tools: []string{}, Modalities: []string{"text"},
 			Tiers: []tier{}, SearchTool: true, Parallel: true,
 			AutoReview: autoReview, EffectivePct: effectivePct,
+			EffortUpdates: m.EffortUpdates,
 		}
 		if e.AutoReview == settings.CodexAutoReviewSession {
 			e.AutoReview = m.ID
@@ -1359,7 +1361,8 @@ func UsedTag(used []string) string {
 // the window in context_window and the threshold in
 // auto_compact_token_limit (10-30); v3 offered Ultra on another vendor's
 // models that reason (ultraHere).
-const catalogFormat = "v3"
+// v4 还携带上游明确声明的推理档位更新能力。
+const catalogFormat = "v4"
 
 // tagMark is where a tag starts in an ETag magpie made.
 const tagMark = "+magpie-"

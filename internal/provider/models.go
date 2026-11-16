@@ -3516,6 +3516,8 @@ type Entry struct {
 	AlwaysThinks  bool   `json:"-"`
 	DynamicTools  bool   `json:"-"`
 	DefaultEffort string `json:"-"`
+	// EffortUpdates 要求模型或组内每个成员均有明确的上游能力声明。
+	EffortUpdates bool `json:"supports_reasoning_effort_updates,omitempty"`
 }
 
 // Catalog lists the routing groups, then every exposed model of every ready
@@ -3798,6 +3800,7 @@ func sharedEntry(p *Provider, m catalog.Model, s settings.Settings) Entry {
 		Images: images, ImageInput: imageInput, Context: ctx, WindowSet: p.ContextOf(m.ID) > 0, MaxContext: m.MaxContext, Output: output, OutputSet: outputOf(s, p.ID, m.ID) > 0, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Tiers: m.Tiers, Released: m.Released,
 		Inputs: InputsOf(m), Outputs: m.OutputModalities, Codex: m.Codex,
 		AlwaysThinks: m.AlwaysThinks, DynamicTools: m.DynamicTools, DefaultEffort: m.DefaultEffort}
+	e.EffortUpdates = m.EffortUpdates
 	if lv, ok := catalog.CodexLevels(m.Codex); ok {
 		// the levels the vendor lists the model at in Codex's shape are
 		// its word, over models.dev's for the same id (Decorate)

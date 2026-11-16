@@ -63,6 +63,7 @@ func (p Provider) codexEntries(ctx context.Context, list string, ms []catalog.Mo
 // model where m's own list said nothing.
 func withCodex(m *catalog.Model, c catalog.Model) {
 	m.Codex = c.Codex
+	m.EffortUpdates = c.EffortUpdates
 	if m.Context == 0 {
 		m.Context = c.Context
 	}

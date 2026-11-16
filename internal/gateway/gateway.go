@@ -1517,6 +1517,9 @@ func modelObject(e provider.Entry) map[string]any {
 	m := map[string]any{"id": e.ID, "object": "model", "type": "model", "created": 0, "created_at": "2025-01-01T00:00:00Z",
 		"owned_by": e.Provider.ID, "display_name": e.PlainName(), "reasoning": e.Thinks(), "supported_reasoning_levels": levels,
 		"reasoning_levels": flat}
+	if e.EffortUpdates {
+		m["supports_reasoning_effort_updates"] = true
+	}
 	// the window, as the names clients read it by: a group's context
 	// (magpie group set … context=) included
 	if e.Context > 0 {

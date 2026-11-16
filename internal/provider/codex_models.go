@@ -259,9 +259,10 @@ func parseCodexModels(b []byte) []catalog.Model {
 			Levels      []struct {
 				Effort string `json:"effort"`
 			} `json:"supported_reasoning_levels"`
-			Context int `json:"context_window"`
-			Max     int `json:"max_context_window"`
-			Tiers   []struct {
+			Context       int  `json:"context_window"`
+			Max           int  `json:"max_context_window"`
+			EffortUpdates bool `json:"supports_reasoning_effort_updates"`
+			Tiers         []struct {
 				ID string `json:"id"`
 			} `json:"service_tiers"`
 		} `json:"models"`
@@ -276,6 +277,7 @@ func parseCodexModels(b []byte) []catalog.Model {
 			continue
 		}
 		mm := catalog.Model{ID: m.Slug, Name: m.DisplayName, Provider: "openai", Context: m.Context}
+		mm.EffortUpdates = m.EffortUpdates
 		if m.Max > m.Context {
 			mm.MaxContext = m.Max
 		}
@@ -934,6 +936,7 @@ func codexListedIf(shown []Entry, members func(id string) []Member, listed func(
 			continue
 		}
 		m := catalog.Model{ID: e.ID, Name: labels[i], Efforts: CodexEfforts(e), Images: e.Images || seen, Context: e.Context, AgentsV2: e.AgentsV2, Codex: e.Codex, Apart: apart[i]}
+		m.EffortUpdates = e.EffortUpdates
 		m.Compact = CompactFor(s, e, find)
 		CodexTiers(&m, e, members)
 		CodexSeals(&m, e, members)

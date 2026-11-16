@@ -176,6 +176,8 @@ type Model struct {
 	// at when none is asked: Kimi Code's think_efforts.default_effort
 	// (reasoning.effort.default). "" is not said.
 	DefaultEffort string `json:",omitempty"`
+	// EffortUpdates 仅保留上游明确声明的推理档位更新能力。
+	EffortUpdates bool `json:",omitempty"`
 	// WebSearch is how another magpie (a Remote magpie) searches the web
 	// for the model when a web search tool is offered: "native", its own
 	// provider by itself, or "magpie", with that magpie's searcher; "" it
@@ -2628,8 +2630,9 @@ func parseCodex(b []byte) ([]Model, error) {
 			Levels      []struct {
 				Effort string `json:"effort"`
 			} `json:"supported_reasoning_levels"`
-			Context int `json:"context_window"`
-			Max     int `json:"max_context_window"`
+			Context       int  `json:"context_window"`
+			Max           int  `json:"max_context_window"`
+			EffortUpdates bool `json:"supports_reasoning_effort_updates"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(b, &cache); err != nil || len(cache.Models) == 0 {
@@ -2645,6 +2648,7 @@ func parseCodex(b []byte) ([]Model, error) {
 		// plan), which models.dev's input limit for the id, OpenAI's
 		// API's (gpt-5.5's 922K), would otherwise stand in for
 		mm := Model{ID: m.Slug, Name: m.DisplayName, Provider: "openai", ImageInput: imageInput(m.Input), Context: Window(m.Context)}
+		mm.EffortUpdates = m.EffortUpdates
 		if m.Max > m.Context && m.Context > 0 {
 			mm.MaxContext = m.Max
 		}

@@ -1049,6 +1049,7 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 			m.Output = int(n)
 		}
 		m.Efforts = levelsOf(r.Levels)
+		m.EffortUpdates, _ = r.EffortUpdates.(bool)
 		if r.WebSearch == "native" || r.WebSearch == "magpie" {
 			m.WebSearch = r.WebSearch
 		}
@@ -1123,9 +1124,10 @@ type liveModel struct {
 	// than translated (native_endpoints), its longest reply and its
 	// reasoning levels. any, as a vendor's odd value mustn't lose the
 	// whole list
-	Native []string `json:"native_endpoints"`
-	Output any      `json:"max_output_tokens"`
-	Levels any      `json:"supported_reasoning_levels"`
+	Native        []string `json:"native_endpoints"`
+	Output        any      `json:"max_output_tokens"`
+	Levels        any      `json:"supported_reasoning_levels"`
+	EffortUpdates any      `json:"supports_reasoning_effort_updates"`
 	// another magpie's name for the model with its provider there after
 	// it, and "image", "video" or "decision" for its other models
 	Label string `json:"magpie_label"`

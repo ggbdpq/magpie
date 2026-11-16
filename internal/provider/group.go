@@ -1646,6 +1646,7 @@ func buildGroupEntries(entries []Entry) []Entry {
 			continue // a decision group answers System One, no agent's conversation
 		}
 		e := Entry{ID: g.Ref(), Model: ms[0].Model, Name: g.Name, Provider: &ms[0].Provider, Group: g.ID, Named: !g.Auto}
+		e.EffortUpdates = true
 		var fixed []string // the efforts members are fixed at
 		levelled := false  // a member that follows the agent's effort was met
 		// Codex's ultra (max, with Codex handing parts of the task to agents
@@ -1667,13 +1668,16 @@ func buildGroupEntries(entries []Entry) []Entry {
 			// (video, audio and pdf beside image, #1595)
 			var inputs, outputs []string
 			unknown, reasonless, typed := false, false, false
+			effortUpdates := false
 			if j := find(m.Provider.ID, m.Model); j >= 0 {
 				x := &entries[j]
+				effortUpdates = x.EffortUpdates
 				efforts, images, thinks, ctx, output, imageInput = x.Efforts, x.Images, x.Reasoning, x.Context, x.Output, x.ImageInput
 				inputs, outputs = x.Inputs, x.Outputs
 				typed = x.WindowSet
 				unknown, reasonless = levelsUnknown(*x), x.Reasonless
 			}
+			e.EffortUpdates = e.EffortUpdates && effortUpdates
 			// it reasons when a member does: the gateway sends the
 			// effort to the members that take it, and a member known not
 			// to think is sent none of it, as a text-only member is sent

@@ -192,3 +192,31 @@ func TestCodexAppRouteReadsNoWholeConfig(t *testing.T) {
 		t.Fatal("a config that can't be read gave a route")
 	}
 }
+
+// #4550 (sljdxde, wang9262): a config.toml the parser refuses — a save
+// another writer cut short, a hand edit left half — can't say where requests
+// go. The route says so (not known, as for a config that can't be read at
+// all), instead of reading the keys it still finds as a changed route: that
+// ended the app's working app-servers for nothing, and the ChatGPT app reads
+// the end as a crash. Whole again, the route is the one it was.
+func TestCodexAppRouteUnknownOnAConfigItCantParse(t *testing.T) {
+	const whole = "model = \"fake/m1\"\nmodel_provider = \"magpie\"\n\n[model_providers.magpie]\nname = \"magpie\"\nbase_url = \"http://127.0.0.1:3425/v1\"\n"
+	home, read := codexHome(t, `{"tokens":{"access_token":"x","id_token":"x.e30.x"}}`, whole)
+	path := filepath.Join(home, ".codex", "config.toml")
+	before, _, known := codexAppRoute()
+	if !known {
+		t.Fatalf("route not known on a whole config:\n%s", read())
+	}
+	writeFile(t, path, whole+"invalid = [\n")
+	if r, _, known := codexAppRoute(); known {
+		t.Fatalf("a config the parser refuses gave a route:\n%s", r)
+	}
+	writeFile(t, path, whole)
+	r, _, known := codexAppRoute()
+	if !known {
+		t.Fatalf("route not known again on the whole config:\n%s", read())
+	}
+	if r != before {
+		t.Fatalf("the route came back as another one:\n%s\nto\n%s", before, r)
+	}
+}

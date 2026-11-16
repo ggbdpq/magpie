@@ -139,7 +139,14 @@ func codexAppRoute() (route string, out, known bool) {
 		}
 		b.WriteString(k + "=" + v + "\n")
 	}
-	t, _ := edit.GetTOMLTable(a.Path, "model_providers."+magpieID)
+	t, err := edit.GetTOMLTable(a.Path, "model_providers."+magpieID)
+	if err != nil {
+		// the parser refuses the config (a save another writer cut short, a
+		// hand edit left half): it can't say where requests go, and reading
+		// the keys it still finds as a changed route ends the app's working
+		// app-servers for nothing (#4550: sljdxde, wang9262)
+		return "", false, false
+	}
 	b.WriteString("magpie.base_url=" + t["base_url"] + "\n")
 	// and, while magpie's table is Codex's provider, whether it requires
 	// OpenAI auth, which decides whether the app has its ChatGPT account

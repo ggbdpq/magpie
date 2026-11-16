@@ -257,6 +257,14 @@ func isMemory(s *Server) bool {
 	return !s.Remote() && len(s.Args) >= 2 && s.Args[0] == "mcp" && s.Args[1] == "memory"
 }
 
+// isOwn is whether s is one of magpie's own servers (a `magpie mcp …`
+// command: search, vision, image, memory, sessions, the browser), which a
+// hub call bounds by the caller's client alone, not by the hub's call cap
+// (#6885).
+func isOwn(s *Server) bool {
+	return !s.Remote() && len(s.Args) >= 2 && s.Args[0] == "mcp"
+}
+
 // wantsCaller is whether a call of s is made with the calling agent's
 // roots and name (imageMeta): magpie's image and memory servers.
 func wantsCaller(s *Server) bool { return isSelf(s) || isMemory(s) }
@@ -300,7 +308,7 @@ func (theHub) Tools(ctx context.Context, agentID string) []gateway.HubTool {
 				if json.Unmarshal(t["name"], &name) != nil || name == "" || slices.Contains(s.DisabledTools, name) {
 					continue
 				}
-				lists[i] = append(lists[i], gateway.HubTool{Server: s.Name, Tool: name, Spec: t, Roots: wantsCaller(s)})
+				lists[i] = append(lists[i], gateway.HubTool{Server: s.Name, Tool: name, Spec: t, Roots: wantsCaller(s), Own: isOwn(s)})
 			}
 		}()
 	}

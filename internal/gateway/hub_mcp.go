@@ -61,6 +61,10 @@ type HubTool struct {
 	// Roots: the server writes into the agent's project (magpie-image),
 	// so a call is made with the agent's folders (HubCaller)
 	Roots bool
+	// Own: the server is one of magpie's own (a `magpie mcp …` command),
+	// so a call of it is bounded by the caller's client alone, not by
+	// hubCallWait (#6885)
+	Own bool
 }
 
 // HubCaller is who a call of a Roots tool is for: the folders the agent
@@ -755,7 +759,17 @@ func (s *Server) hubMCPRun(r *http.Request, agent string, t hubTool, args json.R
 	if len(args) == 0 || string(args) == "null" {
 		args = json.RawMessage(`{}`)
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), hubCallWait)
+	ctx, cancel := r.Context(), func() {}
+	if !t.Own {
+		// the hub's cap: the agent is told which server didn't answer
+		// before its client's 60s are out. One of magpie's own servers is
+		// bounded by that client already, and the hub's own search runs
+		// past 50s about once in ten (#6885), so the cap would only take
+		// the call.
+		var c context.CancelFunc
+		ctx, c = context.WithTimeout(r.Context(), hubCallWait)
+		cancel = c
+	}
 	defer cancel()
 	res, err := MCPHub.Call(ctx, agent, t.Server, t.Tool, args)
 	if err != nil {

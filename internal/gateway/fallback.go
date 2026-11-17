@@ -4472,7 +4472,9 @@ func anthropicDeltaSays(raw json.RawMessage) bool {
 	return true
 }
 
-// errorCode is an error's code, or its type when it has none.
+// errorCode is an error's code, or its type when it has none. A code the
+// vendor sent as a JSON number comes back as its digits: Tencent Marvis's
+// fingerprint rejection names itself 4100406, not "4100406" (#6886).
 func errorCode(raw json.RawMessage) string {
 	var e struct {
 		Code any    `json:"code"`
@@ -4481,10 +4483,23 @@ func errorCode(raw json.RawMessage) string {
 	if json.Unmarshal(raw, &e) != nil {
 		return ""
 	}
-	if c, ok := e.Code.(string); ok && c != "" {
+	if c := codeOf(e.Code); c != "" {
 		return c
 	}
 	return e.Type
+}
+
+// codeOf says an error's code as its words: the string the vendor sent,
+// or the digits of a code it sent as a whole number. A fraction is not a
+// code and stays "".
+func codeOf(code any) string {
+	if c, ok := code.(string); ok {
+		return c
+	}
+	if f, ok := code.(float64); ok && f == math.Trunc(f) && f >= 0 && f < 1e15 {
+		return strconv.FormatInt(int64(f), 10)
+	}
+	return ""
 }
 
 // policyCode is an error code that names the vendor's usage policy:
@@ -4513,10 +4528,12 @@ func policyRefusal(raw []byte) (string, bool) {
 		Code    any    `json:"code"`
 		Type    string `json:"type"`
 		Message string `json:"message"`
+		Msg     string `json:"msg"`
 		Error   *struct {
 			Code    any    `json:"code"`
 			Type    string `json:"type"`
 			Message string `json:"message"`
+			Msg     string `json:"msg"`
 		} `json:"error"`
 	}
 	if json.Unmarshal(raw, &e) != nil {
@@ -4526,7 +4543,15 @@ func policyRefusal(raw []byte) (string, bool) {
 	if e.Error != nil {
 		code, typ, msg = e.Error.Code, e.Error.Type, e.Error.Message
 	}
-	c, _ := code.(string)
+	// Tencent-style vendors say it "msg", not "message" (#6886)
+	if msg == "" {
+		if e.Error != nil {
+			msg = e.Error.Msg
+		} else {
+			msg = e.Msg
+		}
+	}
+	c := codeOf(code)
 	if c == "" {
 		c = typ
 	}
@@ -4552,6 +4577,14 @@ func policyRefusal(raw []byte) (string, bool) {
 		return note("sensitive")
 	case c == "invalid_prompt" && flaggedWords.MatchString(msg):
 		return note(c)
+	case c == "4100406":
+		// Tencent Marvis's fingerprint rejection (#6886, MYCF711): a 403
+		// whose body is {"code":4100406,"msg":"非法请求"} for an identity
+		// phrase the upstream fingerprints in the prompt's first line —
+		// the key is good, and handed on as its 403 the agent took it
+		// for a failed sign-in ("Credentials rejected") and sent the
+		// user off to rotate keys that were never the problem
+		return note("content_filter")
 	case strings.TrimSpace(msg) == highRiskRefusal:
 		return note("high risk")
 	}

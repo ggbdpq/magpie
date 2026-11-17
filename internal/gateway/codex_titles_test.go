@@ -439,3 +439,34 @@ func TestDescriptionJSON(t *testing.T) {
 		}
 	}
 }
+
+// The title turn goes out without the thread's tools: Codex sends the
+// conversation's whole tool set on it, and a model that answers with a
+// call leaves no text to take a title from (#6910).
+func TestCodexTitleTurnCarriesNoTools(t *testing.T) {
+	f := &fake{t: t, reply: sse(
+		`data: {"type":"response.created","response":{"id":"resp_ok","object":"response","status":"in_progress","output":[]}}`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{\"title\":\"Fix login bug\"}"}]}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_ok","object":"response","status":"completed","output":[],"usage":{"input_tokens":60,"output_tokens":40,"total_tokens":100}}}`)}
+	setup(t, provider.Responses, f)
+	st := settings.Load()
+	st.CodexTitles = "fake/m1"
+	if err := settings.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	body := `{"model":"gpt-5.6-luna","stream":true,"tools":[{"type":"function","name":"exec_command","parameters":{"type":"object"}}],"tool_choice":"auto","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Generate a concise title. User prompt:\nfix the login bug"}]}],` +
+		`"text":{"format":{"type":"json_schema","name":"codex_output_schema","strict":true,"schema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}}}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("session_id", "title-thread")
+	req.Header.Set("x-openai-subagent", "thread_title")
+	s.Handler().ServeHTTP(rec, req)
+	if text, _ := outputText(t, rec.Body.String()); rec.Code != 200 || text != `{"title":"Fix login bug"}` || f.calls != 1 {
+		t.Fatalf("title: %d %q", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(string(f.got), `"tools"`) || strings.Contains(string(f.got), `"tool_choice"`) {
+		t.Fatalf("the title turn kept the thread's tools: %s", f.got)
+	}
+}

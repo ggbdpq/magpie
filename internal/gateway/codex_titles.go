@@ -302,6 +302,10 @@ func (s *Server) codexTitle(w http.ResponseWriter, r *http.Request, body []byte,
 	}
 	shape := titleShapeOf(body)
 	body, _ = codexInput(body, true)
+	// the title turn carries no tools: Codex sends the thread's whole set
+	// on it, and a model that answers with a call leaves no text to take
+	// a title from (#6910)
+	body = withoutFields(body, "tools", "tool_choice")
 	rec := &recorder{header: http.Header{}, status: 200}
 	check := func(reply string) string {
 		if res, err := compactReply([]byte(reply)); err == nil && titleJSON(messageText(res), shape) == "" {

@@ -107,6 +107,114 @@ func TestGitPluginUpdateOnlyWhenItsRepositoryMoved(t *testing.T) {
 	}
 }
 
+// abworks-dev, #6952: a plugin installed from an annotated tag kept a
+// permanent "update available": bun records the tag's own object (a251067)
+// where the updater compares the commit it names (65e1869), so the two
+// never matched, every Update reinstalled the same tag and ended in
+// "bun update … left it at a251067, though its repository is at 65e1869".
+// The repository's tag object is what it is at too, till the tag moves;
+// updating then installs the tag again and nothing waits. Each way the
+// repository is asked for its head: GitHub's API, and git ls-remote.
+func TestGitPluginFromAnnotatedTag(t *testing.T) {
+	for _, form := range []string{"github:owner/repo", "git+file"} {
+		t.Run(form, func(t *testing.T) {
+			github, _ := gitSandbox(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			bare := filepath.Join(github, "owner", "repo.git")
+			repo := newGitRepo(t, bare)
+			repo.tagAnnotated("v0.2.2")
+			spec := form + "#v0.2.2"
+			if form == "git+file" {
+				u := "git+file://" + filepath.ToSlash(bare)
+				if !strings.HasPrefix(u, "git+file:///") {
+					u = "git+file:///" + strings.TrimPrefix(u, "git+file://")
+				}
+				spec = u + "#v0.2.2"
+			}
+			if _, err := Add(ctx, spec); err != nil {
+				t.Fatal(err)
+			}
+			// bun records the tag's own object, not the commit it names
+			if c := GitCommit(spec); !SameCommit(c, repo.tagObject("v0.2.2")) {
+				t.Fatalf("GitCommit = %q, want the tag's object %s, as bun records it", c, repo.tagObject("v0.2.2"))
+			}
+			check := func(want string) VersionCheck {
+				t.Helper()
+				cs := CheckNow(ctx).Plugins
+				if len(cs) != 1 || cs[0].Status != want {
+					t.Fatalf("Check for updates said %+v, want %s", cs, want)
+				}
+				return cs[0]
+			}
+			waiting := func(want int) {
+				t.Helper()
+				if w := PendingUpdates().Waiting; len(w) != want {
+					t.Fatalf("waiting = %+v, want %d", w, want)
+				}
+			}
+
+			// installed from the tag: current, though what bun recorded is
+			// not the commit
+			if c := check("current"); c.Commit != short(repo.tagObject("v0.2.2")) || c.Head != short(repo.tagCommit("v0.2.2")) {
+				t.Fatalf("check = %+v, want commit %s and head %s", c, short(repo.tagObject("v0.2.2")), short(repo.tagCommit("v0.2.2")))
+			}
+			if _, err := CheckUpdates(ctx); err != nil {
+				t.Fatal(err)
+			}
+			waiting(0)
+
+			// updated again: the tag hasn't moved, the same object comes
+			// back, and it isn't said it stayed behind
+			if err := Upgrade(ctx, Name(spec)); err != nil {
+				t.Fatal(err)
+			}
+			waiting(0)
+			check("current")
+
+			// the tag moves to a new commit: a new object, an update, and
+			// updating takes it away
+			repo.commit("README.md", "# my-oc-plugin\n\nA fix.\n")
+			repo.moveTag("v0.2.2")
+			if c := check("update"); c.Head != short(repo.tagCommit("v0.2.2")) || SameCommit(c.Commit, c.Head) {
+				t.Fatalf("check = %+v, want an update to %s", c, short(repo.tagCommit("v0.2.2")))
+			}
+			waiting(1)
+			if err := Upgrade(ctx, Name(spec)); err != nil {
+				t.Fatal(err)
+			}
+			if c := GitCommit(spec); !SameCommit(c, repo.tagObject("v0.2.2")) {
+				t.Fatalf("after Update, GitCommit = %q, want the tag's new object %s", c, repo.tagObject("v0.2.2"))
+			}
+			waiting(0)
+			check("current")
+			if _, err := CheckUpdates(ctx); err != nil {
+				t.Fatal(err)
+			}
+			waiting(0)
+		})
+	}
+}
+
+// A lightweight tag names its commit, and bun records that commit, so the
+// comparison matched as it did. Protective: green before the fix.
+func TestGitPluginFromLightweightTag(t *testing.T) {
+	github, _ := gitSandbox(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	repo := newGitRepo(t, filepath.Join(github, "owner", "repo.git"))
+	repo.git(repo.work, "tag", "v0.3.0")
+	repo.git(repo.work, "push", "-q", repo.bare, "v0.3.0")
+	const spec = "github:owner/repo#v0.3.0"
+	if _, err := Add(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	cs := CheckNow(ctx).Plugins
+	if len(cs) != 1 || cs[0].Status != "current" || cs[0].Commit != short(repo.tagObject("v0.3.0")) || cs[0].Head != short(repo.tagObject("v0.3.0")) {
+		t.Fatalf("Check for updates said %+v, want current at %s", cs, short(repo.tagObject("v0.3.0")))
+	}
+}
+
 // commit changes a file of the plugin's repository and pushes it.
 func (r gitRepo) commit(file, text string) {
 	r.t.Helper()
@@ -116,6 +224,42 @@ func (r gitRepo) commit(file, text string) {
 	r.git(r.work, "add", "-A")
 	r.git(r.work, "commit", "-qm", "change "+file)
 	r.git(r.work, "push", "-q", r.bare, "HEAD:main")
+}
+
+// tagAnnotated tags HEAD with an annotated tag and pushes it.
+func (r gitRepo) tagAnnotated(name string) {
+	r.t.Helper()
+	r.git(r.work, "tag", "-a", name, "-m", name)
+	r.git(r.work, "push", "-q", r.bare, name)
+}
+
+// moveTag re-tags HEAD with the annotated tag name and pushes it over the
+// old one.
+func (r gitRepo) moveTag(name string) {
+	r.t.Helper()
+	r.git(r.work, "tag", "-fa", name, "-m", name+" moved")
+	r.git(r.work, "push", "-qf", r.bare, name)
+}
+
+// tagObject is what the tag name resolves to in the repository: an
+// annotated tag's own object, a lightweight tag's commit.
+func (r gitRepo) tagObject(name string) string {
+	r.t.Helper()
+	out, err := exec.Command("git", "-C", r.work, "rev-parse", name).Output()
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// tagCommit is the commit the tag names.
+func (r gitRepo) tagCommit(name string) string {
+	r.t.Helper()
+	out, err := exec.Command("git", "-C", r.work, "rev-parse", name+"^{commit}").Output()
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // The commit bun installed is read as bun 1.4 writes it, from ARNO's own
@@ -201,7 +345,7 @@ func TestGitSource(t *testing.T) {
 	api := githubAPI
 	githubAPI = "http://127.0.0.1:1"
 	defer func() { githubAPI = api }()
-	if sha, err := remoteHead(context.Background(), "github:yuweihao17/codearts#9BF77F96F2"); err != nil || sha != "9bf77f96f2" {
-		t.Fatalf("pinned: %q %v", sha, err)
+	if sha, raw, err := remoteHead(context.Background(), "github:yuweihao17/codearts#9BF77F96F2"); err != nil || sha != "9bf77f96f2" || raw != "" {
+		t.Fatalf("pinned: %q %q %v", sha, raw, err)
 	}
 }

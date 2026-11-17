@@ -227,23 +227,36 @@ func gitSource(spec string) (gh, remote, ref string) {
 // errNoHead is a ref no commit can be named for, now: a semver range.
 var errNoHead = errors.New("its version range is bun's to resolve")
 
-// remoteHead is the commit the git spec's branch or tag is at now; a spec
-// pinned to a commit is that commit, asked of nobody. Tests stub it.
-var remoteHead = func(ctx context.Context, spec string) (string, error) {
+// remoteHead is the commit the git spec's branch or tag is at now, and the
+// object its ref names raw when that is another one: an annotated tag's
+// own, which is what bun records where the updater compares the commit it
+// names (#6952). A spec pinned to a commit is that commit, asked of
+// nobody. Tests stub it.
+var remoteHead = func(ctx context.Context, spec string) (string, string, error) {
 	gh, remote, ref := gitSource(spec)
 	if hexSHA.MatchString(strings.ToLower(ref)) {
-		return strings.ToLower(ref), nil
+		return strings.ToLower(ref), "", nil
 	}
 	if strings.HasPrefix(ref, "semver:") {
-		return "", errNoHead
+		return "", "", errNoHead
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	if gh != "" {
-		return githubHead(ctx, gh, ref)
+		sha, err := githubHead(ctx, gh, ref)
+		if err != nil {
+			return "", "", err
+		}
+		var raw string
+		if ref != "" {
+			if raw = githubRefObject(ctx, gh, ref); raw == sha {
+				raw = ""
+			}
+		}
+		return sha, raw, nil
 	}
 	if remote == "" {
-		return "", fmt.Errorf("no repository in %s", spec)
+		return "", "", fmt.Errorf("no repository in %s", spec)
 	}
 	return lsRemote(ctx, remote, ref)
 }
@@ -271,9 +284,31 @@ func githubHead(ctx context.Context, repo, ref string) (string, error) {
 	return cs[0].SHA, nil
 }
 
+// githubRefObject is the object GitHub says the ref tags/<ref> names: an
+// annotated tag's own, "" when it couldn't be told — the ref isn't a tag,
+// GitHub didn't answer, or its limit is used up. The comparison then falls
+// back to the commit alone.
+func githubRefObject(ctx context.Context, repo, ref string) string {
+	u := githubAPI + "/repos/" + repo + "/git/ref/tags/" + url.PathEscape(ref)
+	b, err := fetchJSON(ctx, u, 1<<20)
+	if err != nil {
+		return ""
+	}
+	var r struct {
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	if json.Unmarshal(b, &r) != nil || !hexSHA.MatchString(r.Object.SHA) {
+		return ""
+	}
+	return r.Object.SHA
+}
+
 // lsRemote asks the repository at remote, with git, for the commit ref
-// (HEAD when "") is at: an annotated tag's commit, not the tag's own.
-func lsRemote(ctx context.Context, remote, ref string) (string, error) {
+// (HEAD when "") is at: an annotated tag's commit, not the tag's own — and
+// the tag's own too, which is what bun records of it (#6952).
+func lsRemote(ctx context.Context, remote, ref string) (string, string, error) {
 	args := []string{"ls-remote", remote}
 	if ref == "" {
 		args = append(args, "HEAD")
@@ -284,7 +319,7 @@ func lsRemote(ctx context.Context, remote, ref string) (string, error) {
 	cmd.Env = append(dlEnv(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git ls-remote %s: %w", remote, err)
+		return "", "", fmt.Errorf("git ls-remote %s: %w", remote, err)
 	}
 	refs := map[string]string{}
 	for _, l := range strings.Split(string(out), "\n") {
@@ -294,10 +329,16 @@ func lsRemote(ctx context.Context, remote, ref string) (string, error) {
 	}
 	for _, k := range []string{"HEAD", "refs/tags/" + ref + "^{}", "refs/heads/" + ref, "refs/tags/" + ref} {
 		if sha := refs[k]; hexSHA.MatchString(sha) {
-			return sha, nil
+			var raw string
+			if k == "refs/tags/"+ref+"^{}" {
+				if obj := refs["refs/tags/"+ref]; obj != sha && hexSHA.MatchString(obj) {
+					raw = obj
+				}
+			}
+			return sha, raw, nil
 		}
 	}
-	return "", fmt.Errorf("%s has no %s", remote, map[bool]string{true: "HEAD", false: ref}[ref == ""])
+	return "", "", fmt.Errorf("%s has no %s", remote, map[bool]string{true: "HEAD", false: ref}[ref == ""])
 }
 
 // headTTL is how long a repository's answer stands: GitHub lets 60
@@ -307,6 +348,9 @@ const headTTL = 10 * time.Minute
 
 type headAnswer struct {
 	sha string
+	// raw is the object the spec's ref names when that is another one than
+	// sha: an annotated tag's own, which is what bun records of it (#6952)
+	raw string
 	err error
 	at  time.Time
 }
@@ -325,13 +369,13 @@ func GitHead(ctx context.Context, spec string, fresh bool) (string, error) {
 	if ok && !fresh && time.Since(a.at) < headTTL {
 		return a.sha, a.err
 	}
-	sha, err := remoteHead(ctx, spec)
+	sha, raw, err := remoteHead(ctx, spec)
 	if err != nil && ok && a.sha != "" && !fresh {
 		// not reached this time: what it said last stands, till the next
-		sha, err = a.sha, nil
+		sha, raw, err = a.sha, a.raw, nil
 	}
 	headsMu.Lock()
-	heads[spec] = headAnswer{sha, err, time.Now()}
+	heads[spec] = headAnswer{sha: sha, raw: raw, err: err, at: time.Now()}
 	headsMu.Unlock()
 	return sha, err
 }
@@ -345,10 +389,20 @@ func GitHeadCached(spec string) string {
 }
 
 // GitBehind is whether the git plugin spec's repository has moved on from
-// the commit installed: both known, and not the same.
+// the commit installed: both known, and not the same. What its ref names
+// raw is asked of the repository too: bun records an annotated tag's own
+// object where the updater compares the commit it names (#6952), so what
+// is installed counts as current while the repository's tag still names
+// that object.
 func GitBehind(spec, head string) bool {
 	have := GitCommit(spec)
-	return have != "" && head != "" && !SameCommit(have, head)
+	if have == "" || head == "" || SameCommit(have, head) {
+		return false
+	}
+	headsMu.Lock()
+	raw := heads[spec].raw
+	headsMu.Unlock()
+	return raw == "" || !SameCommit(have, raw)
 }
 
 // GitHeads is the commit each installed git plugin's repository is at,

@@ -388,6 +388,17 @@ func fakeFetch(spec string) (name, commit string, err error) {
 		return os.WriteFile(filepath.Join(dest, rel), b, 0o644)
 	})
 	commit = strings.TrimSpace(string(out))
+	// bun records what the spec's ref resolves to: an annotated tag's own
+	// object, not the commit it names (abworks-dev, #6952: bun 1.4.2 left
+	// bun.lock at github:abworks-dev/magpie-aihub#a251067 for a tag whose
+	// commit was 65e1869), and a branch's or lightweight tag's commit
+	if ref != "" {
+		if b, err := exec.Command("git", "-C", tmp, "rev-parse", ref).Output(); err == nil {
+			if s := strings.TrimSpace(string(b)); hexSHA.MatchString(s) {
+				commit = s
+			}
+		}
+	}
 	// as bun tags what it installed: owner-repo-<7 digits> for GitHub's
 	// tarball, the whole commit for a clone
 	tag := commit
@@ -512,8 +523,26 @@ func gitSandbox(t *testing.T) (github, log string) {
 	t.Cleanup(func() { bunCommand = orig })
 	t.Cleanup(Settle)
 	// GitHub's API: GET /repos/{owner}/{repo}/commits?per_page=1[&sha=ref]
+	// and GET /repos/{owner}/{repo}/git/ref/tags/{tag}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		// the object the tag names, as GitHub's does: an annotated tag's
+		// own, a lightweight tag's commit, 404 for a ref that isn't a tag
+		if len(p) == 7 && p[0] == "repos" && p[3] == "git" && p[4] == "ref" && p[5] == "tags" {
+			dir := filepath.Join(github, p[1], p[2]+".git")
+			out, err := exec.Command("git", "-C", dir, "rev-parse", "refs/tags/"+p[6]).Output()
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			peeled, _ := exec.Command("git", "-C", dir, "rev-parse", "refs/tags/"+p[6]+"^{commit}").Output()
+			kind := "tag"
+			if strings.TrimSpace(string(out)) == strings.TrimSpace(string(peeled)) {
+				kind = "commit"
+			}
+			fmt.Fprintf(w, `{"ref": "refs/tags/%s", "object": {"sha": %q, "type": %q, "url": ""}}`, p[6], strings.TrimSpace(string(out)), kind)
+			return
+		}
 		if len(p) != 4 || p[0] != "repos" || p[3] != "commits" || r.URL.Query().Get("per_page") != "1" {
 			http.NotFound(w, r)
 			return

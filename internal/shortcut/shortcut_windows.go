@@ -35,7 +35,17 @@ func registerAppPath(exe string) {
 // gateway that was gone (Jevik_AI on X). Its Uninstall runs magpie's own
 // (UninstallCommand), which puts every agent back first. A var so the
 // test writes a key of its own.
-var uninstallKey = `Software\Microsoft\Windows\CurrentVersion\Uninstall\magpie`
+//
+// The name is magpie's own, not the bare "magpie" every build before
+// wrote: a winget manifest for another product (newdee.Magpie) declares
+// that same name as its ProductCode, and winget read magpie's entry as
+// that product's, version unknown (H3nryM4, #6929).
+var uninstallKey = `Software\Microsoft\Windows\CurrentVersion\Uninstall\yetone.magpie`
+
+// oldUninstallKey is where every build before the rename wrote its entry.
+// One that is magpie's moves to the new key at the next start; another
+// product's stays where it is.
+var oldUninstallKey = `Software\Microsoft\Windows\CurrentVersion\Uninstall\magpie`
 
 // registerUninstall writes the entry for exe, at every start, so it
 // follows an exe that was moved.
@@ -58,24 +68,40 @@ func registerUninstall(exe string) {
 	// Uninstall is the one button: there is nothing to modify or repair
 	_ = k.SetDWordValue("NoModify", 1)
 	_ = k.SetDWordValue("NoRepair", 1)
+	// an entry under the shared old name that is magpie's moves off it, so
+	// winget stops reading magpie as the other product; one whose exe can't
+	// be confirmed ours stays (a gone exe could be anyone's)
+	if k, err := registry.OpenKey(registry.CURRENT_USER, oldUninstallKey, registry.QUERY_VALUE); err == nil {
+		v, _, _ := k.GetStringValue("DisplayIcon")
+		k.Close()
+		if err == nil && strings.EqualFold(filepath.Clean(strings.TrimSuffix(v, ",0")), filepath.Clean(exe)) {
+			_ = registry.DeleteKey(registry.CURRENT_USER, oldUninstallKey)
+		}
+	}
 }
 
 // unregisterUninstall takes the entry out while it is exe's, or its exe
-// is gone; another magpie's stays.
+// is gone; another magpie's stays. Both of magpie's names are tried: an
+// install made before the rename still rests under the shared one.
 func unregisterUninstall(exe string) error {
-	k, err := registry.OpenKey(registry.CURRENT_USER, uninstallKey, registry.QUERY_VALUE)
-	if err != nil {
-		return nil // none
-	}
-	v, _, err := k.GetStringValue("DisplayIcon")
-	k.Close()
-	v = strings.TrimSuffix(v, ",0")
-	if err == nil && v != "" && !strings.EqualFold(filepath.Clean(v), filepath.Clean(exe)) {
-		if _, err := os.Stat(v); err == nil {
-			return nil // another magpie's
+	for _, key := range []string{uninstallKey, oldUninstallKey} {
+		k, err := registry.OpenKey(registry.CURRENT_USER, key, registry.QUERY_VALUE)
+		if err != nil {
+			continue // none
+		}
+		v, _, err := k.GetStringValue("DisplayIcon")
+		k.Close()
+		v = strings.TrimSuffix(v, ",0")
+		if err == nil && v != "" && !strings.EqualFold(filepath.Clean(v), filepath.Clean(exe)) {
+			if _, err := os.Stat(v); err == nil {
+				continue // another magpie's
+			}
+		}
+		if err := registry.DeleteKey(registry.CURRENT_USER, key); err != nil {
+			return err
 		}
 	}
-	return registry.DeleteKey(registry.CURRENT_USER, uninstallKey)
+	return nil
 }
 
 func registeredAppPath() bool {

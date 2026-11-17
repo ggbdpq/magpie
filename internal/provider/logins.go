@@ -1754,6 +1754,13 @@ func ForgetLogin(agent, user string) error {
 		// gone from the agent too: nothing of it is served any more
 		ForgetAccounts()
 	}
+	if err == nil && agent == "codex" {
+		// its own daily warm-up time goes with the account, so the warm-up
+		// list doesn't keep it (#6912)
+		if err := forgetCodexWarmAt(user); err != nil {
+			log.Printf("codex warm-up: %v", err)
+		}
+	}
 	return err
 }
 

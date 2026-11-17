@@ -110,3 +110,28 @@ func TestSetCodexWarmAt(t *testing.T) {
 		t.Fatal("no account taken")
 	}
 }
+
+// A forgotten account's own daily warm-up time goes with it (#6912): kept,
+// it would keep a row for the account in the warm-up list. The accounts
+// that stay keep theirs.
+func TestForgetLoginDropsTheAccountsOwnWarmAt(t *testing.T) {
+	home := signIn(t)
+	rememberLogins(true)
+	codexSignIn(t, home, "work@example.com", "r-work")
+	rememberLogins(true)
+	if err := SetCodexWarmAt("me@example.com", "08:00"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetCodexWarmAt("Work@Example.com", "09:00"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ForgetLogin("codex", "work@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if at, ok := CodexWarmAtOf("work@example.com"); ok {
+		t.Fatalf("the forgotten account's own time kept: %q", at)
+	}
+	if at, ok := CodexWarmAtOf("me@example.com"); !ok || at != "08:00" {
+		t.Fatalf("the account kept lost its own time: %q %v", at, ok)
+	}
+}

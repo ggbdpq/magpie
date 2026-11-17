@@ -601,6 +601,23 @@ func SetCodexWarmAt(user, at string) error {
 	return settings.Save(s)
 }
 
+// forgetCodexWarmAt drops a forgotten account's own time of day, so it
+// doesn't keep a row in the warm-up list for an account that is gone
+// (#6912).
+func forgetCodexWarmAt(user string) error {
+	s := settings.Load()
+	if len(s.CodexWarmAtOf) == 0 {
+		return nil
+	}
+	of := maps.Clone(s.CodexWarmAtOf)
+	delete(of, strings.ToLower(strings.TrimSpace(user)))
+	if len(of) == len(s.CodexWarmAtOf) {
+		return nil // the account had none of its own
+	}
+	s.CodexWarmAtOf = of
+	return settings.Save(s)
+}
+
 // KeepCodexWindowsWarm starts the ChatGPT accounts' windows as they reset,
 // while settings say to, two minutes after it starts and every
 // codexWarmEvery after that, until ctx ends.

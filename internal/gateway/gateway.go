@@ -6272,6 +6272,9 @@ func (s *Server) forward(ctx context.Context, p provider.Provider, to provider.P
 		// once, never again in another shape
 		return res, err
 	}
+	if err == nil {
+		res, err = s.retryCallerCache(ctx, p, to, path, body, in, res)
+	}
 	if err == nil && res.StatusCode >= 400 {
 		// a body over the provider's byte cap: asked again with its
 		// oldest images left out, or said as a 413 (body_cap.go)

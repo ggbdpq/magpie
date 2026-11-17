@@ -403,12 +403,19 @@ func codexIn(at place) *Agent {
 	// alone, so every request was a 401 (#2145, lazydao). With magpie as
 	// its provider it sends the key magpie gives it (gwKey); its own models
 	// still go straight to OpenAI on its sign-in.
+	// pickedChatGPT: the user picked the ChatGPT sign-in in the login field
+	// with discovery off, so there is no read to check the pick against
+	// (#1535): the pick is the user saying Codex is signed in, taken for the
+	// wiring that pick asks set() for, alone — what set() writes (beside) or
+	// forgets is what reads after it. Where there is a read, the read is the
+	// word (#6917).
+	pickedChatGPT := false
 	chatGPT := func() bool {
 		if onAnotherMachine(at.gw()) {
 			return false
 		}
 		if settings.AccountDiscoveryOff() {
-			return joined() || beside()
+			return joined() || beside() || pickedChatGPT
 		}
 		// a read that says nothing (auth.json caught while Codex rewrites
 		// it) leaves Codex as magpie last wired it: beside its sign-in, or
@@ -2574,6 +2581,10 @@ func codexIn(at place) *Agent {
 						// OpenAI itself again, not by a hop through magpie
 						return set(codexOwnOf(m))
 					case isMagpie(m):
+						if v != "api" && settings.AccountDiscoveryOff() {
+							pickedChatGPT = true
+							defer func() { pickedChatGPT = false }()
+						}
 						return set(m)
 					case v == "api" && codexOwnViaMagpie(m) != "":
 						// magpie API on one of Codex's own models: wired as

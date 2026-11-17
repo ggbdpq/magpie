@@ -501,7 +501,7 @@ type Event struct {
 	Name   string
 	MsgID  string
 	Model  string
-	Stop   string // stop | length | tool | filter
+	Stop   string // stop | length | tool | filter, an incomplete reply's reason as the vendor said it, or "incomplete" when none was said (#6902)
 	// Code: for KError, the source error or safety-filter code (rate_limit,
 	// server_error, bio_policy, content_filter…); RequestID: the vendor's id for the
 	// request the event is of, when it is known by then

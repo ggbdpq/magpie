@@ -2047,9 +2047,21 @@ func (d *responsesDecoder) decode(data string, emit func(Event)) error {
 		}
 		stop := "stop"
 		if ev.Response.Status == "incomplete" {
-			stop = "length"
-			if ev.Response.IncompleteDetails != nil && ev.Response.IncompleteDetails.Reason == "content_filter" {
-				stop = "filter"
+			// an incomplete reply is not a token limit unless its reason
+			// says so: the two words the protocol names keep their
+			// meanings, and a vendor's own word (or no word said) comes
+			// through as it came (#6902)
+			stop = "incomplete"
+			if det := ev.Response.IncompleteDetails; det != nil {
+				switch det.Reason {
+				case "max_output_tokens":
+					stop = "length"
+				case "content_filter":
+					stop = "filter"
+				case "": // no reason said: the end stays unnamed
+				default:
+					stop = det.Reason
+				}
 			}
 		} else if d.called {
 			// the ChatGPT backend's completed response lists no output
@@ -2502,13 +2514,25 @@ func (e *responsesEncoder) finish() {
 	res := e.col.finish()
 	status, typ := "completed", "response.completed"
 	extra := map[string]any{"usage": res.Usage.responses(), "incomplete_details": nil}
-	if res.Stop == "length" || res.Stop == "filter" {
+	switch {
+	case res.Stop == "length" || res.Stop == "filter":
 		status, typ = "incomplete", "response.incomplete"
 		reason := "max_output_tokens"
 		if res.Stop == "filter" {
 			reason = "content_filter"
 		}
 		extra["incomplete_details"] = map[string]any{"reason": reason}
+	case res.Stop == "stop" || res.Stop == "tool":
+		// the reply completed, its calls and all
+	default:
+		// an interruption no word magpie's vocabulary names, or one the
+		// vendor named in its own words (#6902): incomplete as the
+		// upstream said it, the word passed on as it came, and when no
+		// word was said, no diagnosis invented
+		status, typ = "incomplete", "response.incomplete"
+		if res.Stop != "incomplete" {
+			extra["incomplete_details"] = map[string]any{"reason": res.Stop}
+		}
 	}
 	if status == "completed" {
 		e.release(phaseFinal)
@@ -2601,6 +2625,15 @@ func renderResponses(res Result, model string, named map[string]nsTool) []byte {
 	case "filter":
 		// as the stream says it (#248)
 		status, incomplete = "incomplete", map[string]any{"reason": "content_filter"}
+	case "stop", "tool", "":
+		// the reply completed
+	default:
+		// as the stream says it (#6902): an interruption no word magpie's
+		// vocabulary names, or one the vendor named in its own words
+		status = "incomplete"
+		if res.Stop != "incomplete" {
+			incomplete = map[string]any{"reason": res.Stop}
+		}
 	}
 	phaseOutput(output, status == "completed")
 	b, _ := json.Marshal(map[string]any{"id": id, "object": "response", "created_at": time.Now().Unix(), "status": status,

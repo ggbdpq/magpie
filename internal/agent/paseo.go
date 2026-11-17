@@ -12,8 +12,13 @@ package agent
 // Claude Code as written (docs/custom-providers.md, ProviderProfileModelSchema).
 //
 // So the switch writes the models Claude Code's /model lists (the same ids,
-// [1m] marks and names as claudeModelPicker) there, and takes out only its
-// own entries on off, the user's staying. Claude Code itself must be
+// [1m] marks and names as claudeModelPicker) there, with the model's levels
+// as the entry's thinkingOptions when it has any (#6913: without them Paseo
+// treated a group as a custom model of its own and offered its defaults
+// only, so the xhigh a group's levels named was not in its picker — and the
+// thinkingOptions the user had added to an entry by hand were gone again at
+// the next sync, which keeps them now). And it takes out only its own
+// entries on off, the user's staying. Claude Code itself must be
 // connected to magpie for those ids to be served.
 
 import (
@@ -30,10 +35,38 @@ import (
 
 const paseoMark = "via magpie"
 
+// paseoEffortLabels are Paseo's names for Claude Code's levels, as its own
+// Claude models show them (model-manifest.ts's CLAUDE_EFFORT_LABELS).
+var paseoEffortLabels = map[string]string{"low": "Low", "medium": "Medium", "high": "High", "xhigh": "Extra High", "max": "Max"}
+
+// paseoThinking is a model's levels as Paseo's thinkingOptions, in the ids
+// and names of its own Claude list, its default among them (high, its
+// CLAUDE_DEFAULT_THINKING_OPTION_ID): the levels Claude Code sends, so a
+// level the group names that Claude Code has no word for is not offered
+// (the gateway sends what is asked as it is). nil for a model with none.
+func paseoThinking(id string, efforts []string) []map[string]any {
+	var out []map[string]any
+	for _, l := range claudeEffortsFor(id) {
+		if !contains(efforts, l) {
+			continue
+		}
+		o := map[string]any{"id": l, "label": paseoEffortLabels[l]}
+		if l == "high" {
+			o["isDefault"] = true
+		}
+		out = append(out, o)
+	}
+	return out
+}
+
 // paseoModels are magpie's models as Paseo's additionalModels entries.
 func paseoModels() []map[string]any {
 	mark1M := claude1MFor("paseo")
 	labels := listLabels("paseo")
+	efforts := map[string][]string{}
+	for _, m := range sharedModels("paseo") {
+		efforts[m.ID] = m.Efforts
+	}
 	rows := []map[string]any{}
 	seen := map[string]bool{}
 	for _, o := range viaMagpie("paseo", "") {
@@ -47,7 +80,11 @@ func paseoModels() []map[string]any {
 		if note != "" && note != paseoMark {
 			desc = note + " · " + paseoMark
 		}
-		rows = append(rows, map[string]any{"id": id, "label": cmp.Or(labels[o.Ref], o.Label, o.Value), "description": desc})
+		e := map[string]any{"id": id, "label": cmp.Or(labels[o.Ref], o.Label, o.Value), "description": desc}
+		if t := paseoThinking(id, efforts[o.Ref]); t != nil {
+			e["thinkingOptions"] = t
+		}
+		rows = append(rows, e)
 	}
 	return rows
 }
@@ -71,13 +108,16 @@ func paseoList(path string) (list []map[string]any, ok bool) {
 const paseoKey = "agents.providers.claude.additionalModels"
 
 // paseoWrite puts magpie's entries (none when on is false) among the
-// user's, which keep their place and come first.
+// user's, which keep their place and come first. An entry of magpie's keeps
+// the fields the user added to it (#6913): its id, label and description
+// are magpie's to write, the rest is theirs.
 func paseoWrite(path string, on bool) error {
 	cur, ok := paseoList(path)
 	if !ok {
 		return nil
 	}
 	mine := map[string]bool{}
+	have := map[string]map[string]any{}
 	var out []map[string]any
 	for _, e := range cur {
 		if !paseoOurs(e) {
@@ -85,14 +125,22 @@ func paseoWrite(path string, on bool) error {
 			if id, _ := e["id"].(string); id != "" {
 				mine[id] = true
 			}
+			continue
+		}
+		if id, _ := e["id"].(string); id != "" {
+			have[id] = e
 		}
 	}
 	if on {
 		for _, e := range paseoModels() {
 			// an id the user listed themselves stays theirs
-			if !mine[e["id"].(string)] {
-				out = append(out, e)
+			if mine[e["id"].(string)] {
+				continue
 			}
+			if h, ok := have[e["id"].(string)]; ok {
+				e = mergeKept(h, e, []string{"id", "label", "description"})
+			}
+			out = append(out, e)
 		}
 	}
 	if len(out) == 0 {

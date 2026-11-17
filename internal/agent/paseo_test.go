@@ -120,3 +120,106 @@ func TestPaseoAdditionalModels(t *testing.T) {
 		t.Errorf("left behind: %s", readFile(path))
 	}
 }
+
+// paseoEntries are the file's additionalModels by id.
+func paseoEntries(t *testing.T, path string) map[string]map[string]any {
+	t.Helper()
+	var d struct {
+		Agents struct {
+			Providers map[string]struct {
+				Additional []map[string]any `json:"additionalModels"`
+			} `json:"providers"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal([]byte(readFile(path)), &d); err != nil {
+		t.Fatalf("%v\n%s", err, readFile(path))
+	}
+	out := map[string]map[string]any{}
+	for _, e := range d.Agents.Providers["claude"].Additional {
+		id, _ := e["id"].(string)
+		out[id] = e
+	}
+	return out
+}
+
+// paseoThinkingIDs are an entry's thinkingOptions ids, in order.
+func paseoThinkingIDs(t *testing.T, e map[string]any) []string {
+	t.Helper()
+	ts, _ := e["thinkingOptions"].([]any)
+	var ids []string
+	for _, v := range ts {
+		m, _ := v.(map[string]any)
+		id, _ := m["id"].(string)
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// A routing group's levels reach Paseo as the entry's thinkingOptions (#6913):
+// without them Paseo matched the group id against its own Claude list, found
+// nothing and offered only its custom defaults, so the xhigh the user set on
+// the group (`magpie group set … levels=…,xhigh,…`) was not in its picker
+// while Claude Code's effort already was. A model with no levels of its own
+// is left as it was: Paseo falls back to its own defaults for it.
+func TestPaseoWritesTheGroupLevelsAsThinkingOptions(t *testing.T) {
+	home := syncHome(t)
+	t.Setenv("PASEO_HOME", "")
+	if err := provider.SaveGroup(provider.Group{ID: "mix", Name: "Mix", Members: []string{"relay/glm-4.6"}, Levels: []string{"low", "medium", "high", "xhigh", "max"}}); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, ".paseo")
+	path := filepath.Join(dir, "config.json")
+	os.MkdirAll(dir, 0o755)
+	a := paseo(home)
+	f := a.Field("provider")
+	if err := f.Set(magpieID); err != nil {
+		t.Fatal(err)
+	}
+	ids := paseoThinkingIDs(t, paseoEntries(t, path)["group/mix"])
+	if !slices.Equal(ids, []string{"low", "medium", "high", "xhigh", "max"}) {
+		t.Fatalf("group/mix thinkingOptions %v, want [low medium high xhigh max]", ids)
+	}
+	def := 0
+	for _, v := range paseoEntries(t, path)["group/mix"]["thinkingOptions"].([]any) {
+		m, _ := v.(map[string]any)
+		if m["isDefault"] == true {
+			def++
+			if m["id"] != "high" {
+				t.Errorf("default thinking option %v, want high", m["id"])
+			}
+		}
+	}
+	if def != 1 {
+		t.Errorf("%d default thinking options, want 1 (high)", def)
+	}
+	if _, ok := paseoEntries(t, path)["relay/glm-4.6"]["thinkingOptions"]; ok {
+		t.Error("a model with no levels of its own got thinkingOptions")
+	}
+}
+
+// thinkingOptions the user added to an entry of magpie's by hand stay
+// through a re-sync (#6913): the rewrite kept only what magpie writes, so
+// the xhigh they had put there was gone again at the next sync. magpie's
+// own fields — id, label, description — stay magpie's.
+func TestPaseoKeepsTheHandThinkingOptions(t *testing.T) {
+	home := syncHome(t)
+	t.Setenv("PASEO_HOME", "")
+	dir := filepath.Join(home, ".paseo")
+	path := filepath.Join(dir, "config.json")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(path, []byte(`{"agents":{"providers":{"claude":{"additionalModels":[{"id":"relay/glm-4.6","label":"glm-4.6","description":"Relay · via magpie","thinkingOptions":[{"id":"xhigh","label":"Extra High"}]}]}}}}`), 0o600)
+	a := paseo(home)
+	for range 2 {
+		if err := a.Sync(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := paseoEntries(t, path)["relay/glm-4.6"]
+	if !slices.Equal(paseoThinkingIDs(t, e), []string{"xhigh"}) {
+		t.Fatalf("thinkingOptions gone after a re-sync: %s", readFile(path))
+	}
+	d, _ := e["description"].(string)
+	if !strings.HasSuffix(d, " · "+paseoMark) {
+		t.Fatalf("description %q, want it marked as magpie's", d)
+	}
+}

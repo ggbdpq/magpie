@@ -1401,9 +1401,9 @@ func (f *mcpFile) read() (map[string]*Server, error) {
 			out[name] = s
 		}
 	}
-	if (f.Format == fmtPi || f.Format == fmtPiNative || f.Format == fmtDesktop) && err == nil {
-		// Pi's (or Desktop's) other files, the one magpie writes first
-		// winning a name
+	if (f.Format == fmtPi || f.Format == fmtPiNative || f.Format == fmtDesktop || f.Format == fmtDsh) && err == nil {
+		// the other files of a format written into several (Pi, Desktop,
+		// dsh's profiles), the one magpie writes first winning a name
 		for _, p := range append(slices.Clone(f.Also), f.Extra...) {
 			more, _ := (&mcpFile{Path: p, Format: f.Format}).read()
 			for name, s := range more {
@@ -1416,9 +1416,12 @@ func (f *mcpFile) read() (map[string]*Server, error) {
 	return out, err
 }
 
-// also is the file of each of Also, for formats written file by file.
+// also is the file of each of Also, for formats written file by file —
+// Pi's, Desktop's, and dsh's profiles, whose writers (putEntry, del) reach
+// every file of Also and whose checkers must therefore see them too, or a
+// profile that lost its insert is never written back (#6858).
 func (f *mcpFile) also() []*mcpFile {
-	if f.Format != fmtPi && f.Format != fmtDesktop {
+	if f.Format != fmtPi && f.Format != fmtDesktop && f.Format != fmtDsh {
 		return nil
 	}
 	var out []*mcpFile

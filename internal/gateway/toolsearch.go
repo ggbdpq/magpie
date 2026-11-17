@@ -82,6 +82,15 @@ func searchAsFunction(body []byte) ([]byte, bool) {
 		return body, false
 	}
 	if search {
+		// the tools Codex deferred go out loaded: a vendor that takes the
+		// search as a function knows no defer_loading either, and turns
+		// the request away when a tool asks to be deferred with no search
+		// beside it (#6873)
+		for _, t := range tools {
+			if tm, _ := t.(map[string]any); tm != nil {
+				undefer(tm)
+			}
+		}
 		m["tools"] = tools
 	}
 	out, err := marshalPlain(m)

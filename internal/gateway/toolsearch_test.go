@@ -241,6 +241,32 @@ func TestSearchAsFunctionMerges(t *testing.T) {
 	}
 }
 
+// The downgrade of the search loads the tools Codex deferred: a vendor
+// that knows neither the search nor defer_loading turns a request away
+// whose tools ask to be deferred with no search beside it (#6873,
+// "Deferred tools require tools.tool_search").
+func TestSearchAsFunctionLoadsDeferredTools(t *testing.T) {
+	out, ok := searchAsFunction([]byte(`{"model":"m","tools":[
+		{"type":"function","name":"exec_command","defer_loading":true,"parameters":{"type":"object"}},
+		{"type":"tool_search","execution":"client","description":"# Tool discovery\nSearches over deferred tool metadata.","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}
+	],"input":"hi"}`))
+	if !ok {
+		t.Fatal("not downgraded")
+	}
+	if strings.Contains(string(out), "defer_loading") {
+		t.Fatalf("defer_loading left in the downgraded request: %s", out)
+	}
+	var q struct {
+		Tools []map[string]any `json:"tools"`
+	}
+	if json.Unmarshal(out, &q) != nil || len(q.Tools) != 2 {
+		t.Fatalf("tools = %+v", q)
+	}
+	if q.Tools[0]["name"] != "exec_command" || q.Tools[1]["name"] != "tool_search" {
+		t.Fatalf("tools = %+v", q.Tools)
+	}
+}
+
 // Split anywhere, the stream's lines come out whole and mended.
 func TestSearchTidySplit(t *testing.T) {
 	in := sse(

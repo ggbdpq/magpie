@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // codexFollowSetup is Codex signed in to ChatGPT, its conversation put on
@@ -266,6 +268,126 @@ func TestCodexOwnTitleFollowsThePickNotTheAppsChoice(t *testing.T) {
 	}
 	if reqs := picked.requests(); len(reqs) != 4 {
 		t.Fatalf("the picked model got %d requests, want the turn, the title, the description and the summary", len(reqs))
+	}
+}
+
+// codexAppSideOn is one of the Codex app's hidden side turns asked on
+// model, whatever the app's list default spells (with the same model on
+// several providers that is the group magpie found, or another provider's
+// full id, never the model picked for the conversation).
+func codexAppSideOn(t *testing.T, s *Server, model, source, session string) {
+	t.Helper()
+	body := `{"model":"` + model + `","stream":true,"input":[` + leadAsk + `]}`
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("chatgpt-account-id", "acct-1")
+	req.Header.Set("session_id", session)
+	req.Header.Set("x-codex-turn-metadata", `{"thread_source":"`+source+`"}`)
+	s.Handler().ServeHTTP(httptest.NewRecorder(), req)
+}
+
+// relayOnSameModel is a Responses provider of id serving model, as the
+// issue's two third-party providers are: one model id, two providers.
+func relayOnSameModel(t *testing.T, id, model string) *relayOfChatGPT {
+	t.Helper()
+	f := &relayOfChatGPT{}
+	up := httptest.NewServer(f)
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{ID: id, Name: strings.ToUpper(id), Key: "sk-" + id, Models: []string{model}, Responses: up.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// Two providers serving the same model: magpie lists the group it finds
+// (auto/<model>) beside each provider's own, and the app asks a new
+// conversation's title on the list's default model or its first — the
+// group's row, or another provider's full id, never the model picked for
+// the conversation. With the conversation on one provider's model, the
+// title went through the group, whose first member is the other provider
+// (#6920). A side call asked for one of magpie's models in full follows
+// the session's model, as it does when the app asks for one of Codex's own.
+func TestCodexAppSideTurnsFollowTheSessionOverTheAppsFullRef(t *testing.T) {
+	fresh(t)
+	up := codexSubagentSetup(t)
+	first := relayOnSameModel(t, "first", "gpt-6.1-sol")
+	second := relayOnSameModel(t, "second", "gpt-6.1-sol")
+	was := CodexSideModel
+	CodexSideModel = func() string { return "" }
+	t.Cleanup(func() { CodexSideModel = was })
+	s := New()
+	if rec := codexSubTurn(s, "second/gpt-6.1-sol", "conv-1", "", leadAsk); rec.Code != 200 {
+		t.Fatalf("the conversation: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, src := range []string{"thread_title", "thread_description"} {
+		codexAppSideOn(t, s, "auto/gpt-6.1-sol", src, "title-thread")
+		// and another provider's model asked for in full
+		codexAppSideOn(t, s, "first/gpt-6.1-sol", src, "title-thread")
+	}
+	if got := up.asked(); len(got) != 0 {
+		t.Fatalf("ChatGPT was asked for %v", got)
+	}
+	if reqs := first.requests(); len(reqs) != 0 {
+		t.Fatalf("the asked-for model got %d requests, the side calls among them", len(reqs))
+	}
+	if reqs := second.requests(); len(reqs) != 5 {
+		t.Fatalf("the conversation's model got %d requests, want the turn and the four side calls", len(reqs))
+	}
+}
+
+// #6920's own repro: a new conversation's title is written on a temporary
+// thread started as the first message is sent, before any turn of the
+// conversation has come through magpie. Asked for on the group's row (the
+// list's default), it waits for the conversation's first turn and goes on
+// its model, not on the group's first member.
+func TestCodexTitleAskedForTheGroupBeforeTheFirstTurnFollowsTheConversation(t *testing.T) {
+	fresh(t)
+	up := codexSubagentSetup(t)
+	first := relayOnSameModel(t, "first", "gpt-6.1-sol")
+	second := relayOnSameModel(t, "second", "gpt-6.1-sol")
+	wasModel, wasWait := CodexSideModel, codexSideWait
+	CodexSideModel = func() string { return "" }
+	codexSideWait = time.Minute
+	t.Cleanup(func() { CodexSideModel, codexSideWait = wasModel, wasWait })
+	s := New()
+	beforeTheTurn(t, s, func() { codexAppSideOn(t, s, "auto/gpt-6.1-sol", "thread_title", "title-thread") }, func() {
+		if rec := codexSubTurn(s, "second/gpt-6.1-sol", "conv-1", "", leadAsk); rec.Code != 200 {
+			t.Errorf("the conversation: %d %s", rec.Code, rec.Body.String())
+		}
+	})
+	if got := up.asked(); len(got) != 0 {
+		t.Fatalf("ChatGPT was asked for %v", got)
+	}
+	if reqs := first.requests(); len(reqs) != 0 {
+		t.Fatalf("the group's first member got %d requests, the title among them", len(reqs))
+	}
+	if reqs := second.requests(); len(reqs) != 2 {
+		t.Fatalf("the conversation's model got %d requests, want the turn and the title", len(reqs))
+	}
+}
+
+// With no conversation of magpie's to follow, a side call asked for one of
+// magpie's models in full goes on the model asked for, as it did before:
+// never relayed to ChatGPT, and never dropped.
+func TestCodexAppSideTurnsKeepTheAppsFullRefWithNoSession(t *testing.T) {
+	fresh(t)
+	up := codexSubagentSetup(t)
+	first := relayOnSameModel(t, "first", "gpt-6.1-sol")
+	second := relayOnSameModel(t, "second", "gpt-6.1-sol")
+	wasModel, wasWait := CodexSideModel, codexSideWait
+	CodexSideModel = func() string { return "" }
+	codexSideWait = 0
+	t.Cleanup(func() { CodexSideModel, codexSideWait = wasModel, wasWait })
+	s := New()
+	codexAppSideOn(t, s, "auto/gpt-6.1-sol", "thread_title", "title-thread")
+	if got := up.asked(); len(got) != 0 {
+		t.Fatalf("ChatGPT was asked for %v", got)
+	}
+	if reqs := first.requests(); len(reqs) != 1 {
+		t.Fatalf("the group's first member got %d requests, want the title", len(reqs))
+	}
+	if reqs := second.requests(); len(reqs) != 0 {
+		t.Fatalf("the other provider got %d requests", len(reqs))
 	}
 }
 

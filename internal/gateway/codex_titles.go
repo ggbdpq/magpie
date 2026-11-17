@@ -61,21 +61,24 @@ var CodexSideModel func() string
 // model picked for the conversation (tenacious_eagle_96548 on Discord:
 // the conversation on A/dsf4.1, its title on B/qwen3.7). Those go on the
 // session's model too when magpie knows it, else on the model asked for.
+//
+// The list's default or first can name one of magpie's models in full on
+// the ChatGPT-backend path as well — the row of a group magpie found among
+// its providers (auto/<model>), or another provider's id — and such an ask
+// went as asked, so with the same model on several providers a new
+// conversation's title went through the group, whose first member is
+// another provider than the conversation's (#6920). The session's model is
+// known then, and wins, as it does for a bare ask of Codex's own; the model
+// asked for stands only when no conversation of magpie's is known.
 func codexSideTo(body []byte, ours bool, session func() string) string {
 	m := modelOf(body)
-	if ours {
-		if session != nil {
-			if to := session(); to != "" {
-				return to
-			}
-		}
-		return m
-	}
-	if strings.Contains(m, "/") {
-		return m
-	}
 	if session != nil {
-		return session()
+		if to := session(); to != "" {
+			return to
+		}
+	}
+	if ours || strings.Contains(m, "/") {
+		return m
 	}
 	return ""
 }

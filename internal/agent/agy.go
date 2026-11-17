@@ -53,6 +53,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/jsonc"
 
+	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
@@ -274,9 +275,9 @@ func agyIn(at place) *Agent {
 	writeOver := func(model string) error {
 		ms := ownModels()
 		for _, m := range sharedModels("agy") {
-			ms[magpieID+"/"+m.ID] = map[string]string{"apiProvider": "API_PROVIDER_GOOGLE_GEMINI", "modelName": m.ID}
+			ms[magpieID+"/"+m.ID] = agyEntry(m, "")
 			for _, l := range agyLevels(m.Efforts) {
-				ms[agyLevelKey(magpieID+"/"+m.ID, l)] = map[string]string{"apiProvider": "API_PROVIDER_GOOGLE_GEMINI", "modelName": m.ID, "thinkingLevel": l}
+				ms[agyLevelKey(magpieID+"/"+m.ID, l)] = agyEntry(m, l)
 			}
 		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -493,6 +494,22 @@ func agyIn(at place) *Agent {
 // thinkingLevel), which the gateway asks for over the row's
 // (agyLevelAsked).
 var agyLevelNames = []string{"low", "medium", "high"}
+
+// agyEntry is one of magpie's custom models as agy-settings.json holds it,
+// with the thinking level for a level's variant. A model whose context
+// window the UI set carries it as maxTokens (#6961: agy ran at its own
+// 256k however the window was set, the entries naming no limit); one
+// without a window is left as it was.
+func agyEntry(m catalog.Model, level string) map[string]any {
+	e := map[string]any{"apiProvider": "API_PROVIDER_GOOGLE_GEMINI", "modelName": m.ID}
+	if level != "" {
+		e["thinkingLevel"] = level
+	}
+	if m.Context > 0 {
+		e["maxTokens"] = m.Context
+	}
+	return e
+}
 
 // agyLevels are the levels of efforts agy's custom models can ask, weakest
 // first: none unless two or more, as one is no choice.

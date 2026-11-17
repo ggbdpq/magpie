@@ -368,3 +368,37 @@ func TestMemberSeveralLevelsFollowAgent(t *testing.T) {
 		t.Fatalf("group offers %v, want low and xhigh", got)
 	}
 }
+
+// The advisor's shape (#6851, swordencao): a fixed effort whose level's
+// own budget the max_tokens cap bites (the advisor is asked with 4096),
+// the named level kept beside the capped budget, so requestEffort reads
+// the level as named — a capped budget is not a low one.
+func TestWithFixedEffortCapKeepsTheLevelNamed(t *testing.T) {
+	out := string(withFixedEffort(provider.Anthropic, []byte(`{"model":"m","max_tokens":4096}`), "high"))
+	if !strings.Contains(out, `"budget_tokens":4095`) {
+		t.Errorf("the capped budget gone: %s", out)
+	}
+	if got := requestEffort(provider.Anthropic, []byte(out)); got != "high" {
+		t.Errorf("requestEffort %q, want high (out: %s)", got, out)
+	}
+}
+
+// The delegation shape of the same cap (#6851): a body already thinking
+// that withEffort re-levels, its budget capped by the answer's room, the
+// named level kept the same way — the body's own words name no level, so
+// the round-trip loses the imposed one to effortOfBudget otherwise.
+func TestWithEffortCapKeepsTheLevelNamed(t *testing.T) {
+	out := string(withEffort(provider.Anthropic, []byte(`{"model":"m","max_tokens":4096,"thinking":{"type":"enabled","budget_tokens":32000}}`), "high"))
+	if !strings.Contains(out, `"budget_tokens":4095`) {
+		t.Errorf("the capped budget gone: %s", out)
+	}
+	if got := requestEffort(provider.Anthropic, []byte(out)); got != "high" {
+		t.Errorf("requestEffort %q, want high (out: %s)", got, out)
+	}
+	// an uncapped budget maps back to the level it was set for, so no
+	// record is needed for the round-trip to hold
+	plain := string(withEffort(provider.Anthropic, []byte(`{"model":"m","max_tokens":64000,"thinking":{"type":"enabled","budget_tokens":8000}}`), "high"))
+	if got := requestEffort(provider.Anthropic, []byte(plain)); got != "high" {
+		t.Errorf("requestEffort %q, want high (out: %s)", got, plain)
+	}
+}

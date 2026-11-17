@@ -712,14 +712,27 @@ func withEffort(proto provider.Protocol, body []byte, effort string) []byte {
 		case "enabled":
 			// the budget must leave room for the answer
 			budget := budgetOf(effort)
-			if v.MaxTokens > 0 {
-				budget = min(budget, v.MaxTokens-1)
+			capped := false
+			if v.MaxTokens > 0 && v.MaxTokens-1 < budget {
+				budget, capped = v.MaxTokens-1, true
 			}
 			if budget < 1024 {
 				return body
 			}
 			fields := map[string]any{"thinking": map[string]any{"type": "enabled", "budget_tokens": budget}}
 			if oc := v.OutputConfig; oc != nil && oc["effort"] != nil {
+				oc["effort"] = effort
+				fields["output_config"] = oc
+			} else if capped {
+				// the cap bit the level's own budget (#6851, as
+				// withFixedEffort's): the named level goes beside the
+				// capped budget, so the round-trip keeps it — a body
+				// already thinking whose own words name no level loses
+				// the imposed one to effortOfBudget otherwise
+				oc := v.OutputConfig
+				if oc == nil {
+					oc = map[string]any{}
+				}
 				oc["effort"] = effort
 				fields["output_config"] = oc
 			}
@@ -856,7 +869,8 @@ func withFixedEffort(proto provider.Protocol, body []byte, effort string) []byte
 			Thinking *struct {
 				Type string `json:"type"`
 			} `json:"thinking"`
-			MaxTokens int `json:"max_tokens"`
+			OutputConfig map[string]any `json:"output_config"`
+			MaxTokens    int            `json:"max_tokens"`
 		}
 		if decodeJSON(body, &v) != nil {
 			return body
@@ -870,13 +884,29 @@ func withFixedEffort(proto provider.Protocol, body []byte, effort string) []byte
 		}
 		// asked to think, with room left for the answer
 		budget := budgetOf(level)
-		if v.MaxTokens > 0 {
-			budget = min(budget, v.MaxTokens-1)
+		capped := false
+		if v.MaxTokens > 0 && v.MaxTokens-1 < budget {
+			budget, capped = v.MaxTokens-1, true
 		}
 		if budget < 1024 {
 			return body
 		}
-		return withFields(body, map[string]any{"thinking": map[string]any{"type": "enabled", "budget_tokens": budget}})
+		fields := map[string]any{"thinking": map[string]any{"type": "enabled", "budget_tokens": budget}}
+		if capped {
+			// the cap bit the level's own budget (the advisor's 4096,
+			// #6851): the named level goes beside the capped budget, so
+			// requestEffort reads the level as named — a budget capped
+			// by the answer's room is not a low one, and what reads the
+			// effort back (the trace, the subscription bridge) took the
+			// round-trip for its word
+			oc := v.OutputConfig
+			if oc == nil {
+				oc = map[string]any{}
+			}
+			oc["effort"] = level
+			fields["output_config"] = oc
+		}
+		return withFields(body, fields)
 	case provider.Gemini:
 		var v struct {
 			Model string `json:"model"`

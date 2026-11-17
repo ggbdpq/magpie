@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/routes"
 )
 
 // nearCapBackend is a ChatGPT backend for the near-cap tests: each
@@ -447,5 +448,106 @@ func TestNearCapOnlyCreditsOffOneAccountSendsAtOnce(t *testing.T) {
 		if r := <-replies; r.code != 200 {
 			t.Fatalf("status %d: %s", r.code, r.body)
 		}
+	}
+}
+
+// #6907: drain waits for a busy account near its cap while allowance
+// remains, but still fails over once the preceding turn exhausts it.
+func TestDrainKeepsANearCapAccountThatIsBusy(t *testing.T) {
+	for _, tc := range []struct {
+		name, routing string
+		group         bool
+		after         float64
+		wantFirst     int
+		parent        string
+	}{
+		{"provider", provider.Drain, false, 96, 2, ""},
+		{"group", provider.Drain, true, 96, 2, ""},
+		{"exhausted", provider.Drain, true, 100, 1, ""},
+		{"order", provider.Ordered, true, 96, 1, ""},
+		{"nested-order", provider.Drain, true, 96, 2, provider.Ordered},
+		{"nested-pace", provider.Drain, true, 96, 2, provider.Pace},
+		{"nested-expiring", provider.Drain, true, 96, 2, provider.FreeExpiring},
+		{"fallback", provider.Drain, false, 96, 2, "fallback"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			codexSignedIn(t, "spare@example.com")
+			b := newNearCapBackend(t, map[string]float64{"acct-1": 95, "acct-2": 20},
+				map[string]float64{"acct-1": 95, "acct-2": 20}, map[string]float64{"acct-1": tc.after})
+			nearCapAccounts(t, 0, 95, "spare@example.com")
+			model := "codex/gpt-5.5"
+			if tc.group {
+				if err := provider.SetRouting("codex", tc.routing); err != nil {
+					t.Fatal(err)
+				}
+				if err := provider.SaveGroup(provider.Group{ID: "near-drain", Name: "Near drain", Members: []string{model}, Routing: tc.routing, Affinity: provider.AffinityOff}); err != nil {
+					t.Fatal(err)
+				}
+				model = provider.GroupPrefix + "near-drain"
+				if tc.parent != "" {
+					if err := provider.SaveGroup(provider.Group{ID: "near-parent", Name: "Parent", Members: []string{model}, Routing: tc.parent, Affinity: provider.AffinityOff}); err != nil {
+						t.Fatal(err)
+					}
+					model = provider.GroupPrefix + "near-parent"
+				}
+			} else if err := provider.SetRouting("codex", tc.routing); err != nil {
+				t.Fatal(err)
+			}
+			routes.Forget("codex", provider.GroupPrefix+"near-drain", provider.GroupPrefix+"near-parent")
+			if tc.parent == "fallback" {
+				up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusPaymentRequired)
+					io.WriteString(w, `{"error":{"message":"insufficient quota"}}`)
+				}))
+				defer up.Close()
+				if err := provider.Save(provider.Provider{ID: "near-primary", Name: "Primary", Key: "fake", Models: []string{"m"}, Chat: up.URL + "/v1", Routing: provider.Ordered, Fallback: []string{model}}); err != nil {
+					t.Fatal(err)
+				}
+				model = "near-primary/m"
+			}
+			if err := provider.SetCodexCredits("me@example.com", false); err != nil {
+				t.Fatal(err)
+			}
+			srv := New()
+			httpSrv := httptest.NewServer(lanGuard(srv.Handler()))
+			defer httpSrv.Close()
+			client := &http.Client{Timeout: 20 * time.Second}
+			ask := func(out chan<- nearReply) {
+				req, err := http.NewRequest("POST", httpSrv.URL+"/v1/responses", strings.NewReader(`{"model":"`+model+`","stream":true,"input":"ping"}`))
+				if err != nil {
+					out <- nearReply{body: err.Error()}
+					return
+				}
+				req.Header.Set("Content-Type", "application/json")
+				resp, err := client.Do(req)
+				if err != nil {
+					out <- nearReply{body: err.Error()}
+					return
+				}
+				defer resp.Body.Close()
+				body, _ := io.ReadAll(resp.Body)
+				out <- nearReply{resp.StatusCode, string(body)}
+			}
+			replies := make(chan nearReply, 2)
+			go ask(replies)
+			waitFor(t, "first turn reaches the backend", func() bool { return len(b.sent()) == 1 })
+			go ask(replies)
+			waitFor(t, "second turn sent or queued", func() bool {
+				return len(b.sent()) == 2 || srv.nearCap.waiting() == 1
+			})
+			close(b.open)
+			for range 2 {
+				if r := <-replies; r.code != 200 || !strings.Contains(r.body, "pong") {
+					t.Fatalf("%d %s", r.code, r.body)
+				}
+			}
+			got := map[string]int{}
+			for _, a := range b.sent() {
+				got[a]++
+			}
+			if got["acct-1"] != tc.wantFirst || got["acct-2"] != 2-tc.wantFirst {
+				t.Fatalf("sent %v; want %d turns on the first account", got, tc.wantFirst)
+			}
+		})
 	}
 }

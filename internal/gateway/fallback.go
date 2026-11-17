@@ -103,6 +103,9 @@ type candidate struct {
 	// given a request for want of a slot (laneMate) nor kept on by a
 	// conversation (affine)
 	reserve int
+	// drain keeps a busy near-cap account in place when a pool that
+	// orders this candidate promises to use it up before moving on.
+	drain bool
 }
 
 // unmasked says a request to the try goes as written: its groups say so,
@@ -304,6 +307,11 @@ func perKeyOf(p provider.Provider, model string, from provider.Protocol) (out, a
 // else there is — none, when every one of them is.
 func perKeyBarred(p provider.Provider, model string, from provider.Protocol) (out, aside, left, barred []candidate) {
 	out, aside, left, barred = perKeyEvery(p, model, from)
+	for _, cs := range [][]candidate{out, aside, left, barred} {
+		for i := range cs {
+			cs[i].drain = routingOf(p.Routing) == provider.Drain
+		}
+	}
 	out, aside = keepAtOnce(p.AtOnce(), out, aside)
 	return out, aside, left, barred
 }
@@ -784,6 +792,17 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 				})
 			}
 			cs, aside, left, barred = out(cs), out(aside), out(left), out(barred)
+		}
+		// A drain pool keeps its account until spent, including when the
+		// pool is nested or reached as a fallback. Keep that choice on the
+		// candidate; the request's outer group may route another way.
+		drain := routingOf(g.Routing) == provider.Drain || slices.ContainsFunc(m.Via, func(g provider.Group) bool {
+			return routingOf(g.Routing) == provider.Drain
+		})
+		for _, cs := range [][]candidate{cs, aside, left, barred} {
+			for i := range cs {
+				cs[i].drain = cs[i].drain || drain
+			}
 		}
 		// the effort the member is fixed at goes with each of its keys:
 		// the same model at another effort is another member's

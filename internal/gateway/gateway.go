@@ -3888,7 +3888,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				own = 1
 			}
 			out, _, _ := s.lanes.out(c.who())
-			if (!ok || out > own) && i < len(cands)-1 && !nearBehind[c.who()] {
+			// a pool routed Until used up stays on one account until it is
+			// used up (#6907): a turn that finds the account near its cap
+			// busy waits for the turn before it there, and goes on only once
+			// the account is held at its cap below — not to the next account
+			// while allowance remains
+			if (!ok || out > own) && i < len(cands)-1 && !nearBehind[c.who()] && !c.drain {
 				if ok {
 					done()
 				}

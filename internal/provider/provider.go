@@ -102,6 +102,9 @@ type Provider struct {
 	// under it, with the key in x-goog-api-key, and models under it lists
 	// them (#1346).
 	Gemini string `json:"gemini,omitempty"`
+	// GeminiModelInBody is for relays that also route by the model in the
+	// generateContent body. The default names the model in the URL alone.
+	GeminiModelInBody bool `json:"geminiModelInBody,omitempty"`
 	// GeminiFilled is that magpie filled Gemini in once, for a provider
 	// at AI Studio's OpenAI-compatible URL (aiStudioNative): a Gemini URL
 	// the user cleared after that stays empty.

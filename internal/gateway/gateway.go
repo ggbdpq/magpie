@@ -6378,7 +6378,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 		// (#3172); before the user's own fields, which may name one
 		body = withoutAccessPrograms(body)
 	}
-	if to == provider.Gemini && !p.FactoryGemini() {
+	if to == provider.Gemini && !p.FactoryGemini() && !p.SendsGeminiModel() {
 		// the model is in a Gemini API's and Vertex AI's path
 		// (upstreamPath), as Google's own SDK asks it; Factory's generate
 		// route reads it from the body

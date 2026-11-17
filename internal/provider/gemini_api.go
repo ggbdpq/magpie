@@ -109,6 +109,12 @@ func GeminiPath(model string, stream bool) string {
 	return "/models/" + m + ":generateContent"
 }
 
+// SendsGeminiModel keeps the routed upstream model in a Gemini relay's
+// request body. Vertex and signed-in accounts keep their own wire shape.
+func (p Provider) SendsGeminiModel() bool {
+	return p.GeminiModelInBody && p.Gemini != "" && p.Account == nil && !p.IsVertex()
+}
+
 // AIStudioChat is Google AI Studio's OpenAI-compatible base, the Google
 // Gemini preset's Chat URL.
 const AIStudioChat = "https://generativelanguage.googleapis.com/v1beta/openai"

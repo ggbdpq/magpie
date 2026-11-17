@@ -59,6 +59,8 @@ const providerUsage = `usage:
                                           resolve.<host>=<IP>[,dns:<name>…] connects a host of its base URLs there
                                           (curl --resolve: the URL's name stays for TLS and Host); empty takes the
                                           host's out, resolve= clears them all
+                                          gemini-model=body also sends the routed model in a Gemini relay's request body;
+                                          gemini-model=path, the default, names it in the URL alone
                                           image-files=off sends DeepSeek's API an agent's images inline on every
                                           turn; image-files=on, the default, uploads each once (for a day)
                                           and names it by its file id
@@ -1287,6 +1289,15 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 				p.CodexAsSent = false
 			default:
 				return fmt.Errorf("codex=as-sent|default, not %q", v)
+			}
+		case "gemini-model":
+			switch strings.ToLower(v) {
+			case "body":
+				p.GeminiModelInBody = true
+			case "path", "default":
+				p.GeminiModelInBody = false
+			default:
+				return fmt.Errorf("gemini-model=path|body, not %q", v)
 			}
 		case "image-files":
 			// off: DeepSeek's own API is sent an agent's images inline on

@@ -13,6 +13,10 @@ Plugin ownership of the deprecated built-in subscriptions is in
 [Provider and plugin ownership](provider-plugins.md). How the gateway orders
 keys and accounts per request is in [Gateway routing and fallback](gateway-routing.md).
 
+## Gemini relays that route by the request body
+
+A Gemini API normally takes its model from the URL. A relay that additionally requires `model` in the JSON body can opt in with `geminiModelInBody: true` in its provider, or `magpie provider set <id> gemini-model=body`. The provider editor offers **Send model in Gemini request body** under Advanced. The field follows the final routed upstream name, including model switches and upstream-name mappings; it is not a fixed extra-body value. Both ordinary requests (translated or relayed) and model tests send it. Other APIs, Vertex AI and signed-in accounts are unaffected. The default, `gemini-model=path`, leaves the field out, as Google's own API expects.
+
 ## Responsibilities and sources of truth
 
 | Part | Responsibility | Source |

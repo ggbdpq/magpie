@@ -234,6 +234,12 @@ var (
 	schemaMaps = map[string]bool{"properties": true, "patternProperties": true, "$defs": true, "definitions": true, "dependentSchemas": true}
 	schemaOne  = map[string]bool{"items": true, "contains": true, "propertyNames": true, "not": true, "if": true, "then": true, "else": true, "contentSchema": true}
 	schemaList = map[string]bool{"anyOf": true, "oneOf": true, "allOf": true, "prefixItems": true}
+
+	// schemaGone are keywords a Gemini Schema object has no field for,
+	// whose whole member goes: Vertex answered 'Unknown name
+	// "propertyNames" at … properties[0].value: Cannot find field'
+	// (sanhua1, #6915).
+	schemaGone = map[string]bool{"propertyNames": true}
 )
 
 // schemaNeedsShape is whether node, a schema when isSchema, holds a
@@ -249,7 +255,7 @@ func schemaNeedsShape(node gjson.Result, isSchema bool) bool {
 	node.ForEach(func(key, v gjson.Result) bool {
 		k := key.String()
 		switch {
-		case strings.HasPrefix(k, "x-"):
+		case strings.HasPrefix(k, "x-"), schemaGone[k]:
 			need = true
 		case schemaMaps[k]:
 			v.ForEach(func(_, s gjson.Result) bool {
@@ -296,7 +302,7 @@ func shapeSchema(s gjson.Result) (raw string, keep bool) {
 	s.ForEach(func(key, v gjson.Result) bool {
 		k := key.String()
 		switch {
-		case strings.HasPrefix(k, "x-"):
+		case strings.HasPrefix(k, "x-"), schemaGone[k]:
 		case schemaMaps[k] && v.IsObject():
 			var m strings.Builder
 			m.WriteByte('{')

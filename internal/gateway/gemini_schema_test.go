@@ -142,3 +142,48 @@ func TestGeminiToolTypes(t *testing.T) {
 		}
 	}
 }
+
+// sanhua1 (#6915): a schema whose properties hold propertyNames — a
+// JSON-Schema keyword a Gemini Schema object has no field for — went
+// through shaping whole, and Vertex answered 400 'Unknown name
+// "propertyNames" at … properties[0].value: Cannot find field'. The
+// keyword goes; the rest of the schema stays as it came, and a model no
+// one names Gemini gets the body back as it came.
+func TestGeminiSchemaDropsPropertyNames(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	if err := provider.Save(provider.Provider{ID: "cc", Name: "CC", Key: "k", Chat: "https://cc.test/v1",
+		Models: []string{"google/gemini-4-hydrogen", "openai/gpt-5.5"}}); err != nil {
+		t.Fatal(err)
+	}
+	schema := `{"type":"object","properties":{"data":{"type":"object","propertyNames":{"type":"string","pattern":"^a"},"minLength":1},"keep":{"type":"string","description":"kept"}},"required":["data"]}`
+	want := `{"type":"object","properties":{"data":{"type":"object","minLength":1},"keep":{"type":"string","description":"kept"}},"required":["data"]}`
+	var got []byte
+	s := New()
+	s.client = &http.Client{Transport: countTransport(func(r *http.Request) (*http.Response, error) {
+		got, _ = io.ReadAll(r.Body)
+		return &http.Response{StatusCode: 400, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"error":{"message":"no","type":"invalid_request_error"}}`))}, nil
+	})}
+	for _, model := range []string{"google/gemini-4-hydrogen", "openai/gpt-5.5"} {
+		got = nil
+		body := `{"model":"cc/` + model + `","messages":[{"role":"user","content":"hi"}],"max_tokens":16,` +
+			`"tools":[{"type":"function","function":{"name":"f","parameters":` + schema + `}}]}`
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body)))
+		if got == nil {
+			t.Fatalf("%s: nothing went upstream: %d %s", model, rec.Code, rec.Body)
+		}
+		sent := gjson.GetBytes(got, "tools.0.function.parameters").Raw
+		if model == "google/gemini-4-hydrogen" {
+			if strings.Contains(sent, "propertyNames") {
+				t.Errorf("%s: propertyNames went to Vertex:\n%s", model, sent)
+			}
+			if sent != want {
+				t.Errorf("%s: the rest of the schema changed:\nsent\n%s\nwant\n%s", model, sent, want)
+			}
+		} else if sent != schema {
+			t.Errorf("%s: GPT was sent a shaped schema:\n%s\nwant it as it came\n%s", model, sent, schema)
+		}
+	}
+}

@@ -41,7 +41,19 @@ func (p Provider) AccountServes(ref, model string) bool {
 // account failover (#1959, parkavenue9639). ChatGPT serves it to every
 // plan, free since 2026-10-06 (#1593).
 func codexOwnHidden(p Provider, model string) bool {
-	return p.Account != nil && p.Account.Agent == "codex" && strings.EqualFold(strings.TrimSpace(model), "codex-auto-review")
+	return p.Account != nil && p.Account.Agent == "codex" && codexOwnModel(model)
+}
+
+// codexOwnModel says model is one a Codex account serves that its list of
+// models can't name: codex-auto-review, the model Codex's auto-review of
+// an approval (the guardian) asks for. It is hidden from the models the
+// vendor lists, so a cached list never holds it, and reading the list as
+// "not served" held every approval to whichever account's list was never
+// fetched while the account at its cap took the call (#6898, the barred
+// path's own face in AccountServes). ChatGPT serves it to every plan,
+// free since 2026-10-06 (#1593).
+func codexOwnModel(model string) bool {
+	return strings.EqualFold(strings.TrimSpace(model), "codex-auto-review")
 }
 
 // AccountRefs are the provider's accounts, or keys, as AccountModels

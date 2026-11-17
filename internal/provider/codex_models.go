@@ -315,6 +315,13 @@ func (a *Account) Lists(model string) bool {
 			return has
 		}
 	}
+	if a.Agent == "codex" && codexOwnModel(model) {
+		// ChatGPT serves the guardian's model to every plan, and no
+		// fetched list can name it: the vendor lists it hidden, so a
+		// cached list never holds it, and the list's silence is not the
+		// account lacking it (#6898)
+		return true
+	}
 	live, _, ok := catalog.Live(accountModels(a.Agent, a.User))
 	if !ok {
 		return true

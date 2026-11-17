@@ -498,7 +498,12 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 			for _, p := range m.Parts {
 				switch p.Kind {
 				case ToolCall:
-					id := p.ID
+					// an overlong id another provider made is bounded to 64
+					// characters the same way every time, so the call and its
+					// result still pair and the next turn sends the same ids
+					// (#6941: a Chat upstream turned an 88-character one away
+					// with "string too long")
+					id := provider.BoundCallID(p.ID)
 					if id == "" {
 						id = "call_" + newID()
 					}
@@ -611,7 +616,7 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 				if p.IsError && failedAsText[host] {
 					out = "Error: " + out
 				}
-				tool := map[string]any{"role": "tool", "tool_call_id": p.CallID, "content": out}
+				tool := map[string]any{"role": "tool", "tool_call_id": provider.BoundCallID(p.CallID), "content": out}
 				if p.IsError && host == "cursor" {
 					// Cursor's plugin reads it, as the built-in told Cursor
 					// isError; another chat upstream has no such field

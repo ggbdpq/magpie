@@ -1194,8 +1194,10 @@ func unanswered(key string, c candidate) {
 // encrypted_content (zminds #4412) — "Could not decode the compaction
 // blob", which names no item and says nothing of encrypted content,
 // where the #3392 shaping (xaiBody's) never runs because the relay's
-// host isn't api.x.ai.
-var foreignReasoning = lazyre.New(`(?i)invalid_encrypted_content|invalid[ _]encrypted[ _](summary|content)|encrypted[ _]content.{0,80}could not be (verified|decrypted)|could not (decrypt|verify).{0,40}encrypted[ _]content|could not (decode|decrypt).{0,20}compaction[ _]blob`)
+// host isn't api.x.ai; and a relay's own word for a request that carries
+// any of it where it takes none (ArmedHelicopter #6967), "Encrypted
+// content is not supported.", which names no item and asks for nothing.
+var foreignReasoning = lazyre.New(`(?i)invalid_encrypted_content|invalid[ _]encrypted[ _](summary|content)|encrypted[ _]content.{0,80}could not be (verified|decrypted)|could not (decrypt|verify).{0,40}encrypted[ _]content|could not (decode|decrypt).{0,20}compaction[ _]blob|encrypted[ _]content is not supported`)
 
 // refusedSeals remembers, per conversation and the key or account that
 // refused it, what another one sealed: its reasoning, and the sealed copy

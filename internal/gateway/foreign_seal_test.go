@@ -174,6 +174,8 @@ func TestForeignReasoningWords(t *testing.T) {
 		`{"error":{"message":"invalid encrypted summary","type":"invalid_request_error","param":null,"code":"validation_error"}}`,
 		relayCompaction,
 		"Could not decode the compaction blob. Ensure it is unmodified from the compact response.",
+		relayUnsupported,
+		"积算: Encrypted content is not supported.",
 	} {
 		if !foreignReasoning.MatchString(m) {
 			t.Errorf("not matched: %s", m)
@@ -502,6 +504,83 @@ func TestForeignSealGrokRelayCompactionBlob(t *testing.T) {
 	if got := rel.sent(); len(got) != 1 || len(got[0]) != 0 {
 		t.Fatalf("next turn sent %q, want one request without the seal", got)
 	}
+}
+
+// relayUnsupported is what a relay that takes no encrypted content
+// answers for reasoning another member sealed (#6967, ArmedHelicopter):
+// a 400 nothing asked again, so the harness's retries landed on the same
+// member every time and the turn died there.
+const relayUnsupported = `{"error":{"message":"Encrypted content is not supported.","type":"invalid_request_error","param":null}}`
+
+// A routing group of a reasoning member and a relay that takes no
+// encrypted content (#6967): the conversation the first served carries
+// its sealed reasoning, and the relay refuses it with "Encrypted content
+// is not supported.". Now the refusal is asked again without the
+// reasoning, the turn is answered there, and the next turn goes to it
+// without what it refused up front.
+func TestForeignSealRelayWithoutEncryptedContent(t *testing.T) {
+	fresh(t)
+	a, rel := &sealer{name: "a"}, &sealer{name: "relay", errJSON: relayUnsupported}
+	for _, u := range []struct {
+		id string
+		h  http.Handler
+	}{{"a1", a}, {"relay1", rel}} {
+		up := httptest.NewServer(u.h)
+		t.Cleanup(up.Close)
+		if err := provider.Save(provider.Provider{ID: u.id, Name: u.id, Key: "k-" + u.id, Models: []string{"m"}, Responses: up.URL + "/v1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := provider.SaveGroup(provider.Group{Name: "agentcompass", Members: []string{"a1/m", "relay1/m"}, Routing: provider.Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	turn := func(items ...string) (int, string) {
+		t.Helper()
+		in := `{"type":"message","role":"user","content":[{"type":"input_text","text":"count the lines"}]}`
+		for _, it := range items {
+			in += "," + it
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"group/agentcompass","stream":true,"input":[`+in+`]}`))
+		req.Header.Set("session_id", "thread-6967")
+		s.Handler().ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+	reasoning := func(by string) string {
+		return `{"type":"reasoning","id":"rs_` + by + `","summary":[],"encrypted_content":"sealed-by-` + by + `"}`
+	}
+	call := func(id string) string {
+		return `{"type":"function_call","call_id":"` + id + `","name":"shell","arguments":"{}"},{"type":"function_call_output","call_id":"` + id + `","output":"ok"}`
+	}
+
+	// a answers, and reads back what it sealed
+	if code, body := turn(); code != 200 || !strings.Contains(body, "from a") {
+		t.Fatalf("first: %d %s", code, body)
+	}
+
+	// a goes down: the relay takes the turn, refuses a's seal once, and
+	// answers without it
+	a.down = true
+	code, body := turn(reasoning("a"), call("c1"))
+	if code != 200 || !strings.Contains(body, "from relay") {
+		t.Fatalf("on the relay: %d %s", code, body)
+	}
+	if got := rel.sent(); len(got) != 2 || len(got[0]) != 1 || len(got[1]) != 0 {
+		t.Fatalf("relay was sent %q, want a's seal once, then none", got)
+	}
+	if r := lastRoute(s); len(r.Tries) != 3 || r.Tries[1].Fail != failForeign || r.Tries[2].Status != 200 {
+		t.Fatalf("tries: %+v", r.Tries)
+	}
+
+	// the next turn doesn't hit it again: a's seal is left out up front
+	if code, body := turn(reasoning("a"), call("c1")); code != 200 || !strings.Contains(body, "from relay") {
+		t.Fatalf("next turn: %d %s", code, body)
+	}
+	if got := rel.sent(); len(got) != 1 || len(got[0]) != 0 {
+		t.Fatalf("relay was then sent %q, want one request without the seal", got)
+	}
+	a.sent()
 }
 
 // openaiUndecryptable is what OpenAI told hheei (#3887) of a web search

@@ -358,3 +358,90 @@ func TestCodexDesktopListUnmarkedBaseURL(t *testing.T) {
 		}
 	})
 }
+
+// A symlinked Codex Home makes one catalog spell two ways: the config may
+// name the alias (/Users/x/.codex/…) while CODEX_HOME names the resolved
+// folder, and magpie's deskPath is the resolved one (#7014). deskList took
+// its own file for the user's then — the file went, the config kept naming
+// it, and Codex refused its config with it. The ownership comparison
+// resolves the symlinks their folders hold, a missing file riding on its
+// resolved folder, so at every stage the key names an existing catalog or
+// is gone.
+func TestCodexDesktopListSymlinkedHome(t *testing.T) {
+	home, read := codexHome(t, `{"tokens":{"access_token":"x","id_token":"x.e30.x"}}`, "model = \"gpt-5.5\"\n")
+	ext := filepath.Join(t.TempDir(), "external-codex-home")
+	if err := os.Rename(filepath.Join(home, ".codex"), ext); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(ext, filepath.Join(home, ".codex")); err != nil {
+		t.Fatal(err)
+	}
+	// CODEX_HOME names the resolved folder, as the reporter's launchd did
+	t.Setenv("CODEX_HOME", ext)
+	app := true
+	codexAppReads(t, &app)
+	list := `{"models":[{"slug":"gpt-6-sol"}]}`
+	deskListIs(t, &list)
+
+	// joined beside the sign-in, magpie names its list by the resolved
+	// folder. An older magpie, before CODEX_HOME said the external volume,
+	// had named it by the alias; the config still says the alias, as the
+	// reporter's did across the update
+	cx := codex(home)
+	if ok, err := cx.Join(); err != nil || !ok {
+		t.Fatalf("join: %v %v", ok, err)
+	}
+	deskRef := ext + "/magpie-desktop-models.json"
+	alias := filepath.Join(home, ".codex", "magpie-desktop-models.json")
+	if b, err := os.ReadFile(deskRef); err != nil || !strings.Contains(string(b), "gpt-6-sol") {
+		t.Fatalf("precondition: the desk list joined: %q %v", b, err)
+	}
+	cfg := strings.Replace(read(), deskRef, alias, 1)
+	if !strings.Contains(cfg, "model_catalog_json = \""+alias+"\"") {
+		t.Fatalf("the alias naming did not replace the resolved one:\n%s", cfg)
+	}
+	if err := os.WriteFile(filepath.Join(ext, "config.toml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(alias); err != nil || string(b) != list {
+		t.Fatalf("precondition: the catalog readable by its alias: %q %v", b, err)
+	}
+
+	// a sync with the config naming the alias: the catalog is magpie's own
+	// however it is spelled — it stands, and the key still names it
+	if err := cx.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(alias); err != nil || string(b) != list {
+		t.Fatalf("the catalog named by its alias was taken for the user's and removed: %q %v", b, err)
+	}
+	if cfg := read(); !strings.Contains(cfg, "magpie-desktop-models.json") {
+		t.Fatalf("the key naming it went:\n%s", cfg)
+	}
+
+	// the app reader gone: the list is magpie's own, taken out whole — the
+	// key and the file, no reference left dangling
+	app = false
+	if err := cx.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg := read(); strings.Contains(cfg, "model_catalog_json") {
+		t.Fatalf("not wanted, the key stays:\n%s", cfg)
+	}
+	if _, err := os.Stat(alias); !os.IsNotExist(err) {
+		t.Fatalf("not wanted, the file stays: %v", err)
+	}
+
+	// back again: named anew, the file written to the resolved folder and
+	// seen through the alias
+	app = true
+	if err := cx.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(alias); err != nil || string(b) != list {
+		t.Fatalf("back: %q %v", b, err)
+	}
+	if cfg := read(); !strings.Contains(cfg, "magpie-desktop-models.json") {
+		t.Fatalf("back, the key:\n%s", cfg)
+	}
+}

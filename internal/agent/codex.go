@@ -91,6 +91,21 @@ func codexStandIn(path string) string {
 
 func codex(home string) *Agent { return codexIn(here(home)) }
 
+// resolveRidingMissing resolves p through the symlinks its folders hold; a
+// missing file rides on its resolved folder, since what this compares may
+// be gone exactly while it is being decided about (#7014).
+func resolveRidingMissing(p string) string {
+	p = filepath.Clean(p)
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	dir, base := filepath.Split(p)
+	if r, err := filepath.EvalSymlinks(filepath.Clean(dir)); err == nil {
+		return filepath.Join(r, base)
+	}
+	return p
+}
+
 // The two notices magpie's multi-agent V1 setting (#141) can carry: Codex's
 // own features.multi_agent_v2 is on in the config magpie routes and takes the
 // V1 over, or magpie couldn't read that config to tell. magpie writes nothing
@@ -460,7 +475,16 @@ func codexIn(at place) *Agent {
 		if !filepath.IsAbs(c) {
 			c = filepath.Join(dir, c)
 		}
-		return filepath.Clean(c) == filepath.Clean(deskPath)
+		if filepath.Clean(c) == filepath.Clean(deskPath) {
+			return true
+		}
+		// A symlinked Codex Home makes one catalog spell two ways: the config
+		// names the alias while CODEX_HOME has since said the resolved folder
+		// deskPath is under, and the alias stood first, so this comparison
+		// decides whether the file goes (#7014). Compare resolved, a missing
+		// file riding on its folder's resolution — gone is exactly the state
+		// this owns.
+		return resolveRidingMissing(c) == resolveRidingMissing(deskPath)
 	}
 	deskGone := func() bool {
 		_, err := os.Stat(deskPath)

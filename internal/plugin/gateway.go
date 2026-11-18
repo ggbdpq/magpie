@@ -264,6 +264,7 @@ func GatewayBegin(ctx context.Context, body []byte, info GatewayContext) *Gatewa
 		Token string          `json:"token"`
 		Body  json.RawMessage `json:"body"`
 	}
+	h.allowGatewayLine(len(body))
 	err = h.call(total, "gatewayRequest", map[string]any{"operation": "begin", "body": json.RawMessage(body), "context": info}, &out)
 	if err != nil || out.ID == "" || out.Token == "" || len(out.Body) == 0 || out.Body[0] != '{' || !json.Valid(out.Body) {
 		return nil

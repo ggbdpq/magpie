@@ -176,9 +176,9 @@ var (
 	// sides count one number.
 	frameOverhead = 2048
 	rpcReserve    = 64
-	// maxWireLine bounds one line the child writes: a frame's base64 is well
-	// under it, and so is any RPC result, so a child that never ends a line
-	// fails the host rather than making it allocate without bound.
+	// maxWireLine is the normal control-line allowance. Gateway results
+	// also carry their already-bounded input body and reserve its room
+	// separately. A child that never ends a line still fails at its bound.
 	maxWireLine = 32 << 20
 	// streamWait is how long a fetch waits for a stream's window to come
 	// free when the budget's are all held, while its request lives. Past
@@ -483,6 +483,10 @@ type host struct {
 	cancel context.CancelFunc
 	// maxLine overrides maxWireLine for this host; tests lower it.
 	maxLine int
+	// A gateway result includes the whole request it accepted. Its body is
+	// already bounded by the gateway; retain room for the largest one this
+	// host has received plus the normal RPC allowance.
+	gatewayLine atomic.Int64
 	// failOnce makes the one failure that ends the host run once, whatever
 	// noticed it (the stdout reader or the stdin writer).
 	failOnce sync.Once
@@ -580,7 +584,16 @@ func (h *host) lineLimit() int {
 	if h.maxLine > 0 {
 		return h.maxLine
 	}
-	return maxWireLine
+	return max(maxWireLine, int(h.gatewayLine.Load()))
+}
+
+func (h *host) allowGatewayLine(bodyBytes int) {
+	room := int64(bodyBytes) + int64(maxWireLine)
+	for previous := h.gatewayLine.Load(); previous < room; previous = h.gatewayLine.Load() {
+		if h.gatewayLine.CompareAndSwap(previous, room) {
+			return
+		}
+	}
 }
 
 // headCost is a head's header cost: the UTF-8 bytes of every name and value,
@@ -1351,7 +1364,7 @@ func drainStderr(r io.Reader) {
 func (h *host) read(out io.Reader) {
 	r := bufio.NewReaderSize(out, 1<<20)
 	for {
-		line, err := readLine(r, h.lineLimit())
+		line, err := readLineBound(r, h.lineLimit)
 		if len(line) > 0 {
 			if m, ok := chunkFrame(line); ok {
 				h.dispatch(m)
@@ -1418,10 +1431,16 @@ func chunkFrame(line []byte) (message, bool) {
 // never ends a line cannot make the host allocate without bound. It is
 // errLineTooLong once max is passed.
 func readLine(r *bufio.Reader, max int) ([]byte, error) {
+	return readLineBound(r, func() int { return max })
+}
+
+// The stdout reader may already be waiting when a gateway request reserves
+// its reply room. Read the current bound as each piece arrives.
+func readLineBound(r *bufio.Reader, bound func() int) ([]byte, error) {
 	var line []byte
 	for {
 		part, err := r.ReadSlice('\n')
-		if len(line)+len(part) > max {
+		if len(line)+len(part) > bound() {
 			return nil, errLineTooLong
 		}
 		line = append(line, part...)

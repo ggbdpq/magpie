@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"net"
+	"path/filepath"
 	"testing"
 
 	"github.com/yetone/magpie/internal/netproxy"
@@ -66,6 +67,104 @@ func TestLocalHost(t *testing.T) {
 		if got := LocalHost(host); got != want {
 			t.Errorf("%s: %v, want %v", host, got, want)
 		}
+	}
+}
+
+// LocalServer, asked only of a provider being added (UnmaskedOnAdd), reads
+// its addresses the way the editor does: the user's own model at their own
+// computer or on their local network, at every address it has. A name that
+// doesn't resolve and a vendor's aren't, so nothing is asked on the network
+// here either.
+func TestLocalServer(t *testing.T) {
+	fakeDNS(t, map[string][]string{
+		"llm.corp.lan":   {"192.168.1.20"},
+		"vendor.example": {"203.0.113.7"},
+	})
+	cases := []struct {
+		name string
+		p    Provider
+		want bool
+	}{
+		{"loopback", Provider{Name: "My box", Chat: "http://127.0.0.1:8080/v1"}, true},
+		{"no scheme saved", Provider{Name: "My box", Chat: "127.0.0.1:8080/v1"}, true},
+		{"localhost, as the local presets have it", Provider{Name: "Ollama", Preset: "ollama", Chat: "http://localhost:11434/v1", Anthropic: "http://localhost:11434"}, true},
+		{"on the LAN", Provider{Name: "vLLM box", Chat: "http://192.168.1.20:8000/v1"}, true},
+		{"https on the LAN", Provider{Name: "Lab", Responses: "https://10.0.0.4:8443/v1"}, true},
+		{"a LAN name", Provider{Name: "Corp LLM", Chat: "http://llm.corp.lan:8000/v1"}, true},
+		{"a vendor", Provider{Name: "DeepSeek", Chat: "https://api.deepseek.com/v1"}, false},
+		{"a public IP", Provider{Name: "VPS", Chat: "http://203.0.113.7:8000/v1"}, false},
+		{"a name that doesn't resolve", Provider{Name: "Typo", Chat: "http://llm.corp.lanx:8000/v1"}, false},
+		{"local and a vendor among them", Provider{Name: "Relay", Chat: "http://127.0.0.1:8080/v1", Anthropic: "https://vendor.example"}, false},
+		{"no address", Provider{Name: "Nothing"}, false},
+		{"a signed-in account at a local address", Provider{Name: "Codex", Chat: "http://127.0.0.1:4321/v1", Account: &Account{Agent: "codex"}}, false},
+		{"another magpie on the LAN", Provider{Name: "Office", Preset: RemoteMagpiePreset, Anthropic: "http://192.168.1.5:3425"}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.p.LocalServer(); got != tc.want {
+			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// UnmaskedOnAdd, which whoever adds a provider by command asks of it (the
+// editor reads the same thing for its own switch): a local server goes in
+// with the switch on and nothing else about it changes. What the user said
+// stands over it — a vendor they set anyway keeps the switch — and one with
+// nothing local about it goes in as it came. Leaving a local one masked is
+// the adder's to say before asking: the CLI's unmasked=no and the editor's
+// switch left off never come here at all.
+func TestUnmaskedOnAdd(t *testing.T) {
+	fakeDNS(t, map[string][]string{"llm.corp.lan": {"192.168.1.20"}})
+	cases := []struct {
+		name string
+		p    Provider
+		want bool
+	}{
+		{"a box on this computer", Provider{Name: "My box", Chat: "http://127.0.0.1:8080/v1"}, true},
+		{"a local preset", Provider{Name: "Ollama", Preset: "ollama", Chat: "http://localhost:11434/v1"}, true},
+		{"a box on the LAN", Provider{Name: "vLLM box", Chat: "http://192.168.1.20:8000/v1"}, true},
+		{"a LAN name", Provider{Name: "Corp LLM", Chat: "http://llm.corp.lan:8000/v1"}, true},
+		{"one the user already set", Provider{Name: "My box", Chat: "http://127.0.0.1:8080/v1", Unredacted: true}, true},
+		{"a vendor, left masked", Provider{Name: "DeepSeek", Chat: "https://api.deepseek.com/v1"}, false},
+		{"a vendor the user set anyway", Provider{Name: "Vendor", Chat: "https://api.deepseek.com/v1", Unredacted: true}, true},
+		{"no address", Provider{Name: "Nothing"}, false},
+		{"a signed-in account", Provider{Name: "Codex", Chat: "http://127.0.0.1:4321/v1", Account: &Account{Agent: "codex"}}, false},
+		{"another magpie on the LAN", Provider{Name: "Office", Preset: RemoteMagpiePreset, Anthropic: "http://192.168.1.5:3425"}, false},
+	}
+	for _, tc := range cases {
+		got := tc.p.UnmaskedOnAdd()
+		if got.Unredacted != tc.want {
+			t.Errorf("%s: %v, want %v", tc.name, got.Unredacted, tc.want)
+		}
+		if got.Chat != tc.p.Chat || got.Name != tc.p.Name || got.Preset != tc.p.Preset {
+			t.Errorf("%s: the provider itself changed: %+v", tc.name, got)
+		}
+	}
+}
+
+// Add reads no address: what a saved provider does is only what it was
+// saved with, so a copy, a sync, and everything the gateway adds keep the
+// switch as it was given (UnmaskedOnAdd is the adder's to ask).
+func TestAddReadsNoAddress(t *testing.T) {
+	isolate(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	id, err := Add(Provider{Name: "Box", Chat: "http://127.0.0.1:8000/v1", Key: "sk-box", Models: []string{"m"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := Find(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Unredacted {
+		t.Fatal("Add turned the switch on from the address: only whoever adds the provider asks UnmaskedOnAdd")
+	}
+	if !p.LocalServer() {
+		t.Fatal("the box at 127.0.0.1 isn't a local server")
 	}
 }
 

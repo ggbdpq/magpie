@@ -376,6 +376,13 @@ separate Responses endpoint, `catalog=` to borrow a models.dev list, and
 `models=` to name the models to expose. Anything a preset does not know can
 be overridden the same way.
 
+One added at this computer or on the local network — a local preset, or a
+custom provider whose URLs are local — starts with *Send requests unmasked*
+on: magpie's masking keeps nothing from a machine of your own, and its first
+request would otherwise arrive masked for it. `unmasked=no` says otherwise,
+and so does the editor's switch, which wins over the address either way; a
+provider already here keeps the switch it was saved with.
+
 A model whose vendor answers that it is deprecated or retired (OpenCode
 Zen's 410 "Model exo-free has been deprecated.") leaves that provider's
 models in `magpie models`, `/v1/models` and every agent's list, even while

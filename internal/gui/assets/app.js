@@ -9722,16 +9722,38 @@ function drawEditor(p, presetID) {
     return renderRouting(p);
   };
 
+  // A provider being added at the user's own computer or on their local
+  // network starts with the switch on (the owner, 11-18): their machine,
+  // which holds whatever they say to it, so masking keeps nothing from them
+  // there, and its first request would otherwise arrive masked for it. It
+  // follows the address typed until they set the switch their own way, which
+  // then stands over it. A saved provider keeps what it was saved with, a
+  // copy keeps its source's, an account's and a plugin's vendor is
+  // elsewhere, and another magpie's addresses are that other computer's,
+  // which masks by its own Settings › Privacy (provider.UnmaskedOnAdd reads
+  // the same thing for the CLI and the TUI).
   const unmaskRow = (hint, urls) => {
+    let chosen = false; // the user's word about the switch, once they give it
+    const follows = () => isNew && !draft.copyOf && !!urls && !chosen;
+    const localOnly = () => localURLs(urls ? urls() : []);
+    // set before the tick is drawn, so it is what Add sends; Advanced stays
+    // folded as the editor draws it (a default opens no fold), and the
+    // saved provider opens on it the next time it is edited
+    if (follows()) draft.unredacted = localOnly();
     const [ltk, lcb] = tick(t("Send requests unmasked"), !!draft.unredacted);
+    ltk.classList.add("unmasked");
     const row = field(t("Masking"), ltk, hint), note = el("div", "hint unmasked-away");
     row[1].append(note);
     showLocal = () => {
+      const local = follows() ? localOnly() : null;
+      if (local !== null && local !== !!draft.unredacted) draft.unredacted = lcb.checked = local;
       const host = draft.unredacted && (urls ? awayHost(urls()) : p.name);
       note.hidden = !(note.textContent = host ? t("{host} isn't on this computer or your local network: turned on, requests go to it unmasked.", { host }) : "");
-      if (draft.unredacted && urls) askLANNames(urls(), showLocal);
+      // a name is asked about once, a moment after it is typed: for the
+      // caution, and to know which way a provider being added goes
+      if (urls && (draft.unredacted || follows())) askLANNames(urls(), showLocal);
     };
-    lcb.onchange = () => { draft.unredacted = lcb.checked; showLocal(); };
+    lcb.onchange = () => { chosen = true; draft.unredacted = lcb.checked; showLocal(); };
     showLocal();
     return row;
   };
@@ -9843,7 +9865,7 @@ function drawEditor(p, presetID) {
     if (draft.chat === undefined) { draft.chat = p?.chat || ""; draft.responses = p?.responses || ""; }
     endpoint = input(draft.chat || draft.responses || "", pr.endpoint, "url");
     endpoint.classList.add("endpoint");
-    endpoint.oninput = () => { draft.chat = draft.responses = endpoint.value.trim(); refreshEndpoints(); showCompaction(); showSocket(); };
+    endpoint.oninput = () => { draft.chat = draft.responses = endpoint.value.trim(); refreshEndpoints(); showLocal(); showCompaction(); showSocket(); };
     ed.append(...field(t("Endpoint"), endpoint, pr.endpointHint ? t(pr.endpointHint) : ""));
   }
 
@@ -9864,6 +9886,7 @@ function drawEditor(p, presetID) {
     address.oninput = () => {
       draft.address = address.value;
       refreshEndpoints();
+      showLocal();
       const du = ed.querySelector("input.decide-url");
       if (du && draft.decide === draft.addressFrom.decide) du.value = movedURLs(draft)?.decide || draft.decide;
     };
@@ -10089,7 +10112,14 @@ function drawEditor(p, presetID) {
   const addressOf = (k) => (draft[k] ?? (isNew && pr ? pr[k] : "")) || "";
   // another magpie masks by its own Settings (CrazyMouse_TT on X)
   const remote = (p?.preset || pr?.id) === "remote-magpie";
-  advIn.append(...unmaskRow(t(remote ? "The other magpie gets requests as written and masks them by its own Settings › Privacy. Off, they are masked here first." : "For a model running on this computer or your local network: secrets, personal data and your masked words go to it as written. Leave it off for a local relay or proxy that passes requests on to a vendor."), () => remote ? [] : ["chat", "responses", "anthropic", "gemini", "decide"].map(addressOf)));
+  // a local server's address field moves each URL to the address typed
+  // (provider.AtAddress), so that is where it is asked at, not where the
+  // preset put it
+  const atURLs = () => {
+    const moved = address ? movedURLs(draft) : null;
+    return ["chat", "responses", "anthropic", "gemini", "decide"].map((k) => (moved && k in moved ? moved[k] : addressOf(k)));
+  };
+  advIn.append(...unmaskRow(t(remote ? "The other magpie gets requests as written and masks them by its own Settings › Privacy. Off, they are masked here first." : "For a model running on this computer or your local network: secrets, personal data and your masked words go to it as written. Leave it off for a local relay or proxy that passes requests on to a vendor."), () => remote ? [] : atURLs()));
 
   // a user's provider whose certificate nothing trusts (#2383, provider.TakesInsecureTLS)
   const tlsTakes = () => custom && (!p || !!p.takesInsecureTLS);
@@ -11091,12 +11121,21 @@ function renderImport(im) {
   // icon= over the catalog's or preset's, fetched once the dialog is open
   if (p.iconUrl) fetchImportIcon(p, h, ed);
 
+  // a link that names a server on this computer or the local network adds it
+  // unmasked, as one added by hand is (provider.UnmaskedOnAdd): a name of the
+  // user's own DNS is asked about as the editor's caution asks, and another
+  // magpie's addresses are that other computer's, which masks by its own
+  // Settings › Privacy
+  const linkURLs = () => [p.chat, p.responses, p.anthropic, p.gemini, p.decide].filter(Boolean);
+  if (p.preset !== "remote-magpie") askLANNames(linkURLs(), () => {});
+
   const addBtn = el("button", "text primary", t(im.replaces ? "Replace" : "Add"));
   const add = () => {
     const n = (im.name ?? p.name).trim();
     if (!n) { name.focus(); return status(t("Give it a name"), "warn"); }
     saving(addBtn, t(im.replaces ? "Replacing…" : "Adding…"));
-    providerAction("save", { ...p, name: n, key: (im.key ?? p.key ?? "").trim() }, t("{name} added", { name: n }));
+    const body = { ...p, name: n, key: (im.key ?? p.key ?? "").trim(), unredacted: !!p.unredacted || (p.preset !== "remote-magpie" && localURLs(linkURLs())) };
+    providerAction("save", body, t("{name} added", { name: n }));
   };
   addBtn.onclick = add;
   bar.append(addBtn);
@@ -20619,6 +20658,15 @@ function syncWhen(iso) {
 function awayHost(urls) {
   for (const h of urls.map(urlHost)) if (h && (localIP(h) ?? lanNames.get(h)) === false) return h;
   return "";
+}
+
+// localURLs: whether there is an address among urls, and every address is on
+// this computer or the local network (a name of the user's own DNS once
+// askLANNames has answered). A provider being added at one is added unmasked
+// (unmaskRow, renderImport); nothing else asks it.
+function localURLs(urls) {
+  const hs = urls.map(urlHost).filter((h) => h);
+  return hs.length > 0 && hs.every((h) => localIP(h) === true || lanNames.get(h) === true);
 }
 
 function urlHost(u) {

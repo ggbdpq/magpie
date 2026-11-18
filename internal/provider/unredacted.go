@@ -2,6 +2,7 @@ package provider
 
 import (
 	"net"
+	"strings"
 
 	"github.com/yetone/magpie/internal/netproxy"
 )
@@ -33,11 +34,55 @@ func (p Provider) SkipsRedaction() bool {
 	return false
 }
 
+// LocalServer says p is the user's model at their own computer or on their
+// local network: it has an address, and every address it has is a local
+// host (LocalHost, so a name of the user's own DNS is looked up). A
+// signed-in account and a plugin's provider never are, since their vendor
+// is where they go, and neither is another magpie, whose addresses are
+// that other computer's and which masks by its own Settings › Privacy.
+// Only adding one asks (UnmaskedOnAdd); a request never does.
+func (p Provider) LocalServer() bool {
+	if p.Account != nil || p.IsRemoteMagpie() {
+		return false
+	}
+	n := 0
+	for _, raw := range []string{p.Chat, p.Responses, p.Anthropic, p.Gemini, p.Decide} {
+		h := urlHost(raw)
+		if h == "" {
+			continue
+		}
+		n++
+		if !LocalHost(h) {
+			return false
+		}
+	}
+	return n > 0
+}
+
+// UnmaskedOnAdd is p as it goes in where the user adds it: their model at
+// their own computer or on their local network starts with "Send requests
+// unmasked" already on (the owner, 11-18) — their machine, which holds
+// whatever they say to it, so masking has nothing there to keep from them,
+// and its first request would otherwise be masked for it. Nothing they
+// said is changed: the switch already on, and one left off, stand over it
+// (the editor sends its own value; `unmasked=no` says so). Only whoever
+// adds a provider asks, and only then: a saved provider keeps what it was
+// saved with whatever its address is, and a copy, a sync and a gateway all
+// go through Add, so nothing is read off an address in Add itself
+// (SkipsRedaction is the user's word alone).
+func (p Provider) UnmaskedOnAdd() Provider {
+	if p.Unredacted || !p.LocalServer() {
+		return p
+	}
+	p.Unredacted = true
+	return p
+}
+
 // LocalHost says host is on this machine or the local network: localhost,
 // a .local name, a loopback, private or link-local IP, or a name every
 // address of which is one (netproxy.LocalName, looked up now and kept a
-// minute; one that doesn't resolve isn't). Only the editor's caution asks
-// it (/api/local-hosts), never a request.
+// minute; one that doesn't resolve isn't). Only the editor's caution and
+// adding a provider ask it (UnmaskedOnAdd), never a request.
 func LocalHost(host string) bool {
 	if local(host) {
 		return true
@@ -46,4 +91,19 @@ func LocalHost(host string) bool {
 		return netproxy.LocalIP(ip)
 	}
 	return netproxy.LocalName(host)
+}
+
+// urlHost is the host a stored URL is asked at, "" for anything that isn't
+// one. A URL saved with no scheme is taken as http, as the editors take
+// what is typed for an address, and a name is compared in lower case, as
+// the editor's own reading of one does (localIP in app.js).
+func urlHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
+	return strings.ToLower(hostParts(raw).name)
 }

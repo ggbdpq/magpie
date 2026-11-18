@@ -861,6 +861,13 @@ func addProvider(rest []string) error {
 	if err := applyPairs(&p, rest); err != nil {
 		return err
 	}
+	// the user's model at their own computer or on their local network goes
+	// in with "Send requests unmasked" already on (provider.UnmaskedOnAdd);
+	// `unmasked=yes|no` in the command is their word for it, whatever the
+	// address says, and stands
+	if !saidUnmasked(rest) {
+		p = p.UnmaskedOnAdd()
+	}
 	// adding a preset that is already here adds another of it (deepseek-2),
 	// for another key or another header, rather than replacing the first
 	id, err := provider.Add(p)
@@ -872,6 +879,17 @@ func addProvider(rest []string) error {
 		return err
 	}
 	return announce(id)
+}
+
+// saidUnmasked says the command gave the masking switch itself, which is
+// then the answer and nothing is read off the address.
+func saidUnmasked(pairs []string) bool {
+	for _, kv := range pairs {
+		if k, _, ok := strings.Cut(kv, "="); ok && strings.ToLower(k) == "unmasked" {
+			return true
+		}
+	}
+	return false
 }
 
 // saveNew saves a provider the user just added, then asks the vendor for
@@ -1845,6 +1863,11 @@ func importCmd(args []string) error {
 	if p.Key == "" && !p.Ready() {
 		fmt.Println(amber.Render("!"), "the link has no key · magpie provider key", p.ID, "<key>")
 	}
+	// the link says nothing of the masking switch, so the address is what
+	// there is to read: the user's model at their own computer or on their
+	// local network starts unmasked, as an add of one does
+	// (provider.UnmaskedOnAdd)
+	p = p.UnmaskedOnAdd()
 	return saveNew(p)
 }
 

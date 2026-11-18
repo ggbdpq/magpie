@@ -1308,7 +1308,9 @@ OpenAI shape can't carry. GET, POST, PUT, PATCH and DELETE
   serve such a key. A model the user switched off, named in a JSON body's
   `model`, is refused.
 - **Masking.** With Settings › Privacy masking and a provider not set to
-  go unmasked, the body is decoded as JSON (numbers exact, `UseNumber`)
+  go unmasked (`provider.SkipsRedaction`: the switch the user set, which a
+  provider just added at this computer or on the local network already has,
+  `provider.UnmaskedOnAdd`), the body is decoded as JSON (numbers exact, `UseNumber`)
   and its strings masked (fails closed); a body that isn't JSON is a 415,
   as nothing unmasked may go. Only a request something was masked in has
   its answer read through `restoring`, which holds a JSON answer whole to

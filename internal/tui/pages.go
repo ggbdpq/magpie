@@ -670,6 +670,11 @@ func vertexProjectAsk(p provider.Provider) ask {
 // addCmd adds p, a preset's provider, and says what came of asking its
 // vendor for its models.
 func addCmd(p provider.Provider) tea.Cmd {
+	// the user's model at their own computer or on their local network goes
+	// in with "Send requests unmasked" already on, as the app's editor
+	// leaves it for one (provider.UnmaskedOnAdd); another magpie's address
+	// is that computer's, not this one's, so it is asked and answers not
+	p = p.UnmaskedOnAdd()
 	return func() tea.Msg {
 		id, err := provider.Add(p)
 		if err != nil {

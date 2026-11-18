@@ -274,13 +274,14 @@ const (
 )
 
 type writer struct {
-	w        http.ResponseWriter
-	run      *Run
-	ev, resp bool
-	mode     int
-	status   int
-	buf      bytes.Buffer
-	done     bool
+	w           http.ResponseWriter
+	run         *Run
+	ev, resp    bool
+	mode        int
+	status      int
+	buf         bytes.Buffer
+	heldComment []byte
+	done        bool
 }
 
 func (rw *writer) Header() http.Header { return rw.w.Header() }
@@ -329,6 +330,19 @@ func (rw *writer) Write(p []byte) (int, error) {
 	case whole:
 		return rw.buf.Write(p)
 	}
+	origLen := len(p)
+	// a keepalive comment that arrives while the buffer stands inside a
+	// data: line is held whole instead of being spliced into the pending
+	// JSON payload (#7012).
+	if b := rw.buf.Bytes(); midLine(b) {
+		if cl := keepaliveLines(p); cl > 0 {
+			rw.heldComment = append(rw.heldComment, p[:cl]...)
+			p = p[cl:]
+			if len(p) == 0 {
+				return origLen, nil
+			}
+		}
+	}
 	rw.buf.Write(p)
 	for {
 		b := rw.buf.Bytes()
@@ -337,10 +351,16 @@ func (rw *writer) Write(p []byte) (int, error) {
 		// agent behind a proxy heard nothing while its vendor reasoned
 		// silently, and the proxy hung up (#2402)
 		if c := commentLines(b); c > 0 {
+			if rw.heldComment != nil {
+				if _, err := rw.w.Write(rw.heldComment); err != nil {
+					return origLen, err
+				}
+				rw.heldComment = nil
+			}
 			_, err := rw.w.Write(b[:c])
 			rw.buf.Next(c)
 			if err != nil {
-				return len(p), err
+				return origLen, err
 			}
 			continue
 		}
@@ -352,10 +372,16 @@ func (rw *writer) Write(p []byte) (int, error) {
 		err := rw.event(ev)
 		rw.buf.Next(i + n)
 		if err != nil {
-			return len(p), err
+			return origLen, err
+		}
+		if rw.heldComment != nil {
+			if _, err := rw.w.Write(rw.heldComment); err != nil {
+				return origLen, err
+			}
+			rw.heldComment = nil
 		}
 	}
-	return len(p), nil
+	return origLen, nil
 }
 
 func (rw *writer) Flush() {
@@ -425,6 +451,37 @@ func (rw *writer) event(ev []byte) error {
 	out := make([]byte, 0, len(pre)+len(data)+len(post))
 	_, err := rw.w.Write(append(append(append(out, pre...), data...), post...))
 	return err
+}
+
+// midLine says the buffer stands inside a line: not empty, and its last
+// byte is no line's end.
+func midLine(b []byte) bool {
+	return len(b) > 0 && b[len(b)-1] != '\n' && b[len(b)-1] != '\r'
+}
+
+// keepaliveLines is the length of any leading ": keepalive" comment lines
+// (plus a blank line directly after one) at the start of p (#7012).
+func keepaliveLines(p []byte) int {
+	n := 0
+	for {
+		rest := p[n:]
+		switch {
+		case bytes.HasPrefix(rest, []byte(": keepalive\n")):
+			n += len(": keepalive\n")
+		case bytes.HasPrefix(rest, []byte(": keepalive\r\n")):
+			n += len(": keepalive\r\n")
+		default:
+			if n == 0 {
+				return 0
+			}
+			if bytes.HasPrefix(rest, []byte("\r\n")) {
+				n += 2
+			} else if bytes.HasPrefix(rest, []byte("\n")) {
+				n++
+			}
+			return n
+		}
+	}
 }
 
 // commentLines is how long the whole comment lines (": keepalive") and

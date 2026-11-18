@@ -2126,8 +2126,10 @@ func (s *Server) countTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// counted as it will be sent: its tool exchange mended where it
-	// doesn't pair (tool_blocks_paired.go)
+	// doesn't pair (tool_blocks_paired.go), a caller's marked call
+	// unmarked as dispatch will have it (caller_cache.go, #6914)
 	body = toolBlocksPaired(body)
+	body = withoutCallerMarks(body)
 	named := unprefixed(model)
 	if m := claudeTierStandIn(r, agentOf(r), model); m != "" {
 		model = m // counted on the model the request will go to
@@ -7055,6 +7057,12 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		// Anthropic turns the whole request away for, and every later
 		// one of the conversation with it (tool_blocks_paired.go)
 		body = toolBlocksPaired(body)
+		// a tool_use of the history its upstream answered with a caller,
+		// marked for the cache as its client sent it, which a gateway that
+		// reads the request's cache controls before dispatch turns the
+		// whole request away over, retries and all (caller_cache.go,
+		// chiyan171, #6914)
+		body = withoutCallerMarks(body)
 		// Claude Code's advisor, named by magpie's id (advisor.go); its
 		// calls' usage rows go by that id (advisorRows)
 		advisor = advisorKeyModel(advisorAsked(provider.Anthropic, body))

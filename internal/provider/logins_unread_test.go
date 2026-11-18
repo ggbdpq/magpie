@@ -1,8 +1,10 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -209,4 +211,86 @@ func TestUnreadLoginsNotWrittenOver(t *testing.T) {
 	if b, _ := os.ReadFile(kept[0]); string(b) != string(half) {
 		t.Fatalf("kept %q", b)
 	}
+}
+
+// A read of logins.json that keeps failing was logged on every attempt: an
+// owner change made each read fail, ~500 identical lines a second filled a
+// 2.2 GB log in 8 hours and the disk with it (#7008). The first failure of
+// a run is logged, the same error later once per interval with the count
+// that was held back, and a read that succeeds again logs a new failure at
+// once.
+func TestUnreadLoginsLogRateBounded(t *testing.T) {
+	azureHome(t)
+	synctest.Test(t, func(t *testing.T) {
+		p := loginsPath()
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		good := []byte(`[{"agent":"gemini","user":"old@example.com","auth":{"refresh_token":"old-refresh-token"}}]`)
+		if err := os.WriteFile(p, good, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if ls := readLogins(); len(ls) != 1 || ls[0].User != "old@example.com" {
+			t.Fatalf("precondition: accounts = %v", ls)
+		}
+		// another process replaced the file and left it unreadable: the new
+		// file time makes every look miss what was parsed, and no read gets
+		// in (root's atomic save over a non-root service, #7008)
+		if err := os.WriteFile(p, good, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
+		if _, err := os.ReadFile(p); err == nil {
+			t.Skip("the filesystem does not enforce the unreadable mode")
+		}
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+		log.SetFlags(0)
+		t.Cleanup(func() { log.SetOutput(os.Stderr); log.SetFlags(log.LstdFlags) })
+
+		// every read of the file fails: a request, a page poll and a gateway
+		// look each came here, and each logged its own line before the fix
+		for i := 0; i < 25; i++ {
+			readLogins()
+		}
+		if n := strings.Count(buf.String(), "the accounts read before are kept"); n != 1 {
+			t.Fatalf("25 reads of an unreadable logins.json logged %d lines, want 1:\n%s", n, buf.String())
+		}
+
+		// the file stays unreadable past the interval: one line saying how
+		// many were held back, not one per read
+		readLogins()
+		time.Sleep(6 * time.Minute)
+		readLogins()
+		out := buf.String()
+		if !strings.Contains(out, "more of the same error while quiet") {
+			t.Fatalf("the held-back count is missing after the interval:\n%s", out)
+		}
+		if n := strings.Count(out, "the accounts read before are kept"); n != 3 {
+			t.Fatalf("logged %d lines after the interval, want 3 (first, held-back count, current):\n%s", n, out)
+		}
+
+		// the file reads again: a failure after that is logged at once, not
+		// suppressed by the run before it
+		if err := os.Chmod(p, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if ls := readLogins(); len(ls) != 1 || ls[0].User != "old@example.com" {
+			t.Fatalf("the accounts are gone once the file reads again: %v", ls)
+		}
+		buf.Reset()
+		if err := os.WriteFile(p, good, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, 0); err != nil {
+			t.Fatal(err)
+		}
+		readLogins()
+		if n := strings.Count(buf.String(), "the accounts read before are kept"); n != 1 {
+			t.Fatalf("a failure after the file read again logged %d lines, want 1:\n%s", n, buf.String())
+		}
+	})
 }

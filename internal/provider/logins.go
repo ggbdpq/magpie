@@ -274,11 +274,13 @@ func sharedLogins() []savedLogin {
 	defer lastLoginsMu.Unlock()
 	switch {
 	case err == nil:
+		loginsReadOkay()
 		lastLogins, loginsKnown = ls, true
 	case errors.Is(err, fs.ErrNotExist):
+		loginsReadOkay()
 		lastLogins, loginsKnown = nil, true
 	case loginsKnown:
-		log.Printf("logins.json: %v; the accounts read before are kept", err)
+		loginsReadFailure(fmt.Sprintf("logins.json: %v; the accounts read before are kept", err))
 		ls = lastLogins
 	default:
 		// magpie just started on a file that doesn't read (all zero after
@@ -287,11 +289,50 @@ func sharedLogins() []savedLogin {
 		if b, ferr := lastgood.Fallback(loginsPath(), unreadBytes(loginsPath()), validLogins); ferr == nil {
 			ls, _ = parseLogins(b)
 			lastLogins, loginsKnown = ls, true
+			loginsReadOkay()
 		} else {
-			log.Printf("logins.json: %v; %v", err, ferr)
+			loginsReadFailure(fmt.Sprintf("logins.json: %v; %v", err, ferr))
 		}
 	}
 	return slices.Clip(ls) // an append makes the caller's own
+}
+
+// loginsReadLogEvery is how long the same read failure of logins.json is
+// held back before it is logged again: the file can stay unreadable for
+// days (#7008 — an owner change left every read refused, and ~500 identical
+// lines a second filled a 2.2 GB log in 8 hours, then the disk).
+var loginsReadLogEvery = 5 * time.Minute
+
+// loginsReadLog is the read failure logged last, when, and how many of the
+// same went by quiet since. Guarded by lastLoginsMu, which both call sites
+// hold. A read that succeeds, or finds the file gone, or recovers the last
+// good generation clears it, so a later failure is logged at once again.
+var (
+	loginsReadLogLine string
+	loginsReadLogAt   time.Time
+	loginsReadLogHeld int
+)
+
+// loginsReadFailure logs line for a read of logins.json that failed: the
+// first of a run at once, then once per loginsReadLogEvery with how many
+// of the same error went by quiet in between. A different error is logged
+// at once, whatever the interval says.
+func loginsReadFailure(line string) {
+	if loginsReadLogLine != "" && line == loginsReadLogLine && time.Since(loginsReadLogAt) < loginsReadLogEvery {
+		loginsReadLogHeld++
+		return
+	}
+	if loginsReadLogHeld > 0 {
+		log.Printf("%s (%d more of the same error while quiet)", loginsReadLogLine, loginsReadLogHeld)
+	}
+	log.Print(line)
+	loginsReadLogLine, loginsReadLogAt, loginsReadLogHeld = line, time.Now(), 0
+}
+
+// loginsReadOkay clears the held-back read failure: the file reads, or is
+// known to be gone, so the next failure starts a run of its own.
+func loginsReadOkay() {
+	loginsReadLogLine, loginsReadLogAt, loginsReadLogHeld = "", time.Time{}, 0
 }
 
 // unreadBytes are a file's bytes, nil when it can't be read: for the log

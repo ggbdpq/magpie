@@ -24,9 +24,10 @@ package provider
 // the models each key can serve). A key the user set back to every model
 // (AccountModelsAll) stays so, and one whose list has every model the
 // others list serves every model still, so the vendor's later additions
-// reach it. A key with no marks now (one key on, one switched off, a
-// list that failed with nothing kept) is unknown, and its models stay as
-// they are.
+// reach it. A key with no marks now (a list that failed with nothing
+// kept) is unknown, and its models stay as they are. The one key a fetch
+// asks alone is marked like a multi-key fetch marks its keys, so its
+// models follow the vendor's list (#7076).
 
 import (
 	"slices"

@@ -561,7 +561,8 @@ func (p Provider) fetchList(ctx context.Context) ([]catalog.Model, error) {
 	}
 	// Only keys in use. An off key is not asked, and its list does not
 	// join the catalog or take capabilities off a key that is on.
-	if keys := p.KeysOn(); len(keys) > 1 {
+	keys := p.KeysOn()
+	if len(keys) > 1 {
 		return p.fetchPerKey(ctx, keys)
 	}
 	l, err := p.fetchOne(ctx)
@@ -578,6 +579,18 @@ func (p Provider) fetchList(ctx context.Context) ([]catalog.Model, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	// the one key on saw every model of its list: marked, so its models
+	// follow the vendor's list like a multi-key provider's do. Unmarked,
+	// the key was unknown, and its models stayed what an earlier fetch —
+	// often a two-key era's — had ticked, a model the vendor took on
+	// later refused forever (#7076). A lone key's list is the whole of
+	// what the keys' lists have, and stays un-narrowed.
+	if len(keys) == 1 {
+		id := keyID(keys[0].Key)
+		for i := range l.models {
+			l.models[i].Keys = []string{id}
+		}
 	}
 	return catalog.Chat(l.models), catalog.SaveLiveSides(p.ID, l.base, l.models, l.sides)
 }

@@ -291,3 +291,60 @@ func TestFetchLeavesALoneKeyOnAllModels(t *testing.T) {
 		t.Errorf("a lone key was given %v", p.AccountModels)
 	}
 }
+
+// #7076: a provider of two keys with one switched off is fetched as one,
+// unmarked — its on key's own models stayed what the two-key era had
+// ticked, and a model the vendor took on later 403'd on every request
+// until a hand-run `provider account-models <id> <key> all`. The one key
+// on saw every model of its list: marked, its models follow the vendor's
+// list like a multi-key provider's do, the user's ticks kept.
+func TestFetchRefreshesASingleOnKeysModels(t *testing.T) {
+	prefillHome(t)
+	l := &relayLists{by: map[string][]string{"sk-a": {"gpt-6.1-sol", "gpt-6-astra"}}}
+	srv := l.serve(t)
+	if err := Save(Provider{ID: "relay", Name: "Relay", Chat: srv.URL + "/v1", Key: "sk-a",
+		Keys: []KeyAccount{{Key: "sk-b", Off: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	fetch := func() {
+		t.Helper()
+		p, _ := Find("relay")
+		if _, err := p.Fetch(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	models := func(key string) []string {
+		p, _ := Find("relay")
+		return p.AccountModels[keyID(key)]
+	}
+	fetch()
+	// the two-key era's own models, as the reporter's were
+	if err := SetAccountModels("relay", keyID("sk-a"), []string{"gpt-6.1-sol", "gpt-6-astra"}); err != nil {
+		t.Fatal(err)
+	}
+	// the vendor takes gpt-6.2-sol on, the user picks it, fetch models runs
+	l.set("sk-a", "gpt-6.1-sol", "gpt-6-astra", "gpt-6.2-sol")
+	fetch()
+	if got := models("sk-a"); !slices.Equal(got, []string{"gpt-6.1-sol", "gpt-6-astra", "gpt-6.2-sol"}) {
+		t.Fatalf("the on key after a fetch: %v, want the vendor's addition ticked", got)
+	}
+	if p, _ := Find("relay"); !p.AccountServes(keyID("sk-a"), "gpt-6.2-sol") {
+		t.Error("the gateway would still refuse the model the vendor took on")
+	}
+
+	// a model the vendor gives up goes out the same way
+	l.set("sk-a", "gpt-6.1-sol", "gpt-6.2-sol")
+	fetch()
+	if got := models("sk-a"); !slices.Equal(got, []string{"gpt-6.1-sol", "gpt-6.2-sol"}) {
+		t.Fatalf("the on key after the vendor gave one up: %v, want it unticked", got)
+	}
+
+	// the user's un-tick of a model the list still has stays
+	if err := SetAccountModels("relay", keyID("sk-a"), []string{"gpt-6.1-sol"}); err != nil {
+		t.Fatal(err)
+	}
+	fetch()
+	if got := models("sk-a"); !slices.Equal(got, []string{"gpt-6.1-sol"}) {
+		t.Fatalf("the user's un-tick undone by a fetch: %v", got)
+	}
+}

@@ -21,8 +21,16 @@ type Writer struct {
 	mode    int // 0 not yet known, 1 a stream, 2 a whole body, 3 left as it is
 	buf     bytes.Buffer
 	pending *held
-	done    bool
-	put     map[string]int // placeholders put back, each place counted
+	// heldComment is a comment line (": keepalive") that arrived while
+	// the buffer stood inside a data: line: appended, it would land
+	// inside the JSON payload and the next blank line would close the
+	// frame as truncated output the client refuses whole (#7012). It
+	// goes out at the line's end, and nowhere at Finish — the
+	// unterminated line reads as an incomplete stream, which the client
+	// retries.
+	heldComment []byte
+	done        bool
+	put         map[string]int // placeholders put back, each place counted
 }
 
 const (
@@ -115,6 +123,21 @@ func (rw *Writer) Write(p []byte) (int, error) {
 	case whole:
 		return rw.buf.Write(p)
 	}
+	// a comment that arrives while the buffer stands inside a data: line
+	// is held whole: appended, it lands inside the pending JSON payload,
+	// and the next blank line closes the frame as truncated output the
+	// client refuses whole and will not retry (#7012). It goes out when
+	// the line's own end has passed the buffer, ahead of the event it
+	// arrived with.
+	if b := rw.buf.Bytes(); midLine(b) {
+		if cl := commentLines(p); cl > 0 {
+			rw.heldComment = append(rw.heldComment, p[:cl]...)
+			p = p[cl:]
+			if len(p) == 0 {
+				return cl, nil
+			}
+		}
+	}
 	rw.buf.Write(p)
 	for {
 		b := rw.buf.Bytes()
@@ -123,7 +146,15 @@ func (rw *Writer) Write(p []byte) (int, error) {
 		// heard nothing while its vendor reasoned silently, and the
 		// proxy hung up (#2402). It carries nothing to put back, and an
 		// event held for its placeholder's tail goes on after it as well.
+		// A comment held for a line that ran long goes ahead of it: it
+		// came later in the stream, and goes out between events alike.
 		if c := commentLines(b); c > 0 {
+			if rw.heldComment != nil {
+				if _, err := rw.w.Write(rw.heldComment); err != nil {
+					return len(p), err
+				}
+				rw.heldComment = nil
+			}
 			if _, err := rw.w.Write(b[:c]); err != nil {
 				return len(p), err
 			}
@@ -139,8 +170,21 @@ func (rw *Writer) Write(p []byte) (int, error) {
 		if err := rw.event(ev); err != nil {
 			return len(p), err
 		}
+		// the held comment rides after the frame its line closed
+		if rw.heldComment != nil {
+			if _, err := rw.w.Write(rw.heldComment); err != nil {
+				return len(p), err
+			}
+			rw.heldComment = nil
+		}
 	}
 	return len(p), nil
+}
+
+// midLine says the buffer stands inside a line: not empty, and its last
+// byte is no line's end.
+func midLine(b []byte) bool {
+	return len(b) > 0 && b[len(b)-1] != '\n' && b[len(b)-1] != '\r'
 }
 
 // commentLines is how long the whole comment lines (": keepalive") and

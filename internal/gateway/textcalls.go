@@ -34,7 +34,7 @@ import (
 // its own making and the next invoke) is the shape of Claude's own calls
 // and of MiniMax's, which wraps it in <minimax:tool_call>; Claude's wraps
 // it in <function_calls>.
-var textCallMarks = []string{"<tool_call>", "<invoke name=", "<function_calls>", "<minimax:tool_call>"}
+var textCallMarks = []string{"<tool_call>", "<tool_call:", "<tool_calls>", "<tool_calls:", "<invoke name=", "<function_calls>", "<minimax:tool_call>"}
 
 // dsmlMark tells whether s begins with a DSML tag's mark, read as the
 // parse regexes read one (dsmlTag): <, spaces, / and spaces for a close
@@ -119,10 +119,18 @@ var (
 	dsmlParam  = lazyre.New(`(?s)<\s*` + invokePre + `parameter\s+name\s*=\s*"([^"]+)"((?:\s+\w+\s*=\s*"[^"]*")*)\s*>(.*?)<\s*/?\s*` + invokePre + `parameter\s*>`)
 	dsmlClose  = lazyre.New(`<\s*/\s*` + invokePre + `invoke\s*>`)
 	dsmlString = lazyre.New(`string\s*=\s*"true"`)
+	// optional :TOKEN id suffix on GLM/relay tool_call and arg_* tags (#6971)
+	toolCallSuffix = `(?::[\w-]+)?`
+	toolCallOpen   = lazyre.New(`<tool_call` + toolCallSuffix + `>`)
+	toolCallClose  = lazyre.New(`^</tool_call` + toolCallSuffix + `>`)
+	toolCallEndAny = lazyre.New(`</tool_call` + toolCallSuffix + `>`)
+	toolCallsOpen  = lazyre.New(`^<tool_calls` + toolCallSuffix + `>\s*`)
+	toolCallsClose = lazyre.New(`^\s*</tool_calls` + toolCallSuffix + `>`)
+	cutToolClose   = lazyre.New(`</tool_calls?(?::[\w-]*)?$`)
 	// what is left of the tags once the calls are read out, and the
 	// braces, quotes or > GLM leaves before a close (#1945); and the
 	// plain invoke's, with its wrappers
-	textCallJunk = lazyre.New(dsmlTag + `[^<>]*>?|[}\]"'>]*\s*</tool_calls?>|<tool_calls?>|<\s*/?\s*(?:[A-Za-z_][\w-]*:)?(?:invoke|parameter|function_calls|tool_calls?)\b[^<>]*>`)
+	textCallJunk = lazyre.New(dsmlTag + `[^<>]*>?|[}\]"'>]*\s*</tool_calls?` + toolCallSuffix + `>|<tool_calls?` + toolCallSuffix + `>|<\s*/?\s*(?:[A-Za-z_][\w-]*:)?(?:invoke|parameter|function_calls|tool_calls?)\b[^<>]*>`)
 )
 
 // textCallNames are the tools a request offers, by name.
@@ -225,18 +233,41 @@ func withoutPseudoCall(m Message, names map[string]bool) (Message, bool) {
 // pairs, an invoke — of one of names, with arguments that can be read. n is
 // how much of s the block took, its close included where it wrote one.
 func historyCall(s string, names map[string]bool) (c writtenCall, n int, good bool) {
-	if strings.HasPrefix(s, "<tool_call>") {
-		s = s[len("<tool_call>"):]
-		if c, n, good = paramCall(s, names); !good {
-			if c, n, good = hermesCall(s, names); !good && !strings.HasPrefix(strings.TrimLeft(s, " \t\r\n"), "{") {
-				c, n, good = glmCall(s, names)
+	wrap := 0
+	if w := toolCallsOpen.FindStringIndex(s); w != nil {
+		wrap = w[1]
+		s = s[wrap:]
+	}
+	if m := toolCallOpen.FindStringIndex(s); m != nil && m[0] == 0 {
+		body := s[m[1]:]
+		if c, n, good = paramCall(body, names); !good {
+			if c, n, good = hermesCall(body, names); !good && !strings.HasPrefix(strings.TrimLeft(body, " \t\r\n"), "{") {
+				c, n, good = glmCall(body, names)
 			}
 		}
-		return c, n + len("<tool_call>"), good
+		if !good {
+			return writtenCall{}, 0, false
+		}
+		used := wrap + m[1] + n
+		if wrap > 0 {
+			if cw := toolCallsClose.FindStringIndex(body[n:]); cw != nil {
+				used += cw[1]
+			}
+		}
+		return c, used, true
 	}
 	if d := dsmlInvoke.FindStringSubmatchIndex(s); d != nil {
 		c, n, good = dsmlCall(s, s[d[2]:d[3]], d[1]-d[0], names)
-		return c, n, good
+		if !good {
+			return writtenCall{}, 0, false
+		}
+		used := wrap + n
+		if wrap > 0 {
+			if cw := toolCallsClose.FindStringIndex(s[n:]); cw != nil {
+				used += cw[1]
+			}
+		}
+		return c, used, true
 	}
 	return writtenCall{}, 0, false
 }
@@ -372,34 +403,36 @@ func parseTextCalls(s string, names map[string]bool) (calls []writtenCall, rest 
 		return true
 	}
 	for s != "" {
-		h := strings.Index(s, "<tool_call>")
+		hm := toolCallOpen.FindStringIndex(s)
 		d := dsmlInvoke.FindStringSubmatchIndex(s)
 		switch {
-		case h >= 0 && (d == nil || h < d[0]):
+		case hm != nil && (d == nil || hm[0] < d[0]):
+			h, openEnd := hm[0], hm[1]
 			if !text(s[:h]) {
 				s = ""
 				continue
 			}
-			if t := strings.TrimLeft(s[h+len("<tool_call>"):], " \t\r\n"); t == "" || strings.HasPrefix(t, "<") {
+			body := s[openEnd:]
+			if t := strings.TrimLeft(body, " \t\r\n"); t == "" || strings.HasPrefix(t, "<") {
 				// no JSON after it: DeepSeek's own tags, an invoke or the
 				// closes of one (#823), or nothing; the opener is dropped
 				// and what follows read as it is
 				s = t
 				continue
 			}
-			c, n, good := paramCall(s[h+len("<tool_call>"):], names)
+			c, n, good := paramCall(body, names)
 			if !good {
-				c, n, good = hermesCall(s[h+len("<tool_call>"):], names)
+				c, n, good = hermesCall(body, names)
 			}
-			if !good && !strings.HasPrefix(strings.TrimLeft(s[h+len("<tool_call>"):], " \t\r\n"), "{") {
+			if !good && !strings.HasPrefix(strings.TrimLeft(body, " \t\r\n"), "{") {
 				// GLM's own: the name, then its arguments in pairs (#906)
-				c, n, good = glmCall(s[h+len("<tool_call>"):], names)
+				c, n, good = glmCall(body, names)
 			}
 			if !good {
 				return nil, "", false
 			}
 			calls = append(calls, c)
-			s = s[h+len("<tool_call>")+n:]
+			s = body[n:]
 		case d != nil:
 			if !text(s[:d[0]]) {
 				s = ""
@@ -461,7 +494,10 @@ func settled(native, holding bool, pending, held string) (string, string, bool) 
 // cutMark is the end of s that is a mark's beginning cut short (</ of
 // </tool_call>), "" when there's none; a lone < may be text.
 func cutMark(s string) string {
-	for _, m := range append([]string{"</tool_call>", "</parameter>", "</invoke>", "</function_calls>", "</minimax:tool_call>"}, textCallMarks...) {
+	if m := cutToolClose.FindString(s); len(m) >= 2 {
+		return m
+	}
+	for _, m := range append([]string{"</tool_call>", "</tool_calls>", "</parameter>", "</invoke>", "</function_calls>", "</minimax:tool_call>"}, textCallMarks...) {
 		for n := len(m) - 1; n >= 2; n-- {
 			if strings.HasSuffix(s, m[:n]) {
 				return m[:n]
@@ -522,11 +558,11 @@ func hermesCall(s string, names map[string]bool) (writtenCall, int, bool) {
 	// short, #1945): no call, rather than one cut wrong
 	junk := len(s[n:]) - len(strings.TrimLeft(s[n:], " \t\r\n}]\"'>"))
 	next := s[n+junk:]
-	if strings.HasPrefix(next, "</tool_call>") {
-		return writtenCall{Name: v.Name, Args: args}, n + junk + len("</tool_call>"), true
+	if cm := toolCallClose.FindStringIndex(next); cm != nil {
+		return writtenCall{Name: v.Name, Args: args}, n + junk + cm[1], true
 	}
 	if strings.TrimLeft(s[n:n+junk], " \t\r\n") != "" || (junk == 0 && next != "" && next[0] != '<') {
-		if strings.Contains(next, "</tool_call>") {
+		if toolCallEndAny.MatchString(next) {
 			return writtenCall{}, 0, false
 		}
 	}
@@ -566,12 +602,17 @@ func paramCall(s string, names map[string]bool) (writtenCall, int, bool) {
 		}
 		n += p[1]
 		end, next := len(s), len(s)
-		for _, stop := range []string{"</parameter>", "<parameter", "</tool_call>", "<tool_call>"} {
+		for _, stop := range []string{"</parameter>", "<parameter"} {
 			if i := strings.Index(s[n:], stop); i >= 0 && n+i < end {
 				end, next = n+i, n+i
 				if stop == "</parameter>" {
 					next += len(stop)
 				}
+			}
+		}
+		for _, re := range []*lazyre.RE{toolCallEndAny, toolCallOpen} {
+			if loc := re.FindStringIndex(s[n:]); loc != nil && n+loc[0] < end {
+				end, next = n+loc[0], n+loc[0]
 			}
 		}
 		val := strings.Trim(s[n:end], "\r\n")
@@ -587,8 +628,9 @@ func paramCall(s string, names map[string]bool) (writtenCall, int, bool) {
 	if len(args) == 0 {
 		return writtenCall{}, 0, false
 	}
-	if t := strings.TrimLeft(s[n:], " \t\r\n"); strings.HasPrefix(t, "</tool_call>") {
-		n = len(s) - len(t) + len("</tool_call>")
+	if t := strings.TrimLeft(s[n:], " \t\r\n"); toolCallClose.MatchString(t) {
+		cm := toolCallClose.FindStringIndex(t)
+		n = len(s) - len(t) + cm[1]
 	}
 	b, err := json.Marshal(args)
 	if err != nil {
@@ -598,7 +640,7 @@ func paramCall(s string, names map[string]bool) (writtenCall, int, bool) {
 }
 
 var (
-	glmPair = lazyre.New(`(?s)^\s*<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>`)
+	glmPair = lazyre.New(`(?s)^\s*<arg_key` + toolCallSuffix + `>(.*?)</arg_key` + toolCallSuffix + `>\s*<arg_value` + toolCallSuffix + `>(.*?)</arg_value` + toolCallSuffix + `>`)
 	glmName = lazyre.New(`^\s*([^\s<>{}"]+)\s*`)
 )
 
@@ -631,9 +673,10 @@ func glmCall(s string, names map[string]bool) (writtenCall, int, bool) {
 	}
 	t := strings.TrimLeft(s[n:], " \t\r\n")
 	switch {
-	case strings.HasPrefix(t, "</tool_call>"):
-		n = len(s) - len(t) + len("</tool_call>")
-	case t != "" && !strings.HasPrefix(t, "<tool_call>"):
+	case toolCallClose.MatchString(t):
+		cm := toolCallClose.FindStringIndex(t)
+		n = len(s) - len(t) + cm[1]
+	case t != "" && !(toolCallOpen.FindStringIndex(t) != nil && toolCallOpen.FindStringIndex(t)[0] == 0) && !toolCallsClose.MatchString(t):
 		// something else follows the name: not a call of GLM's
 		return writtenCall{}, 0, false
 	}

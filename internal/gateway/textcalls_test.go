@@ -211,3 +211,79 @@ func TestTextWrittenTagsOnly(t *testing.T) {
 		t.Fatalf("lookalike: %q", text)
 	}
 }
+
+// A token-suffixed GLM block (<tool_calls:TOKEN><tool_call:TOKEN>name
+// <arg_key:TOKEN>…</arg_key:TOKEN><arg_value:TOKEN>…</arg_value:TOKEN>
+// </tool_call:TOKEN></tool_calls:TOKEN>, #6971, iskylite: workbuddy/hy4flash-free
+// in ZeroWork) reaches the client as structured tool_calls after the text
+// before it, with neither the wrapper nor the inner tags left in content.
+func TestSuffixedTextWrittenCallRelayed(t *testing.T) {
+	tools := `"tools":[{"type":"function","function":{"name":"host__agent_utasks","parameters":{"type":"object"}}},{"type":"function","function":{"name":"bash","parameters":{"type":"object"}}}]`
+	req := `{"model":"a/m","stream":true,"messages":[{"role":"user","content":"hi"}],` + tools + `}`
+
+	// exact captured shape from #6971, split across SSE chunks mid-tag
+	lead := " watermark 用错了，我重新查一下子任务当前状态，拿到正确编号再等报告。"
+	text, calls, finish, raw := relayedChat(t, req,
+		chunkOf(lead+"<tool_calls:6124"),
+		chunkOf("c78e><tool_call:6124c78e>host__agent_utasks<arg_key:6124c78e>action</arg_key:6124c78e>"),
+		chunkOf("<arg_value:6124c78e>list</arg_value:6124c78e></tool_call:6124c78e></tool_calls:6124c78e>"),
+		stopChunk)
+	if text != lead || calls["host__agent_utasks"] != `{"action":"list"}` || finish != "tool_calls" || strings.Contains(raw, "6124c78e") {
+		t.Fatalf("suffixed stream: text %q calls %v finish %q\n%s", text, calls, finish, raw)
+	}
+
+	// non-streamed whole Chat reply with suffixed wrapper
+	fresh(t)
+	wholeUp := `{"id":"c1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"` + lead + `<tool_calls:6124c78e><tool_call:6124c78e>host__agent_utasks<arg_key:6124c78e>action</arg_key:6124c78e><arg_value:6124c78e>list</arg_value:6124c78e></tool_call:6124c78e></tool_calls:6124c78e>"},"finish_reason":"stop"}]}`
+	a := &scripted{replies: []reply{{200, "application/json", wholeUp}}}
+	scriptedOn(t, "a", provider.Chat, a)
+	rec := httptest.NewRecorder()
+	New().Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(strings.Replace(req, `"stream":true`, `"stream":false`, 1))))
+	if rec.Code != 200 || strings.Contains(rec.Body.String(), "6124c78e") || !strings.Contains(rec.Body.String(), `"finish_reason":"tool_calls"`) || !strings.Contains(rec.Body.String(), `"host__agent_utasks"`) {
+		t.Fatalf("suffixed whole: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// native tool_calls already emitted: leftover suffixed wrapper tags go,
+	// and a double-emitted text copy is never turned into a second call
+	text, calls, finish, raw = relayedChat(t, req,
+		`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"bash","arguments":"{}"}}]},"finish_reason":null}]}`,
+		chunkOf("\n<tool_calls:6124c78e></tool_calls:6124c78e>"),
+		`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)
+	if text != "" || len(calls) != 1 || calls["bash"] != "{}" || finish != "tool_calls" || strings.Contains(raw, "6124c78e") {
+		t.Fatalf("native leftover wrapper: text %q calls %v finish %q\n%s", text, calls, finish, raw)
+	}
+
+	dup := `<tool_calls:6124c78e><tool_call:6124c78e>host__agent_utasks<arg_key:6124c78e>action</arg_key:6124c78e><arg_value:6124c78e>list</arg_value:6124c78e></tool_call:6124c78e></tool_calls:6124c78e>`
+	text, calls, finish, _ = relayedChat(t, req,
+		chunkOf(dup),
+		`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"bash","arguments":"{}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)
+	if text != dup || len(calls) != 1 || calls["bash"] != "{}" || finish != "tool_calls" {
+		t.Fatalf("double emit: text %q calls %v finish %q", text, calls, finish)
+	}
+
+	// history cleanup (dropPseudoCalls) strips a suffixed completion wrapper
+	msgs := dropPseudoCalls([]Message{{
+		Role:  "assistant",
+		Parts: []Part{{Kind: Text, Text: "Done.\n<tool_calls:6124c78e><tool_call:6124c78e>finish<arg_key:6124c78e>result</arg_key:6124c78e><arg_value:6124c78e>all checks green</arg_value:6124c78e></tool_call:6124c78e></tool_calls:6124c78e>\nSummary: all checks green."}},
+	}}, []Tool{{Name: "finish"}})
+	if len(msgs) != 1 || len(msgs[0].Parts) != 1 || strings.Contains(msgs[0].Parts[0].Text, "6124c78e") || !strings.Contains(msgs[0].Parts[0].Text, "Summary: all checks green.") {
+		t.Fatalf("dropPseudoCalls suffixed: %+v", msgs)
+	}
+
+	// lookalike identifiers and unclosed <tool_call: text pass through intact
+	// two suffixed calls inside one <tool_calls:TOKEN> wrapper
+	text, calls, finish, raw = relayedChat(t, req,
+		chunkOf("<tool_calls:ab_1><tool_call:ab_1>host__agent_utasks<arg_key:ab_1>action</arg_key:ab_1><arg_value:ab_1>list</arg_value:ab_1></tool_call:ab_1><tool_call:ab_1>bash<arg_key:ab_1>cmd</arg_key:ab_1><arg_value:ab_1>pwd</arg_value:ab_1></tool_call:ab_1></tool_calls:ab_1>"),
+		stopChunk)
+	if text != "" || calls["host__agent_utasks"] != `{"action":"list"}` || calls["bash"] != `{"cmd":"pwd"}` || finish != "tool_calls" || strings.Contains(raw, "ab_1") {
+		t.Fatalf("two suffixed calls: text %q calls %v finish %q\n%s", text, calls, finish, raw)
+	}
+
+	for _, plain := range []string{"see <tool_call_id> here", "note <tool_call: not a tag", "see <tool_call:foo"} {
+		text, calls, finish, _ = relayedChat(t, req, chunkOf(plain[:7]), chunkOf(plain[7:]), stopChunk)
+		if text != plain || len(calls) != 0 || finish != "stop" {
+			t.Fatalf("lookalike %q: text %q calls %v finish %q", plain, text, calls, finish)
+		}
+	}
+}

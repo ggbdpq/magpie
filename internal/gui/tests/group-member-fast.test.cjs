@@ -25,20 +25,25 @@ const models = [
   { id: "rl/o4-mini", name: "o4-mini", providerName: "Relay", icon: "generic", canFast: true, ownFast: true },
   // one OpenAI offers Ultrafast on (KoiLx0 on X)
   { id: "rl/gpt-6.2-sol", name: "gpt-6.2-sol", providerName: "Relay", icon: "generic", canFast: true, ownFast: true, ultraOK: true },
+  // the member of the report (#6881): a Codex GPT-6-Astra set Ultrafast,
+  // which the group's list read as Fast
+  { id: "cx/gpt-6-astra", name: "gpt-6-astra", providerName: "Codex", icon: "generic", canFast: true, ultraOK: true },
 ];
-const members = ["oa/gpt-6.1-sol:high", "an/claude-opus-5-5", "rl/glm-5", "rl/o4-mini", "rl/gpt-6.2-sol"];
+const members = ["oa/gpt-6.1-sol:high", "an/claude-opus-5-5", "rl/glm-5", "rl/o4-mini", "rl/gpt-6.2-sol", "cx/gpt-6-astra"];
 const groups = () => ({
   models, pools: [],
-  groups: [{ id: "sol", name: "Sol", members, fast: ["oa/gpt-6.1-sol:high"], routing: "order", ready: true,
-    memberInfo: members.map((id) => ({ id, ready: true, fast: id === "oa/gpt-6.1-sol:high", canFast: id !== "rl/glm-5", ownFast: id.startsWith("rl/") && id !== "rl/glm-5", ultraOK: id === "rl/gpt-6.2-sol" })) }],
+  groups: [{ id: "sol", name: "Sol", members, fast: ["oa/gpt-6.1-sol:high", "cx/gpt-6-astra"], ultra: ["cx/gpt-6-astra"], routing: "order", ready: true,
+    memberInfo: members.map((id) => ({ id, ready: true, fast: id === "oa/gpt-6.1-sol:high" || id === "cx/gpt-6-astra", canFast: id !== "rl/glm-5", ownFast: id.startsWith("rl/") && id !== "rl/glm-5", ultraOK: id === "rl/gpt-6.2-sol" || id === "cx/gpt-6-astra" })) }],
 });
 
 const words = {
   en: { edit: "Edit", save: "Save", fast: "Fast", std: "Standard speed", label: "gpt-6.1-sol · high reasoning · fast", remove: "Remove",
+    ultraCard: "gpt-6-astra · Ultrafast",
     ownOff: 'Sent as the agent asks; click to ask your provider for OpenAI\'s fast mode (service_tier "priority")',
     ownOn: 'Asked for OpenAI\'s fast mode (service_tier "priority") whatever the agent asks: quicker, at a higher price, where your provider serves it. One that turns it away is asked without it',
     ultra: "Ultrafast", ownUltra: 'Asked for service_tier "ultrafast" whatever the agent asks, where your provider serves it. One that turns it away is asked without it. Click to send it at the usual speed' },
   zh: { edit: "编辑", save: "保存", fast: "快速", std: "标准速度", label: "gpt-6.1-sol · high 推理强度 · 快速", remove: "移除",
+    ultraCard: "gpt-6-astra · 极速",
     ownOff: '按代理的请求发送；点击向你的服务商请求 OpenAI 的快速模式（service_tier "priority"）',
     ownOn: '无论代理怎么请求，都向服务商请求 OpenAI 的快速模式（service_tier "priority"）：服务商支持时更快，价格更高。服务商拒绝这个字段时，会去掉它再请求一次',
     ultra: "极速", ownUltra: '无论 Agent 要求什么，都向你的服务商请求极速（service_tier "ultrafast"），前提是它支持；不接受的会改为不带该字段重新请求。点一下改回标准速度' },
@@ -93,6 +98,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const card = page.locator(".rt-group", { hasText: "Sol" });
       await card.waitFor();
       assert((await card.locator(".mem").textContent()).includes(w.label), "the card says the member is sent fast");
+      // the member set Ultrafast is said so on the card too (#6881)
+      assert((await card.locator(".mem").textContent()).includes(w.ultraCard), "the card says the member set Ultrafast is Ultrafast");
+      assert(!(await card.locator(".mem").textContent()).includes("gpt-6-astra · " + w.fast), "the member set Ultrafast is not read as fast");
 
       await card.locator("button", { hasText: w.edit }).click();
       const ed = page.locator(".rt-gedit");
@@ -156,12 +164,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.mouse.click(bb.x + bb.width / 2, bb.y + bb.height / 2);
       await page.waitForFunction(() => !document.querySelector(".rt-gedit"));
       const sent = posts.find((p) => p.path === "/api/groups/save");
-      assert.deepEqual(sent.body.members, ["oa/gpt-6.1-sol:xhigh", "rl/glm-5", "rl/o4-mini", "rl/gpt-6.2-sol"]);
-      assert.deepEqual(sent.body.fast, ["oa/gpt-6.1-sol:xhigh", "rl/o4-mini", "rl/gpt-6.2-sol"]);
-      assert.deepEqual(sent.body.ultra, ["rl/gpt-6.2-sol"]);
+      assert.deepEqual(sent.body.members, ["oa/gpt-6.1-sol:xhigh", "rl/glm-5", "rl/o4-mini", "rl/gpt-6.2-sol", "cx/gpt-6-astra"]);
+      assert.deepEqual(sent.body.fast, ["cx/gpt-6-astra", "oa/gpt-6.1-sol:xhigh", "rl/o4-mini", "rl/gpt-6.2-sol"]);
+      assert.deepEqual(sent.body.ultra, ["cx/gpt-6-astra", "rl/gpt-6.2-sol"]);
 
       const missing = await page.evaluate(() => [
-        "fast", "Fast", "Standard speed", "Sent in its vendor's fast mode, as the group says",
+        "fast", "Fast", "Ultrafast", "Standard speed", "Sent in its vendor's fast mode, as the group says",
         "Sent in its vendor's fast mode whatever the agent asks: quicker, at a higher price",
         "Sent at its vendor's usual speed; click to send it in fast mode",
         'Asked for OpenAI\'s fast mode (service_tier "priority") whatever the agent asks: quicker, at a higher price, where your provider serves it. One that turns it away is asked without it',

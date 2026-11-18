@@ -6761,7 +6761,10 @@ function routingPage(part) {
     const i = memberInfoOf(g, id), m = modelOf(id), s = subOf(id), f = fixedOf(id);
     if (s) return { pv: t("routing group"), mn: s.name, at: "" };
     const acct = memberAccount(id);
-    const at = (acct ? ` · ${acct.name}` : "") + (f ? ` · ${fixedWords(f)}` : "") + (fastIn(g, id) ? ` · ${t("fast")}` : "") + (freeIn(g, id) ? ` · ${t("free")}` : "");
+    // a member set Ultrafast is said so (#6881): the list read Fast alone,
+    // while the group's editor said Ultrafast
+    const fast = fastIn(g, id), ultra = fast && !!g?.ultra?.includes(id);
+    const at = (acct ? ` · ${acct.name}` : "") + (f ? ` · ${fixedWords(f)}` : "") + (fast ? ` · ${t(ultra ? "Ultrafast" : "fast")}` : "") + (freeIn(g, id) ? ` · ${t("free")}` : "");
     if (m) return { pv: m.providerName, mn: modelName(m), at };
     if (i?.providerOff) return { pv: i.name, mn: i.model, at: `${at} (${t("switched off")})` };
     return i?.name ? { pv: i.name, mn: i.model, at } : { pv: "", mn: id, at: "" };

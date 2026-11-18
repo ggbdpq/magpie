@@ -706,7 +706,11 @@ func (m model) viewGroup() string {
 		if i == m.gsel {
 			marker, name = sCursor.Render("▸ "), sNameOn.Render(id)
 		}
-		if g.IsFast(id) {
+		// a member set Ultrafast is said so (#6881): the list read Fast
+		// alone, while the group's editor said Ultrafast
+		if g.IsUltra(id) {
+			name += sMuted.Render(" · " + tr("Ultrafast"))
+		} else if g.IsFast(id) {
 			name += sMuted.Render(" · " + tr("fast"))
 		}
 		if slices.Contains(g.Matched, id) {

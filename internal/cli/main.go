@@ -345,9 +345,14 @@ func servesPages(args []string) bool {
 func run(args []string) error {
 	// a command that saved a provider or a group ends with the agents'
 	// files written, which its save no longer waits for; and a test's run
-	// leaves catalog.Changed as it found it
+	// leaves catalog.Changed as it found it. A change to what is exposed
+	// or shown also owes the Codex app's list, whose rebuild rides the
+	// backend ask the first sync started (#7075): the ask is waited out,
+	// then the round its result asked for.
 	was := catalog.Changed
 	defer func() {
+		agent.SyncCatalogSettled()
+		gateway.CodexDesktopAskSettled()
 		agent.SyncCatalogSettled()
 		catalog.Changed = was
 	}()

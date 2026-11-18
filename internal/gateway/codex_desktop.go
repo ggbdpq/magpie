@@ -113,6 +113,27 @@ func codexDeskAsk(who string, due bool) {
 	}
 }
 
+// CodexDesktopAskSettled waits for the backend list ask under way, if one
+// is. The desk list's rebuild rides the sync round the ask's result asks
+// for, and a short-lived command that changed what is exposed or shown
+// ends only after that round is written — not after the one that left the
+// file as it was while the ask ran (#7075: the CLI's
+// magpie-desktop-models.json stayed behind /v1/models for tens of
+// minutes). An ask bounds itself at codexDeskWait; none under way returns
+// at once.
+func CodexDesktopAskSettled() {
+	codexDesk.Lock()
+	done := codexDesk.done
+	codexDesk.Unlock()
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(codexDeskWait):
+	}
+}
+
 // codexDeskInputs reads, outside codexDesk's lock, what codexDeskDue weighs.
 func codexDeskInputs() (behind func(string) bool, listed []string, listedAt time.Time) {
 	now := codexDeskVersion()

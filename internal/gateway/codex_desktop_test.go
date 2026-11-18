@@ -461,3 +461,55 @@ func TestKeepCodexDeskFreshAsksWhenDue(t *testing.T) {
 		t.Fatalf("the loop's ask: %v\n%s", ok, b)
 	}
 }
+
+// A command that changes what is exposed or shown ends with the desk
+// list's rebuild written: the first sync leaves the file as it was while
+// the backend's ask runs (unknown, never an empty list), and the ask's
+// result asks for a sync round of its own. CodexDesktopAskSettled waits
+// that ask, so a short-lived command waits it and the round it owes
+// before it exits (#7075: the CLI's magpie-desktop-models.json stayed
+// behind /v1/models for tens of minutes).
+func TestCodexDesktopAskSettledWaitsForTheAsk(t *testing.T) {
+	codexSignedIn(t)
+	codexDeskReset(t)
+	release := make(chan struct{})
+	was := codexDeskFetch
+	codexDeskFetch = func(ctx context.Context) ([]byte, error) {
+		<-release
+		return []byte(`{"models":[{"slug":"gpt-5.5","priority":1,"visibility":"list"}]}`), nil
+	}
+	t.Cleanup(func() { codexDeskFetch = was })
+	var told atomic.Int64
+	CodexDesktopChanged = func() { told.Add(1) }
+
+	// the first look starts the ask and knows no list yet
+	if _, ok := CodexDesktopCatalog(); ok {
+		t.Fatal("the backend's list is known before it answered")
+	}
+	// a caller that waits the ask out is still waiting while it runs
+	settled := make(chan struct{})
+	go func() { CodexDesktopAskSettled(); close(settled) }()
+	select {
+	case <-settled:
+		t.Fatal("the ask was waited out while the fetch was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+	// the ask answers: the waiter goes, the round the result asks for is
+	// told, and the list is known from then on
+	close(release)
+	<-settled
+	if n := told.Load(); n != 1 {
+		t.Fatalf("the ask's result told the change %d times, want 1", n)
+	}
+	if b, ok := CodexDesktopCatalog(); !ok || !strings.Contains(string(b), "gpt-5.5") {
+		t.Fatalf("the ask's list: %q %v", b, ok)
+	}
+	// a wait with no ask under way goes at once
+	waited := make(chan struct{})
+	go func() { CodexDesktopAskSettled(); close(waited) }()
+	select {
+	case <-waited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a settled ask was waited on again")
+	}
+}

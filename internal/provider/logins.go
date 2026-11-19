@@ -944,14 +944,22 @@ func CodexSignInListed() (ids []string, fetched time.Time, ok bool) {
 // the folder).
 func codexLoginIn(home string) (savedLogin, bool) {
 	b, _, err := readCodexLogin(home, false)
+	return codexLoginRead(b, err)
+}
+
+// codexLoginRead is the ChatGPT account the sign-in bytes auth hold, read
+// from its folder by the look for Codex's other folders, apart from
+// loginsMu with the rest of that look (#7190): err is what the read came
+// to, and what couldn't be read is no account.
+func codexLoginRead(auth []byte, err error) (savedLogin, bool) {
 	if err != nil {
 		return savedLogin{}, false
 	}
 	// read once for the bytes, as codexWho is: liveLogin is asked from
 	// four loops at rest, each a parse and a JWT decode of one auth.json
-	w := codexLogins.of(b, func() [2]string {
+	w := codexLogins.of(auth, func() [2]string {
 		var a codexAuth
-		if json.Unmarshal(b, &a) != nil || a.Tokens.AccessToken == "" || a.AuthMode == "apikey" {
+		if json.Unmarshal(auth, &a) != nil || a.Tokens.AccessToken == "" || a.AuthMode == "apikey" {
 			return [2]string{}
 		}
 		id := jwtClaims(a.Tokens.IDToken)
@@ -965,7 +973,7 @@ func codexLoginIn(home string) (savedLogin, bool) {
 	if user == "" {
 		return savedLogin{}, false
 	}
-	l := savedLogin{Agent: "codex", User: user, Plan: w[1], Auth: json.RawMessage(bytes.TrimSpace(b))}
+	l := savedLogin{Agent: "codex", User: user, Plan: w[1], Auth: json.RawMessage(bytes.TrimSpace(auth))}
 	l.User = codexLiveName(user, l.Auth)
 	return l, true
 }
@@ -974,28 +982,105 @@ var codexLogins authMemo[[2]string]
 
 // codexOtherHomes are the user's Codex folders but the one magpie and
 // Codex run with (appdir.CodexHomes): one ChatGPT account each, Codex run
-// in it with CODEX_HOME set.
-func codexOtherHomes() []string { return appdir.CodexHomes()[1:] }
+// in it with CODEX_HOME set. A var, so a test can hold the look, as a
+// folder the system answers slowly holds it (#7190).
+var codexOtherHomes = func() []string { return appdir.CodexHomes()[1:] }
+
+// otherHomesWait is how long the look of the logins that started the look
+// for Codex's other folders waits for it, as filelock waits for another
+// magpie: past that it goes on with what the last finished look read.
+const otherHomesWait = filelock.Wait
+
+// otherHomesLook is the one look at a time for the sign-ins in Codex's
+// other folders, run apart from loginsMu. Its walk (appdir.CodexHomesIn)
+// reads every folder named *codex* in the home folder, and one of those
+// can sit on an answer the system is never done giving — a link to a USB
+// volume macOS keeps magpie out of, a mount gone hung: the look ran for
+// good with logins.json.lock held for it, and every gateway request stood
+// behind it (#7190). Taken, a look that finds one running keeps what the
+// last finished one read, so a look held for good holds no other look,
+// no logins.json.lock, and no request behind it.
+var otherHomesLook struct {
+	sync.Mutex
+	read    []codexHomeRead // as the last finished look read them
+	running chan struct{}   // the look running now, closed when it is done; nil for none
+}
+
+// codexHomeRead is one other Codex folder and its sign-in as the look read
+// it. The read ran apart from loginsMu with the rest of the look (#7190),
+// so only the naming and the keeping of what it read are left to do under
+// the lock.
+type codexHomeRead struct {
+	home string
+	auth []byte
+	err  error
+}
+
+// codexHomesForLook are the sign-ins of Codex's other folders, as the last
+// finished look read them, for this look of the logins to keep. None
+// running, it starts the one look at a time and waits for it, as the look
+// ran under loginsMu before (#7190); one running, it does not wait on it —
+// what a folder the system never answers for holds for good is waited on
+// once, and the looks after it go on with what the last finished look
+// read at once. That is none known, not none there is: the accounts
+// already saved are kept as they are.
+func codexHomesForLook() []codexHomeRead {
+	otherHomesLook.Lock()
+	var started chan struct{}
+	if otherHomesLook.running == nil {
+		started = make(chan struct{})
+		otherHomesLook.running = started
+		go codexHomesLookRun(started)
+	}
+	otherHomesLook.Unlock()
+	if started != nil {
+		select {
+		case <-started:
+		case <-time.After(otherHomesWait):
+			log.Printf("logins: the look for Codex's other folders runs over %v; going on with the ones the last look read", otherHomesWait)
+		}
+	}
+	otherHomesLook.Lock()
+	defer otherHomesLook.Unlock()
+	return otherHomesLook.read
+}
+
+// codexHomesLookRun is the one look: the folders read, then their
+// sign-ins, then what was read kept for the looks that follow, however
+// long this one takes.
+func codexHomesLookRun(done chan struct{}) {
+	defer close(done)
+	var read []codexHomeRead
+	for _, home := range codexOtherHomes() {
+		auth, _, err := readCodexLogin(home, false)
+		read = append(read, codexHomeRead{home: home, auth: auth, err: err})
+	}
+	otherHomesLook.Lock()
+	otherHomesLook.read = read
+	otherHomesLook.running = nil
+	otherHomesLook.Unlock()
+}
 
 // codexHomeLogins are the accounts Codex is signed in to in the user's
-// other Codex folders, each with its folder as Home: one Codex keeps
-// signed in itself, as it does the one in ~/.codex. The one ~/.codex is
-// signed in to is that one's, wherever else it is too, and an account in
-// two other folders is the first's. A folder's sign-in the user removed
-// from magpie is passed over (codexSetAside); with that record unreadable,
-// which ones were removed is unknown, and none is read this time.
-func codexHomeLogins(live savedLogin, haveLive bool) []savedLogin {
+// other Codex folders, as the look read them (codexHomesForLook), each
+// with its folder as Home: one Codex keeps signed in itself, as it does
+// the one in ~/.codex. The one ~/.codex is signed in to is that one's,
+// wherever else it is too, and an account in two other folders is the
+// first's. A folder's sign-in the user removed from magpie is passed over
+// (codexSetAside); with that record unreadable, which ones were removed is
+// unknown, and none is read this time.
+func codexHomeLogins(live savedLogin, haveLive bool, read []codexHomeRead) []savedLogin {
 	aside, err := readCodexAside()
 	if err != nil {
 		return nil
 	}
 	var out []savedLogin
-	for _, home := range codexOtherHomes() {
-		l, ok := codexLoginIn(home)
+	for _, h := range read {
+		l, ok := codexLoginRead(h.auth, h.err)
 		if !ok || haveLive && sameLogin(live, l) || slices.ContainsFunc(out, func(o savedLogin) bool { return sameLogin(o, l) }) {
 			continue
 		}
-		l.Home = home
+		l.Home = h.home
 		if codexSetAside(l, aside) {
 			continue
 		}
@@ -1057,6 +1142,13 @@ func rememberLogins(force bool) {
 	if !force && !loginsLookDue() {
 		return
 	}
+	// the look for Codex's other folders runs apart from loginsMu, which
+	// a folder the walk reads holding its answer for good held for good,
+	// and every gateway request stood behind (#7190)
+	var read []codexHomeRead
+	if !accountRemoved("codex") {
+		read = codexHomesForLook()
+	}
 	loginsMu.Lock()
 	defer loginsMu.Unlock()
 	// another ask may have looked while this one waited for the lock
@@ -1076,7 +1168,7 @@ func rememberLogins(force bool) {
 		if agent == "codex" {
 			// Codex's other folders' accounts (phantom3792 on X: only the
 			// default profile's account read a quota)
-			for _, h := range codexHomeLogins(l, ok) {
+			for _, h := range codexHomeLogins(l, ok, read) {
 				h.Seen = now
 				ls = upsertLogin(ls, h)
 				changed = true

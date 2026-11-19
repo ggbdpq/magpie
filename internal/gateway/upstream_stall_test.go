@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -203,5 +204,87 @@ func TestMCPRelayBodyStalledIsGivenUp(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), stalledWords) {
 		t.Fatalf("error = %v (ctx: %v); want one saying %q", err, ctx.Err(), stalledWords)
+	}
+}
+
+// A stalled upload's try is cancelled and the connection it was on was
+// closed whole: over HTTP/2 that connection also carried replies already
+// streaming to other requests, which died with it ("http2: client
+// connection force closed via ClientConn.Close") while the vendor never
+// even saw the end of the stalled body. The stalled try's own cancel is
+// enough to end it; the connection is retired once the try is over, when
+// it is idle if nothing else is on it, so requests stop being put on a
+// connection whose flow-control window stays shut while the streams
+// already on it finish (#7182).
+func TestStalledUploadLeavesOtherStreamsOnTheConnection(t *testing.T) {
+	was := bodyStall
+	bodyStall = 300 * time.Millisecond
+	t.Cleanup(func() { bodyStall = was })
+
+	addrs := make(chan string, 2)
+	release := make(chan struct{})
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		addrs <- r.RemoteAddr
+		if r.URL.Path == "/stream" {
+			io.WriteString(w, "first\n")
+			w.(http.Flusher).Flush()
+			select {
+			case <-release:
+				io.WriteString(w, "tail\n")
+			case <-r.Context().Done():
+			}
+			return
+		}
+		<-r.Context().Done()
+	}))
+	server.EnableHTTP2 = true
+	server.Config.HTTP2 = &http.HTTP2Config{MaxReceiveBufferPerConnection: 128 << 10, MaxReceiveBufferPerStream: 128 << 10}
+	server.StartTLS()
+	t.Cleanup(func() {
+		closeIfOpen(release)
+		server.Close()
+	})
+	client := server.Client()
+	client.Transport = stallGuard{next: client.Transport}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	get, _ := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/stream", nil)
+	stream, err := client.Do(get)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Body.Close()
+	if stream.ProtoMajor != 2 {
+		t.Fatalf("expected HTTP/2, got %s", stream.Proto)
+	}
+	br := bufio.NewReader(stream.Body)
+	first, err := br.ReadString('\n')
+	if err != nil || first != "first\n" {
+		t.Fatalf("first = %q, %v", first, err)
+	}
+	post, _ := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/upload", io.NopCloser(bytes.NewReader(make([]byte, 512<<10))))
+	upload, err := client.Do(post)
+	if upload != nil {
+		upload.Body.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), stalledWords) {
+		t.Fatalf("upload should end with %q: %v", stalledWords, err)
+	}
+	a, b := <-addrs, <-addrs
+	if a != b {
+		t.Fatalf("not multiplexed: %s versus %s", a, b)
+	}
+	close(release)
+	tail, err := br.ReadString('\n')
+	if err != nil || tail != "tail\n" {
+		t.Fatalf("the reply on the same connection died with the stalled upload: %q, %v", tail, err)
+	}
+}
+
+func closeIfOpen(ch chan struct{}) {
+	select {
+	case <-ch:
+	default:
+		close(ch)
 	}
 }

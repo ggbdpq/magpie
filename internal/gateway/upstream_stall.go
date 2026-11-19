@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -55,6 +56,11 @@ func (g stallGuard) RoundTrip(r *http.Request) (*http.Response, error) {
 	if !ok || r.GetBody == nil {
 		return res, err
 	}
+	// the cancelled try's stream is over: the connection it was on is
+	// idle now if nothing else rides it, and is retired before the retry,
+	// so requests stop being put on a connection whose flow-control
+	// window stayed shut; streams still on it are left to finish (#7182)
+	g.CloseIdleConnections()
 	// once more, on a new connection. The one just closed can still be
 	// the pool's for a moment, and a request put on it fails as closed:
 	// that is asked again, a few times, not counted as the vendor's
@@ -91,7 +97,17 @@ func (g stallGuard) try(r *http.Request) (*http.Response, error) {
 	st.onStall = func() {
 		dropOnce.Do(func() {
 			cancel(errUploadStalled{after: bodyStall})
-			st.dropConn()
+			// a connection that multiplexes carries other tries' streams:
+			// closing it whole killed the replies already streaming on it,
+			// and h2's own reset of the cancelled try's stream ends this
+			// one just as dead — the connection itself is retired once the
+			// try is over, when RoundTrip has returned and the connection
+			// is idle if nothing else rides it (#7182). A connection that
+			// carries this try alone is closed here, so nothing is put on
+			// it again.
+			if !h2Conn(st.theConn()) {
+				st.dropConn()
+			}
 			close(dropped)
 		})
 	}
@@ -175,6 +191,22 @@ func (st *stallTry) setConn(c net.Conn) {
 	st.mu.Lock()
 	st.conn = c
 	st.mu.Unlock()
+}
+
+// theConn is the connection the try rides, once the transport said which.
+func (st *stallTry) theConn() net.Conn {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.conn
+}
+
+// h2Conn says whether a connection multiplexes: a TLS one negotiated to
+// ALPN h2 carries every try's stream, so closing it whole kills the
+// replies already streaming on it (#7182). Anything else — HTTP/1.1's
+// one-request connection, or a plain one — is the stalled try's alone.
+func h2Conn(c net.Conn) bool {
+	tc, ok := c.(*tls.Conn)
+	return ok && tc.ConnectionState().NegotiatedProtocol == "h2"
 }
 
 func (st *stallTry) dropConn() {

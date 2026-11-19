@@ -147,10 +147,10 @@ func TestDesktopProbe(t *testing.T) {
 	}
 }
 
-// magpie's own cache key goes only to OpenAI's API and a provider the user
-// added by its address; a vendor's preset, a signed-in account and a
-// plugin get none. A relay that turns the field away is asked again
-// without it, once.
+// magpie's own cache key goes only to OpenAI's API, Mistral, a provider the
+// user added by its address and another magpie; a vendor's other preset, a
+// signed-in account and a plugin get none. A relay that turns the field
+// away is asked again without it, once.
 func TestOwnCacheKey(t *testing.T) {
 	for _, c := range []struct {
 		p    provider.Provider
@@ -162,6 +162,9 @@ func TestOwnCacheKey(t *testing.T) {
 		{provider.Provider{ID: "mistral-own", Chat: "https://api.mistral.ai/v1", ExtraBody: provider.ExtraBody{"prompt_cache_key": json.RawMessage(`"k"`)}}, false},
 		{provider.Provider{ID: "deepseek", Preset: "deepseek", Chat: "https://api.deepseek.com/v1"}, false},
 		{provider.Provider{ID: "codex", Account: &provider.Account{}, Responses: "https://chatgpt.com/backend-api/codex"}, false},
+		{provider.Provider{ID: "office", Preset: provider.RemoteMagpiePreset, Responses: "http://office.example:3425/v1"}, true},
+		{provider.Provider{ID: "office-own", Preset: provider.RemoteMagpiePreset, Responses: "http://office.example:3425/v1", ExtraBody: provider.ExtraBody{"prompt_cache_key": json.RawMessage(`"${sessionId}"`)}}, false},
+		{provider.Provider{ID: "office-forced", Preset: provider.RemoteMagpiePreset, Responses: "http://office.example:3425/v1", ExtraBody: provider.ExtraBody{"!prompt_cache_key": json.RawMessage(`"k"`)}}, false},
 		{provider.Provider{ID: "relay-own", Chat: "https://relay.example/v1", ExtraBody: provider.ExtraBody{"prompt_cache_key": json.RawMessage(`"${sessionId}"`)}}, false},
 		{provider.Provider{ID: "relay-forced", Chat: "https://relay.example/v1", ExtraBody: provider.ExtraBody{"!prompt_cache_key": json.RawMessage(`"k"`)}}, false},
 	} {
@@ -191,6 +194,59 @@ func TestOwnCacheKey(t *testing.T) {
 		if n, want := f.calls-calls, 2-turn; n != want {
 			t.Errorf("turn %d: %d upstream calls, want %d", turn+1, n, want)
 		}
+	}
+}
+
+// A Messages request translated to Responses for a Remote Magpie carries a
+// stable prompt_cache_key across turns, since the remote relays the built
+// Responses body without adding one of its own.
+func TestOwnCacheKeyRemoteMagpie(t *testing.T) {
+	fresh(t)
+	var keys, paths []string
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		paths = append(paths, r.URL.Path)
+		keys = append(keys, gjson.GetBytes(b, "prompt_cache_key").String())
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"+
+			"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"m1\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n\n")
+	}))
+	t.Cleanup(remote.Close)
+	p := provider.Provider{
+		ID:        "office",
+		Name:      "Office",
+		Preset:    provider.RemoteMagpiePreset,
+		Chat:      remote.URL + "/v1",
+		Responses: remote.URL + "/v1",
+		Anthropic: remote.URL,
+		Key:       "rk",
+		Models:    []string{"m1"},
+	}
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SetModelAPI("office/m1", "responses"); err != nil {
+		t.Fatal(err)
+	}
+	srv := New()
+	bodies := []string{
+		`{"model":"office/m1","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"first question"}]}`,
+		`{"model":"office/m1","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"first question"},{"role":"assistant","content":"ok"},{"role":"user","content":"second question"}]}`,
+	}
+	for i, body := range bodies {
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+		req.Header.Set("x-api-key", Token)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("turn %d: %d %s", i+1, rec.Code, rec.Body)
+		}
+	}
+	if len(paths) != 2 || paths[0] != "/v1/responses" || paths[1] != "/v1/responses" {
+		t.Fatalf("upstream paths = %q; want two /v1/responses calls", paths)
+	}
+	if len(keys) != 2 || keys[0] == "" || keys[0] != keys[1] {
+		t.Fatalf("prompt_cache_key across turns = %q; want two identical non-empty keys", keys)
 	}
 }
 

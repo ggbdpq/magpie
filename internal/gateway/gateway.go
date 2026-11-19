@@ -9115,14 +9115,14 @@ const cacheKeyField = "prompt_cache_key"
 // request without it ("prompt_cache_key is required", CyberCaius's
 // AnyRouter on Discord). Only OpenAI's own API with a key, Mistral's
 // (its prompt_cache_key keeps a conversation on the server that holds its
-// cache; daoche_wuzui on X), and a provider
-// the user added by its address, which may be such a relay: a vendor's
-// preset, a signed-in account (the ChatGPT backend gets its own, as Codex
-// CLI sends it), a plugin, Bedrock and Vertex are sent nothing they didn't
-// get before, nor is a provider whose extraBody names the field: the
-// user's value is the one sent. One whose 400 names the field is asked again without it and
-// not sent it again (forwardTranslated); another 400 is not retried for
-// it.
+// cache; daoche_wuzui on X), a provider the user added by its address,
+// and another magpie (which relays the built Responses body without
+// adding a key of its own): a vendor's other preset, a signed-in account
+// (the ChatGPT backend gets its own, as Codex CLI sends it), a plugin,
+// Bedrock and Vertex are sent nothing they didn't get before, nor is a
+// provider whose extraBody names the field: the user's value is the one
+// sent. One whose 400 names the field is asked again without it and not
+// sent it again (forwardTranslated); another 400 is not retried for it.
 func ownCacheKey(p provider.Provider) bool {
 	if p.Account != nil || p.IsPlugin() || p.IsBedrock() || p.IsVertex() {
 		return false
@@ -9133,7 +9133,7 @@ func ownCacheKey(p provider.Provider) bool {
 	if _, ok := p.ExtraBody["!"+cacheKeyField]; ok {
 		return false
 	}
-	if p.AddedByAddress() || isMistral(p) {
+	if p.AddedByAddress() || isMistral(p) || p.IsRemoteMagpie() {
 		return true
 	}
 	h := p.VendorHost()

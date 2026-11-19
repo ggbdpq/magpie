@@ -1772,7 +1772,8 @@ type AgentCompact struct {
 // window into, by the key each reads: Codex's model catalog
 // (auto_compact_token_limit), Claude Code's settings.json
 // (CLAUDE_CODE_AUTO_COMPACT_WINDOW, autoCompactWindow) and Grok Build's
-// model tables (auto_compact_threshold_percent of the model's window).
+// model tables (context_window, placed for the compaction point: released
+// Grok Build compacts at 85% of it and reads no per-model percent).
 // Only these take an AgentCompact.
 var CompactAgents = []string{"codex", "claude", "grok"}
 

@@ -101,3 +101,39 @@ func TestSkillBodyRealClaudeCode(t *testing.T) {
 		t.Fatalf("said as the user's: %q", said)
 	}
 }
+
+// A skill whose body pushes the result past Claude Code's persistence
+// line: the client saves a text result above 50,000 characters to a file
+// on its own home and hands the model a reference instead — under the
+// gateway's project and session, which a client on another computer
+// cannot read (the reporter's Bash and Read both found nothing there,
+// #7178). The body is cut to keep the result under the line, with a word
+// of what was left out; a body that fits is handed whole, as before.
+func TestSkillBodyKeepsTheResultUnderThePersistenceLine(t *testing.T) {
+	build := func(body string) ([]Part, []Message) {
+		msgs := []Message{
+			{Role: "user", Parts: []Part{{Kind: Text, Text: "run the skill"}}},
+			{Role: "assistant", Parts: []Part{{Kind: ToolCall, CallID: "c1", Name: "Skill"}}},
+			{Role: "user", Parts: []Part{
+				{Kind: ToolResult, CallID: "c1", Text: "Launching skill: big"},
+				{Kind: Text, Text: body},
+			}},
+		}
+		return msgs[2].Parts[:1], msgs
+	}
+	long := "Base directory for this skill: /home/u/.claude/skills/big\n\n" + strings.Repeat("x", 80_000)
+	results, msgs := build(long)
+	got := withSkillBodies(results, msgs)
+	if len(got[0].Text) > 50_000 {
+		t.Fatalf("a %d-byte result: it will be saved to the client's home, where the reference reads nothing", len(got[0].Text))
+	}
+	if !strings.Contains(got[0].Text, "left out") {
+		t.Fatalf("the cut was not said: %q", got[0].Text[len(got[0].Text)-200:])
+	}
+	short := "Base directory for this skill: /home/u/.claude/skills/small\n\nUse it well."
+	results, msgs = build(short)
+	got = withSkillBodies(results, msgs)
+	if !strings.HasSuffix(got[0].Text, "Use it well.") {
+		t.Fatalf("a body that fits was cut: %q", got[0].Text)
+	}
+}

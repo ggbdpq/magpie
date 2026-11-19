@@ -285,7 +285,11 @@ func TestPluginFailover(t *testing.T) {
 		}
 	}
 	reset(map[string]string{"a": "quota", "b": "quota"})
-	if code, body, seen := ask("fakeco/fake-claude"); code != 200 || !strings.Contains(body, "claude from full") || strings.Join(seen, " ") != "a b full" {
+	// a was left lapsed by the gone round above (its refresh renewed and
+	// it was refused again): routing asks the healthy ones first (#7186),
+	// so the quota round now runs b and then full, a no longer tried on
+	// the way
+	if code, body, seen := ask("fakeco/fake-claude"); code != 200 || !strings.Contains(body, "claude from full") || strings.Join(seen, " ") != "b full" {
 		t.Fatalf("fake-claude with the others out: %d %s (tried %v)", code, body, seen)
 	}
 	reset(map[string]string{})
@@ -305,8 +309,10 @@ func TestPluginFailover(t *testing.T) {
 		t.Fatalf("the group's first member: %d %s (tried %v, other %v)", code, body, seen, other.tried)
 	}
 	reset(map[string]string{"a": "quota", "b": "stream", "full": "quota"})
+	// a is still lapsed from the gone round, so the group's first member
+	// is asked for b and full alone before ko takes it (#7186)
 	code, body, seen := ask("group/mixed")
-	if code != 200 || !strings.Contains(body, "from ko") || len(seen) != 3 {
+	if code != 200 || !strings.Contains(body, "from ko") || len(seen) != 2 {
 		t.Fatalf("with the plugin's accounts out: %d %s (tried %v, other %v)", code, body, seen, other.tried)
 	}
 }

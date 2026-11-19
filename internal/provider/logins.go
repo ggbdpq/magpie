@@ -257,6 +257,23 @@ func readLogins() []savedLogin {
 // loginsCopied counts readLogins' copies, for a test.
 var loginsCopied atomic.Int64
 
+// lapsedUsers are the accounts a vendor refused to refresh (Lapsed), by
+// the user each is signed in as: routing asks the healthy ones first and
+// these only when there are none left, for tried in their places their
+// 401 came back as the conversation's own while the providers the agent
+// asked were never tried (#7186).
+func lapsedUsers() map[string]bool {
+	loginsMu.Lock()
+	defer loginsMu.Unlock()
+	out := map[string]bool{}
+	for _, l := range sharedLogins() {
+		if l.Lapsed != "" {
+			out[strings.ToLower(l.User)] = true
+		}
+	}
+	return out
+}
+
 // sharedLogins is readLogins without the caller's own copy: the accounts
 // as kept, read only. A page's state lists a dozen agents' accounts, and
 // a copy of the whole list for each was 61 MB of what twenty window polls

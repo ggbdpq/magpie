@@ -81,6 +81,30 @@ func (p Provider) AccountsFor(model string, held func(AccountOn) bool) (out, lef
 			return true
 		})
 	}
+	// an account whose sign-in the vendor refused (Lapsed) is asked after
+	// the healthy ones, not in its rank: tried in its place, its 401 came
+	// back as the conversation's own while the providers the agent asked
+	// were never tried — three Codex conversations, 105 requests, all on
+	// one dead WorkBuddy account in seven minutes (#7186). With no
+	// healthy account left they are asked as before, in their places:
+	// the refusal they answer is all there is to say.
+	// a built-in's refused account keeps its rank: its auth failure is
+	// told as failAuth and the next account is asked at once, with no
+	// rest and no login run again — a shape its own tests lock. A
+	// plugin's is the one a stand-in conversation died on (#7186).
+	if lapsed := lapsedUsers(); p.IsPlugin() && len(lapsed) > 0 {
+		var kept, resting []AccountOn
+		for _, a := range all {
+			if lapsed[strings.ToLower(a.Account.User)] {
+				resting = append(resting, a)
+			} else {
+				kept = append(kept, a)
+			}
+		}
+		if len(kept) > 0 && len(resting) > 0 {
+			all, left = kept, append(left, resting...)
+		}
+	}
 	own := p.OwnModelID(model)
 	var lacking []AccountOn
 	for _, a := range all {

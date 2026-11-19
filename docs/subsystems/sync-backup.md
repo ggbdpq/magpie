@@ -229,7 +229,9 @@ it does, and take it back.
   before any write, here or on the server. A part's plan says `in`, `up`,
   `same` or `off`, whether it replaces a change made here (`replaces`), and
   its items added, removed or changed; memory, sign-ins and plugins removed
-  by another computer are counted. `Plan.Token` hashes what the sync would
+  by another computer are counted. The JSON `parts` field is always an array,
+  including `[]` when the unchanged-file shortcut has no part decisions
+  (`TestPreviewUnchangedPartsArray`, #7078). `Plan.Token` hashes what the sync would
   do; `SyncPreviewed(token)` runs only while a new plan has the same token,
   else `ErrPlanChanged` and the GUI shows the new plan. A preview from the
   form (`PreviewWith`) is of the unsaved setup, and its Save and sync is

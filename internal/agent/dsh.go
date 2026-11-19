@@ -1377,6 +1377,44 @@ func dshStashKey(path, id string) string { return "dsh:" + path + ":" + id }
 // it would leave whichever read first as its content.
 var dshWrites sync.Mutex
 
+// dshJustWritten is how recently a patch list may have been touched for the
+// read a fresh generation is written from to be taken again: a list written
+// moments ago may still be under its writer's hand.
+var dshJustWritten = 2 * time.Second
+
+// dshSettle is the beat such a read is taken again after, long enough for
+// the writer's swap to have landed.
+var dshSettle = 400 * time.Millisecond
+
+// dshSettled is a read a fresh generation cannot be written blind from: a
+// list that reads as no entries — or as missing at all — right after the
+// file was touched is not dsh's own settled empty. An atomic writer
+// (exclusive temp, then rename) hides the file for the instant its swap
+// happens: a read landing there parses to nothing while the user's list
+// was whole moments before (#5782, stevenpisces: 57 entries became 2), and
+// a fresh generation written from that nothing would fix the nothing as
+// the list — head plus magpie's entries alone. The read is taken again
+// after a beat, and what is written comes from the settled read; a
+// still-empty one is dsh's own and written as it is.
+func dshSettledRead(path string, head []string, items []dshItem) ([]string, []dshItem, error) {
+	if len(items) != 0 {
+		return head, items, nil
+	}
+	st, err := os.Stat(path)
+	if err == nil && time.Since(st.ModTime()) >= dshJustWritten {
+		return head, items, nil
+	}
+	time.Sleep(dshSettle)
+	h, i, err := dshRead(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(i) != 0 {
+		return h, i, nil
+	}
+	return head, items, nil
+}
+
 // dshSet writes v as the model new sessions start on: a catalog model
 // through the gateway, one of dsh's own models directly, or "" for dsh's own
 // default. Every profile gets it; config.yaml only where there are none.
@@ -1783,6 +1821,9 @@ func dshSetFile(path, v string, modern bool, models []catalog.Model, gw string) 
 	if err != nil {
 		return err
 	}
+	if head, items, err = dshSettledRead(path, head, items); err != nil {
+		return err
+	}
 	ref, viaGateway := strings.CutPrefix(v, magpieID+"/")
 	effort := ""
 	if modern {
@@ -1859,6 +1900,11 @@ func dshSetFile(path, v string, modern bool, models []catalog.Model, gw string) 
 		drop("api-gateway")
 		drop("llm-deepseek")
 		put("agent-loop", dshLoopLines(v))
+	}
+	// the model-set path wrote silently; one line here would have found
+	// #5782's loss in minutes (stevenpisces)
+	if v != "" {
+		log.Printf("wrote dsh's route in %s", path)
 	}
 	return dshWrite(path, head, items)
 }
@@ -3097,6 +3143,9 @@ func dshFillNewProfiles(files []string, models []catalog.Model, gw string) error
 		if err != nil {
 			continue
 		}
+		if head, items, err = dshSettledRead(f, head, items); err != nil {
+			continue
+		}
 		if i := dshFind(items, "agent-default-model"); model != "" && (i < 0 || dshOurs(items[i])) {
 			if err := dshSetFile(f, magpieID+"/"+model, true, models, gw); err != nil {
 				return err
@@ -3378,6 +3427,9 @@ func dshSetEffort(dir, v, gw, lead string) error {
 		for _, f := range files {
 			head, items, err := dshRead(f)
 			if err != nil {
+				continue
+			}
+			if head, items, err = dshSettledRead(f, head, items); err != nil {
 				continue
 			}
 			// each profile keeps the model it starts on

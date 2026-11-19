@@ -221,6 +221,81 @@ func TestLoginsReadAfreshUnderLock(t *testing.T) {
 	}
 }
 
+// The look for Codex's other folders ran with logins.json.lock held for
+// it, and one folder of the many the walk reads can sit on an answer the
+// system is never done giving — a link to a USB volume macOS keeps magpie
+// out of: the look never came back, the lock never came off, and every
+// gateway request stood behind it (xixilys, #7190). The look runs apart
+// from the lock, a look while one is held for good does not stand behind
+// it, and the accounts already saved are kept as they are.
+func TestLoginsLookRunsApart(t *testing.T) {
+	home := signIn(t)
+	t.Setenv("CODEX_HOME", "")
+	codexSignIn(t, home, "me@example.com", "r-me")
+	work := filepath.Join(home, ".codex-work")
+	exp := float64(time.Now().Add(time.Hour).Unix())
+	writeFile(t, filepath.Join(work, "auth.json"), map[string]any{
+		"auth_mode": "chatgpt",
+		"tokens": map[string]any{
+			"id_token":      fakeJWT(map[string]any{"email": "pro@example.com", "https://api.openai.com/auth": map[string]any{"chatgpt_plan_type": "pro", "chatgpt_account_id": "acct-pro"}}),
+			"access_token":  fakeJWT(map[string]any{"exp": exp}),
+			"refresh_token": "r-pro", "account_id": "acct-pro",
+		},
+	})
+	rememberLogins(true)
+	if b, _ := os.ReadFile(loginsPath()); !bytes.Contains(b, []byte("pro@example.com")) {
+		t.Fatalf("the other folder's account isn't saved: %s", b)
+	}
+
+	// a folder of the walk the system never answers for: the look runs
+	// for good
+	scanning := make(chan struct{})
+	release := make(chan struct{})
+	realHomes := codexOtherHomes
+	codexOtherHomes = func() []string {
+		close(scanning)
+		<-release
+		return nil // what a look held for good has read: none known, not empty
+	}
+	t.Cleanup(func() {
+		codexOtherHomes = realHomes
+		select {
+		case <-release: // let go already
+		default:
+			close(release)
+		}
+	})
+
+	looked := make(chan struct{})
+	go func() { rememberLogins(true); close(looked) }()
+	<-scanning // the look is in the folders now
+
+	// logins.json.lock is not held for it: a gateway request takes it now
+	locked := make(chan struct{})
+	go func() { loginsMu.Lock(); loginsMu.Unlock(); close(locked) }()
+	select {
+	case <-locked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("logins.json.lock stands while the look for Codex's other folders runs")
+	}
+
+	// and a look while that one is held for good does not stand behind it
+	rememberLogins(true)
+
+	// the accounts already saved are kept as they are
+	if b, _ := os.ReadFile(loginsPath()); !bytes.Contains(b, []byte("pro@example.com")) || !bytes.Contains(b, []byte("r-me")) {
+		t.Fatalf("a look held for good lost the accounts saved:\n%s", b)
+	}
+
+	// let the held-for-good look end; it has none known, and what is
+	// saved is still kept
+	close(release)
+	<-looked
+	if b, _ := os.ReadFile(loginsPath()); !bytes.Contains(b, []byte("pro@example.com")) || !bytes.Contains(b, []byte("r-me")) {
+		t.Fatalf("the held-for-good look's end lost the accounts saved:\n%s", b)
+	}
+}
+
 // Writing logins.json only to move when the accounts were last seen
 // builds no catalog anew: an idle magpie did each seenEvery, and dsh's
 // round alone built ~42 MB of models again for it. A change besides the

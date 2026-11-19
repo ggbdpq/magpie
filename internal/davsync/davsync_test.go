@@ -45,8 +45,14 @@ type fakeDAV struct {
 	tooMany                     bool
 	retryAfter                  string
 	mtimes                      map[string]time.Time
-	// gets are the reads, full those answered with the file, of bytes
-	// bytes in all, and notModified those answered 304
+	// weak: an Apache mod_dav whose GET lands in the same second as the
+	// file's mtime — its ETag is weak (W/"…"), its If-None-Match compares
+	// weakly, and its If-Match never matches a weak one (RFC 9110
+	// §13.1.1): the validator a weak read leaves can never write again
+	// (#7218). weakIfMatch and weakIfNoneMatch count the weak validators
+	// a request sent, for the test to say none did.
+	weak                           bool
+	weakIfMatch, weakIfNoneMatch   int
 	gets, full, bytes, notModified int
 }
 
@@ -85,8 +91,15 @@ func (f *fakeDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else {
-			w.Header().Set("ETag", f.etags[r.URL.Path])
-			if f.cond && r.Header.Get("If-None-Match") == f.etags[r.URL.Path] {
+			etag := f.etags[r.URL.Path]
+			if f.weak {
+				etag = `W/` + etag
+			}
+			w.Header().Set("ETag", etag)
+			if f.cond && (r.Header.Get("If-None-Match") == etag || f.weak && r.Header.Get("If-None-Match") == f.etags[r.URL.Path]) {
+				if f.weak && strings.HasPrefix(r.Header.Get("If-None-Match"), "W/") {
+					f.weakIfNoneMatch++
+				}
 				f.notModified++
 				w.WriteHeader(http.StatusNotModified)
 				return
@@ -100,7 +113,10 @@ func (f *fakeDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusConflict)
 			return
 		}
-		if m := r.Header.Get("If-Match"); m != "" && m != f.etags[r.URL.Path] {
+		if m := r.Header.Get("If-Match"); m != "" && (f.weak && strings.HasPrefix(m, "W/") || m != f.etags[r.URL.Path]) {
+			if f.weak && strings.HasPrefix(m, "W/") {
+				f.weakIfMatch++
+			}
 			w.WriteHeader(http.StatusPreconditionFailed)
 			return
 		}
@@ -114,7 +130,11 @@ func (f *fakeDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// long before now, and a second later for each write
 		f.mtimes[r.URL.Path] = time.Date(2026, 1, 1, 0, 0, f.n, 0, time.UTC)
 		if f.putETag && !f.lastModified {
-			w.Header().Set("ETag", f.etags[r.URL.Path])
+			e := f.etags[r.URL.Path]
+			if f.weak {
+				e = `W/` + e
+			}
+			w.Header().Set("ETag", e)
 		}
 		w.WriteHeader(http.StatusCreated)
 	case "MKCOL":

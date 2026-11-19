@@ -66,10 +66,26 @@ func (v version) conditions() map[string]string {
 	return nil
 }
 
+// strongOf is an ETag fit for an If-Match: a weak one (W/"…") never
+// matches it, so it reads as none and the write goes unconditioned once,
+// the next read past the mtime's second bringing a strong one back
+// (#7218).
+func strongOf(e string) string {
+	if strings.HasPrefix(e, "W/") {
+		return ""
+	}
+	return e
+}
+
 // versionOf is the version an answer's headers tell; none when they tell
-// nothing that can be asked about again.
+// nothing that can be asked about again. A weak ETag is none: it never
+// matches an If-Match (RFC 9110 §13.1.1 is strong comparison), so a write
+// over it was refused 412 for good, and the retry's If-None-Match, which
+// compares weakly, read 304 and kept the same dead validator in the state
+// forever — Apache's ap_make_etag says W/"…" for a read in the same
+// second as the file's mtime, uncompressed as this asks it (#1362, #7218).
 func versionOf(h http.Header) version {
-	if e := h.Get("ETag"); e != "" {
+	if e := strongOf(h.Get("ETag")); e != "" {
 		return version{ETag: e}
 	}
 	lm := h.Get("Last-Modified")
@@ -364,7 +380,7 @@ func (d *dav) get(ctx context.Context, have version) (data []byte, v version, er
 // compared; a short write is tried again and told as itself in the end.
 func (d *dav) put(ctx context.Context, data []byte, etag string) (version, error) {
 	h := map[string]string{"Content-Type": "application/octet-stream"}
-	if etag != "" {
+	if etag = strongOf(etag); etag != "" {
 		h["If-Match"] = etag
 	}
 	for try, writes := 0, 0; ; try++ {
@@ -383,9 +399,9 @@ func (d *dav) put(ctx context.Context, data []byte, etag string) (version, error
 					// it — the ETag the PUT answered, else the one the
 					// check read; with neither, the old one goes, for it
 					// can't hold any more
-					if e := res.Header.Get("ETag"); e != "" {
+					if e := strongOf(res.Header.Get("ETag")); e != "" {
 						h["If-Match"] = e
-					} else if he != "" {
+					} else if he = strongOf(he); he != "" {
 						h["If-Match"] = he
 					} else {
 						delete(h, "If-Match")
@@ -398,7 +414,7 @@ func (d *dav) put(ctx context.Context, data []byte, etag string) (version, error
 			// next sync reads the file in full, as before. noCondRead
 			// rides along: it is the server's, not the version's, and the
 			// write's version is the one the next sync reads with
-			return version{ETag: res.Header.Get("ETag"), NoCondRead: d.noCondRead}, nil
+			return version{ETag: strongOf(res.Header.Get("ETag")), NoCondRead: d.noCondRead}, nil
 		case res.StatusCode == http.StatusPreconditionFailed:
 			return version{}, errChanged
 		case res.StatusCode == http.StatusForbidden && (try > 0 || d.there(ctx, d.url(folder)+"/")):

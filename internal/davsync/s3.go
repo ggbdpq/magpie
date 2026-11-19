@@ -254,7 +254,7 @@ func (s *s3) put(ctx context.Context, data []byte, etag string) (version, error)
 	where := s.endpoint.String() + " " + s.bucket
 	if _, no := unconditional.Load(where); !no {
 		h := map[string]string{"Content-Type": "application/octet-stream"}
-		if etag != "" {
+		if etag = strongOf(etag); etag != "" {
 			h["If-Match"] = etag
 		} else {
 			h["If-None-Match"] = "*"
@@ -265,7 +265,7 @@ func (s *s3) put(ctx context.Context, data []byte, etag string) (version, error)
 		}
 		defer res.Body.Close()
 		if res.StatusCode >= 200 && res.StatusCode < 300 {
-			return version{ETag: res.Header.Get("ETag")}, nil
+			return version{ETag: strongOf(res.Header.Get("ETag"))}, nil
 		}
 		e := readError(res)
 		switch {

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
@@ -1059,5 +1060,54 @@ func TestVertexExpressStreams(t *testing.T) {
 	}
 	if n := v.minted(); n != 0 {
 		t.Fatalf("%d Google tokens minted for a key", n)
+	}
+}
+
+// A Vertex reply that ends with a finishReason and nothing said — a role
+// only candidate, no candidate at all, a zero usage — fails as the empty
+// reply, asked again in place and once more as the last one left (#667).
+// It is not a failure a moment may mend, as an overload the patience waits
+// out is (#1418): the same silence comes however often the account is
+// asked, and waited out as an overload the one account was asked
+// twenty-eight times for the one turn, a 120,000-token prompt resent
+// across a minute of pauses before the 502 (#6978, Anonymousnake:
+// delays of 1, 2, 4, 8 and 16s, six tries, no usage recorded).
+func TestVertexEmptyReplyIsNotWaitedOut(t *testing.T) {
+	for what, reply := range map[string]string{
+		"role-only candidate, STOP": `{"candidates":[{"content":{"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":120352,"candidatesTokenCount":0,"thoughtsTokenCount":0,"trafficType":"ON_DEMAND"}}`,
+		"no candidates, usage only": `{"usageMetadata":{"promptTokenCount":120352,"candidatesTokenCount":0,"trafficType":"ON_DEMAND"}}`,
+		"usage all zero":            `{"candidates":[{"content":{"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":0,"candidatesTokenCount":0}}`,
+	} {
+		t.Run(what, func(t *testing.T) {
+			v := &vertexUp{reply: func(n int, body map[string]any) (int, string) {
+				return http.StatusOK, "data: " + reply + "\r\n\r\n"
+			}}
+			s := vertexServe(t, v, `{"google":{"models":{
+				"gemini-4-hydrogen":{"id":"gemini-4-hydrogen","reasoning_options":[{"type":"effort","values":["low","medium","high","xhigh"]}]}}}}`)
+			pause := retryPause
+			retryPause = time.Millisecond
+			t.Cleanup(func() { retryPause = pause })
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/responses", strings.NewReader(
+				`{"model":"google-vertex/gemini-4-hydrogen","stream":true,"reasoning":{"effort":"xhigh"},"input":"hi"}`)))
+			if !strings.Contains(rec.Body.String(), "an empty reply") {
+				t.Errorf("%s: not the empty reply's error: %d %.300s", what, rec.Code, rec.Body.String())
+			}
+			// the empty budget: one in-place re-ask while the stream is held,
+			// then the last one left's once more (passing) — two asks a pass,
+			// two passes; the patience's rounds add none
+			if n := v.count(); n != 4 {
+				t.Errorf("%s: the silent account was asked %d times, not 4", what, n)
+			}
+			r := lastRoute(s)
+			if len(r.Tries) != 2 {
+				t.Errorf("%s: %d tries, not 2: %+v", what, len(r.Tries), r.Tries)
+			}
+			for i, try := range r.Tries {
+				if try.Rest != nil {
+					t.Errorf("%s: try %d rested for a silence: %+v", what, i, try.Rest)
+				}
+			}
+		})
 	}
 }

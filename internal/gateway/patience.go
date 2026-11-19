@@ -63,15 +63,21 @@ type busyTry struct {
 // plan's or the money's, nor an account's token wall (walled). A proxy
 // that refused the connection, a quota used up, response protection's
 // 502, a void cut at its length (cutVoidWords, #2972), an upstream
-// that answered a stream request with a whole reply (didNotStream), or
-// the Qoder plugin's queue answer (queued) isn't: each fails the same
-// however often it is asked.
+// that answered a stream request with a whole reply (didNotStream), the
+// Qoder plugin's queue answer (queued), or a reply that said nothing
+// (emptyReply, #6978, Anonymousnake: a Vertex account whose model ended
+// with a finishReason and no parts was asked again in place and once
+// more as the last one left, then waited out through the patience's
+// rounds like an overload — twenty-eight asks of the same 120,000-token
+// prompt across a minute of pauses before the 502) isn't: each fails the
+// same however often it is asked.
 func busy(status int, body []byte) bool {
 	switch {
 	case busyStatus(status):
 		return failure(status, body) == failOther && !protectionRefused(status, body) &&
 			!bodyHas(body, didNotStream) &&
 			!bodyHas(body, cutVoidWords) &&
+			!bodyHas(body, emptyReply) &&
 			!queued(body)
 	case status == 429:
 		return failure(status, body) == failRate && !creditWords.Match(wordsOf(body)) && !walled(body)

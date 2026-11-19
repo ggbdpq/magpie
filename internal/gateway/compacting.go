@@ -1,6 +1,9 @@
 package gateway
 
-import "strings"
+import (
+	"context"
+	"strings"
+)
 
 // An agent compacting its conversation asks a model to summarize it, with
 // a prompt of its own in the system prompt or as the last user message; a
@@ -10,6 +13,22 @@ import "strings"
 // KindCompact is the Kind of a call an agent made to compact its
 // conversation (usage's "Compaction" purpose).
 const KindCompact = "compact"
+
+// compactionKey carries the request's own compaction verdict from serve to
+// the tries: a plugin provider's fetch is told it in CompactionHeader, so
+// a bridge can keep the summarization turn out of its live tool validation
+// (#7189). Nothing but serve sets it, so a client's X-Magpie-Compaction of
+// its own is never the gateway's word.
+type compactionKey struct{}
+
+func withCompactionMark(ctx context.Context) context.Context {
+	return context.WithValue(ctx, compactionKey{}, true)
+}
+
+func hasCompactionMark(ctx context.Context) bool {
+	v, _ := ctx.Value(compactionKey{}).(bool)
+	return v
+}
 
 // compactLead is how far into the system prompt, or into a text part of the
 // last user message, an agent's compaction prompt may begin. Each agent puts

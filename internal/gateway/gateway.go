@@ -2790,6 +2790,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	if call.Kind == "" {
 		call.Kind = inferredKind(r.Header, from, body)
 	}
+	// a compaction the gateway classified itself goes to a plugin
+	// provider's fetch as CompactionHeader: a bridge that replays history
+	// through its live tool validation dies on the replayed results as a
+	// 409 the client retries (#7189). The try carries the verdict in its
+	// context; a client's X-Magpie-Compaction of its own is never it.
+	if call.Kind == KindCompact {
+		r = r.WithContext(withCompactionMark(r.Context()))
+	}
 	// the reply counted as it reaches the agent, for the Routing page
 	// while it is out (#4951); learned from once it ends
 	capture.live = liveBegin(inflightOf(r.Context()), call.Model, from)
@@ -6842,6 +6850,12 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 		req.Header.Del(provider.FallbackHeader)
 		if hasFallback(ctx) {
 			req.Header.Set(provider.FallbackHeader, "1")
+		}
+		// the gateway's own compaction verdict, for a bridge that keeps
+		// its summarization turn out of live tool validation (#7189)
+		req.Header.Del(provider.CompactionHeader)
+		if hasCompactionMark(ctx) {
+			req.Header.Set(provider.CompactionHeader, "1")
 		}
 	}
 	if p.IsRemoteMagpie() {

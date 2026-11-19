@@ -55,6 +55,15 @@ const (
 // (host.js), as it does the two above.
 const FallbackHeader = "X-Magpie-Fallback"
 
+// CompactionHeader, "1", tells a plugin's fetch that the gateway itself
+// classified the request as an agent's compaction: the plugin can keep the
+// summarization turn out of its live tool validation, where Claude Code's
+// replayed history dies as a 409 it retries (#7189). The mark is the
+// gateway's own verdict, set on the try that goes to a plugin provider;
+// the plugin host takes it off whatever the plugin sends on (host.js), as
+// it does the above.
+const CompactionHeader = "X-Magpie-Compaction"
+
 // WaitHeader tells a magpie's gateway how many seconds its client waits
 // for the answer: a model test asking a remote magpie sends its own wait,
 // and the gateway takes no retry pause or patience round that would end

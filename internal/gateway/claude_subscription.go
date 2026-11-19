@@ -6434,6 +6434,15 @@ var skillBody = lazyre.New(`^Base directory for this skill: `)
 // as a text block after the results; since #5403 that text counts as the
 // agent's (desktopNote), not the user's, and was handed to no one, so the
 // run's model loaded a skill and never saw what it says.
+// clientResultLine is where Claude Code stops reading a tool result and
+// saves it to a file on its own home instead, handing the model a
+// reference — under the gateway's project and session, which a client on
+// another computer cannot read (#7178). A skill's body is cut to keep
+// the result it rides under this.
+const clientResultLine = 50_000
+
+const skillBodyCut = "\n\n(the rest of the skill's body was left out: a result this long would be saved to a file the client cannot read)"
+
 func withSkillBodies(results []Part, msgs []Message) []Part {
 	if len(results) == 0 {
 		return results
@@ -6481,6 +6490,15 @@ func withSkillBodies(results []Part, msgs []Message) []Part {
 				}
 				if k < 0 {
 					k = len(out) - 1
+				}
+				if room := clientResultLine - len(out[k].Text) - len(skillBodyCut) - 2; len(body) > room {
+					if room < 0 {
+						room = 0
+					}
+					for room > 0 && !utf8.RuneStart(body[room]) {
+						room--
+					}
+					body = body[:room] + skillBodyCut
 				}
 				if out[k].Text != "" {
 					out[k].Text += "\n\n"

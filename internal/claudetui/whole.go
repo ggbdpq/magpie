@@ -30,22 +30,28 @@ const wholeWait = 2 * time.Second
 
 // words reads a message's words one space apart, as Claude Code keeps what
 // is pasted whatever it trims, wraps, numbers or takes out: a run of white
-// space, a paste tag or an image mark is a space, none at the ends, and a
-// character that shows nothing (unseen) is nothing. It reads in place, so
-// two messages are compared without a copy of either.
+// space, an image mark or, in Claude Code's record (own), a paste tag is a
+// space, none at the ends, and a character that shows nothing (unseen) is
+// nothing. It reads in place, so two messages are compared without a copy
+// of either.
 type words struct {
 	s     string
 	i     int
 	began bool // a letter was read
 	space bool // a space comes before the next letter
+	own   bool // Claude Code's record, whose paste tags are its own
+	tags  int  // the paste tags read that open a paste, when own
 }
 
 // next is the next rune, ' ' for a space, -1 at the end.
 func (w *words) next() rune {
 	for w.i < len(w.s) {
 		c := w.s[w.i]
-		if c == '<' || c == '[' {
+		if c == '<' && w.own || c == '[' {
 			if n := markAt(w.s[w.i:]); n > 0 {
+				if c == '<' && w.s[w.i+1] != '/' {
+					w.tags++
+				}
 				w.i += n
 				w.space = w.began
 				continue
@@ -78,6 +84,15 @@ func (w *words) next() rune {
 		return r
 	}
 	return -1
+}
+
+// at is where in w.s the rune r next just read begins: a space's is where
+// the letter after it does, the end's len(w.s).
+func (w *words) at(r rune) int {
+	if r <= ' ' {
+		return w.i
+	}
+	return w.i - utf8.RuneLen(r)
 }
 
 // unseen is a character that shows nothing: a control or format
@@ -120,45 +135,49 @@ func markAt(s string) int {
 func isDigit(c byte) bool { return '0' <= c && c <= '9' }
 func isWord(c byte) bool  { return isDigit(c) || c == '_' || 'a' <= c|0x20 && c|0x20 <= 'z' }
 
-// sameWords is whether a and b have the same words, read as words reads
-// them; it stops at the first that differs.
-func sameWords(a, b string) bool {
-	x, y := words{s: a}, words{s: b}
+// sameWordsBut is whether b, Claude Code's record of the message a, has
+// a's words, read as words reads them, with any of taken, each once, left
+// out of a where b doesn't hold it: an image file's path Claude Code took
+// as the image (imageSources). n is how many were left out, tags how many
+// pastes b's own tags open, and at where a and b first differ.
+func sameWordsBut(a, b string, taken []string) (same bool, n, tags int, at differs) {
+	used := make([]bool, len(taken))
+	x, y := words{s: a}, words{s: b, own: true}
 	for {
-		r := x.next()
-		if r != y.next() {
-			return false
+		if len(taken) > 0 {
+			if end := takenAt(x, y, taken, used); end > 0 {
+				x.i, x.space = end, x.began
+				n++
+				continue
+			}
+		}
+		r, q := x.next(), y.next()
+		if r != q {
+			return false, n, y.tags, differs{x.at(r), y.at(q), r, q}
 		}
 		if r < 0 {
-			return true
+			return true, n, y.tags, differs{}
 		}
 	}
 }
 
-// sameWordsBut is sameWords with any of taken, each once, left out of a
-// where b doesn't hold it: an image file's path Claude Code took as the
-// image, as it says in a row after the message's (imageSources). n is
-// how many were left out. With none taken it is sameWords, no copy made.
-func sameWordsBut(a, b string, taken []string) (same bool, n int) {
-	if len(taken) == 0 {
-		return sameWords(a, b), 0
+// differs is where a message and its record first differ: the byte of
+// each, and the character there, -1 for the end.
+type differs struct {
+	sent, got int
+	was, is   rune
+}
+
+// String names the place by bytes and code points, none of the words.
+func (d differs) String() string {
+	return fmt.Sprintf("%s at byte %d was recorded as %s at %d", runeName(d.was), d.sent, runeName(d.is), d.got)
+}
+
+func runeName(r rune) string {
+	if r < 0 {
+		return "the end"
 	}
-	used := make([]bool, len(taken))
-	x, y := words{s: a}, words{s: b}
-	for {
-		if end := takenAt(x, y, taken, used); end > 0 {
-			x.i, x.space = end, x.began
-			n++
-			continue
-		}
-		r := x.next()
-		if r != y.next() {
-			return false, n
-		}
-		if r < 0 {
-			return true, n
-		}
-	}
+	return fmt.Sprintf("%U", r)
 }
 
 // takenAt is where in x's words one of taken not yet used ends, quoted or
@@ -206,9 +225,10 @@ func sameUpTo(x, y words, stop int) bool {
 	return true
 }
 
-// letters counts s's characters as words reads them, its spaces aside.
-func letters(s string) int {
-	w, n := words{s: s}, 0
+// letters counts s's characters as words reads them, its spaces aside;
+// own is for Claude Code's record.
+func letters(s string, own bool) int {
+	w, n := words{s: s, own: own}, 0
 	for r := w.next(); r >= 0; r = w.next() {
 		if r != ' ' {
 			n++
@@ -220,16 +240,22 @@ func letters(s string) int {
 // messageCut is a message Claude Code recorded otherwise than it was
 // pasted: got and sent count its characters, white space aside, and
 // gotImages and sentImages its images when its words were whole.
-type messageCut struct{ got, sent, gotImages, sentImages int }
+type messageCut struct {
+	got, sent, gotImages, sentImages int
+	pastes, pieces                   int     // pastes its tags open, of pieces pasted
+	at                               differs // where its words first differ
+}
 
 func (e *messageCut) Error() string {
 	switch {
 	case e.gotImages < e.sentImages:
 		return fmt.Sprintf("Claude Code recorded %d of the message's %d images%s", e.gotImages, e.sentImages, cutHint())
+	case e.pastes > e.pieces:
+		return fmt.Sprintf("Claude Code took the message as %d pastes, of %d pasted%s", e.pastes, e.pieces, cutHint())
 	case e.got < e.sent:
 		return fmt.Sprintf("Claude Code recorded %d of the message's %d characters%s", e.got, e.sent, cutHint())
 	}
-	return "Claude Code recorded the message otherwise than it was pasted" + cutHint()
+	return e.at.String() + cutHint()
 }
 
 // heardRow is what the transcript recorded of a message: its words, and
@@ -241,23 +267,31 @@ type heardRow struct {
 }
 
 // wholeIn is nil when one of the messages the transcript recorded since one
-// was sent (said) has the words pasted (sent) and its images, or when it
-// recorded none it could read. Claude Code takes a pasted image file's
-// path as the image, by rules of its own, and says which it took (taken):
-// those are left out of the words, and their images out of the count.
-func wholeIn(sent string, images int, said []heardRow, taken []string) error {
+// was sent (said) has the words pasted (sent), in no more pastes than its
+// pieces, and its images, or when it recorded none it could read. Claude
+// Code takes a pasted image file's path as the image, by rules of its own,
+// and says which it took (taken): those are left out of the words, and
+// their images out of the count.
+func wholeIn(sent string, images, pieces int, said []heardRow, taken []string) error {
 	if len(said) == 0 {
 		return nil
 	}
 	got, gotImages, whole, unexplained := 0, images, false, false
+	pastes, at := 0, differs{}
 	for _, h := range said {
 		if extra := h.images - images; extra > 0 && pathsIn(sent, taken) < extra {
 			unexplained = true
 			continue
 		}
-		same, n := sameWordsBut(sent, h.words, taken)
+		same, n, tags, d := sameWordsBut(sent, h.words, taken)
 		if !same {
-			got = max(got, letters(h.words))
+			if l := letters(h.words, true); l >= got {
+				got, at = l, d
+			}
+			continue
+		}
+		if tags > pieces {
+			pastes = max(pastes, tags)
 			continue
 		}
 		if h.images < 0 || h.images-n >= images {
@@ -268,8 +302,8 @@ func wholeIn(sent string, images int, said []heardRow, taken []string) error {
 	if unexplained {
 		return errUnexplained
 	}
-	cut := &messageCut{got: got, sent: letters(sent), gotImages: gotImages, sentImages: images}
-	if whole {
+	cut := &messageCut{got: got, sent: letters(sent, false), gotImages: gotImages, sentImages: images, pastes: pastes, pieces: pieces, at: at}
+	if whole || pastes > pieces {
 		cut.got = cut.sent
 	}
 	return cut
@@ -294,14 +328,14 @@ func pathsIn(sent string, taken []string) int {
 
 // checkWhole is wholeIn for a message just sent, given wholeWait for the
 // row that is its, and for what Claude Code says it took as images.
-func (s *shim) checkWhole(sent string, images int) error {
+func (s *shim) checkWhole(sent string, images, pieces int) error {
 	s.hold()
 	by := time.After(wholeWait)
 	for {
 		s.rowsMu.Lock()
 		said, taken := slices.Clone(s.said), slices.Clone(s.taken)
 		s.rowsMu.Unlock()
-		err := wholeIn(sent, images, said, taken)
+		err := wholeIn(sent, images, pieces, said, taken)
 		if err == nil {
 			return s.unhold(nil)
 		}

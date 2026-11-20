@@ -382,12 +382,14 @@ func fakeClaude(args []string) {
 	// nameWait. One mark of a paste being taken in stands for all of them,
 	// and is cleared as any is taken in: an Enter while it is set is lost,
 	// as the one Claude Code holds is when a read ends, and an Enter after
-	// sends the prompt as it stands.
+	// sends the prompt as it stands. Its transcript records a paste drawn
+	// as pasted text in a paste tag (recorded).
 	var mu sync.Mutex
-	var typed, drawn, paste strings.Builder
+	var typed, recorded, drawn, paste strings.Builder
 	pasting, taking, pasted := false, false, 0
-	take := func(text, draw string) {
+	take := func(text, record, draw string) {
 		typed.WriteString(text)
+		recorded.WriteString(record)
 		drawn.WriteString(draw)
 		taking = false
 		fmt.Print("\r❯ " + drawn.String())
@@ -400,12 +402,14 @@ func fakeClaude(args []string) {
 		if os.Getenv("FAKE_CUT") == "1" && len(p) > 1024 {
 			p = p[len(p)/1024*1024:]
 		}
-		draw := p
+		draw, record := p, p
 		if breaks := strings.Count(p, "\n"); len(p) > 800 || breaks > 2 {
 			pasted++
 			draw = fmt.Sprintf("[Pasted text #%d +%d lines]", pasted, breaks)
+			id := fmt.Sprintf("%04x", 0x4300+pasted)
+			record = "\n\n<pasted_content id=\"" + id + "\">\n" + p + "\n</pasted_content id=\"" + id + "\">\n"
 		}
-		take(p, draw)
+		take(p, record, draw)
 	}
 	// pasteEnded takes in a paste that has ended
 	pasteEnded := func(p string) {
@@ -422,7 +426,8 @@ func fakeClaude(args []string) {
 				mu.Lock()
 				defer mu.Unlock()
 				pasted++
-				take(fmt.Sprintf("[Image #%d:%s]", pasted, b), fmt.Sprintf("[Image #%d]", pasted))
+				img := fmt.Sprintf("[Image #%d:%s]", pasted, b)
+				take(img, img, fmt.Sprintf("[Image #%d]", pasted))
 			}()
 			return
 		}
@@ -475,6 +480,7 @@ func fakeClaude(args []string) {
 		case c != '\r':
 			mu.Lock()
 			typed.WriteByte(c)
+			recorded.WriteByte(c)
 			drawn.WriteByte(c)
 			mu.Unlock()
 			fmt.Printf("%c", c)
@@ -486,8 +492,9 @@ func fakeClaude(args []string) {
 			continue
 		}
 		line := typed.String()
-		asTyped := line // what the transcript records, as Claude Code does (fakeUserRow)
+		asTyped := recorded.String() // what the transcript records, as Claude Code does (fakeUserRow)
 		typed.Reset()
+		recorded.Reset()
 		drawn.Reset()
 		mu.Unlock()
 		if listed != "" {
@@ -792,6 +799,18 @@ func TestShimCutMessageIsUnpastable(t *testing.T) {
 	short := runShim(t, []string{"FAKE_CUT=1"}, append([]string{fakePath(t)}, pArgs...), []string{"hello"}, 3)
 	if r := short[2]; r["type"] != "result" || r["is_error"] != false {
 		t.Fatalf("a short message ended %v, want answered", short)
+	}
+}
+
+// A long paste, recorded in Claude Code's paste tag, is answered.
+func TestShimLongPasteIsWhole(t *testing.T) {
+	if cutHint() != "" {
+		t.Skip("Windows 10's own ConPTY drops the paste's marks")
+	}
+	long := "K-HEAD " + strings.Repeat("filler words\n", 400) + "K-TAIL"
+	out := runShim(t, nil, append([]string{fakePath(t)}, pArgs...), []string{long}, 3)
+	if r := out[2]; r["type"] != "result" || r["is_error"] != false {
+		t.Fatalf("a long message ended %v, want answered", out)
 	}
 }
 

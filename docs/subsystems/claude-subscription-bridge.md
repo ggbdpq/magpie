@@ -549,13 +549,22 @@ nothing aside (`unseen`: controls, format characters, variation selectors
 and the rest Unicode ignores by default, which Claude Code takes out of a
 paste), in place with no copy; the paths of images Claude Code says it took
 (`[Image: source: <path>]` meta rows) are left out, and the images are
-counted. What Claude Code answers meanwhile is held (`hold`) for up to
+counted. The tags are marks in the row only: Claude Code escapes a tag the
+message itself holds (2.1.319 writes `<\` for its `<`), so in the message
+it is words. A row whose own tags open more pastes than the message had
+pieces of words took a paste as many, its marks lost on the way, and isn't
+whole either. What Claude Code answers meanwhile is held (`hold`) for up to
 `wholeWait`. A message that isn't whole ends the turn as `Unpastable`
 before any of its reply, so the bridge asks it again as `-p`, as an image
 not taken; on Windows 10's own ConPTY the error says a `conpty` folder
-fixes it (`cutHint`). `whole_test.go` holds the comparison and the hold,
-and `TestShimCutMessageIsUnpastable` a fake Claude Code that loses a long
-paste's 1024-byte blocks.
+fixes it (`cutHint`). The error names no words of the message, which the
+bridge logs: it gives the counts, or the byte where the message and the
+row first differ and the code points there (`differs`), short enough for
+the log line's 200 characters. `whole_test.go` holds the comparison and
+the hold; `TestShimCutMessageIsUnpastable` has a fake Claude Code that
+loses a long paste's 1024-byte blocks, and `TestShimLongPasteIsWhole` one
+that records a long paste in its tag, as Claude Code does, which fails
+when `send` miscounts the pieces.
 
 The other exception is Claude Code's auto mode classifier when its own
 cache marks keep a long transcript (#5585, #5655; `keptByPrint`,

@@ -1347,7 +1347,7 @@ func (s *shim) send(pieces []piece) error {
 	// a row counted (sawRow) while send failed before its check is let out
 	defer s.letHeld()
 	var pasted strings.Builder // the words pasted, to check them whole
-	images := 0
+	images, texts := 0, 0      // texts: the pieces of words, a paste each
 	marker := 0
 	for i, p := range pieces {
 		var err error
@@ -1368,6 +1368,7 @@ func (s *shim) send(pieces []piece) error {
 		}
 		pasted.WriteString(p.text)
 		pasted.WriteByte('\n')
+		texts++
 		s.clearScreen()
 		if _, err := io.WriteString(s.pty, "\x1b[200~"+p.text+"\x1b[201~"); err != nil {
 			return err
@@ -1387,7 +1388,7 @@ func (s *shim) send(pieces []piece) error {
 			sent := s.rows > before
 			s.rowsMu.Unlock()
 			if sent {
-				return s.checkWhole(pasted.String(), images)
+				return s.checkWhole(pasted.String(), images, texts)
 			}
 			select {
 			case <-s.rowsCh:

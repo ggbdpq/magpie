@@ -48,7 +48,7 @@ func TestWholeIn(t *testing.T) {
 			for _, w := range c.said {
 				rows = append(rows, heardRow{w, 0})
 			}
-			err := wholeIn(c.sent, c.images, rows, nil)
+			err := wholeIn(c.sent, c.images, 1, rows, nil)
 			if (err == nil) != c.whole {
 				t.Fatalf("wholeIn = %v, want whole %v", err, c.whole)
 			}
@@ -68,7 +68,7 @@ func BenchmarkWholeIn(b *testing.B) {
 	b.SetBytes(int64(len(sent)))
 	b.ReportAllocs()
 	for b.Loop() {
-		if wholeIn(sent, 0, said, nil) != nil {
+		if wholeIn(sent, 0, 1, said, nil) != nil {
 			b.Fatal("not whole")
 		}
 	}
@@ -108,11 +108,73 @@ func TestWholeInUnseen(t *testing.T) {
 		{"a letter lost beside one", "a\u3164b", "a", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			err := wholeIn(c.sent, 0, []heardRow{{c.said, 0}}, nil)
+			err := wholeIn(c.sent, 0, 1, []heardRow{{c.said, 0}}, nil)
 			if (err == nil) != c.whole {
 				t.Fatalf("wholeIn = %v, want whole %v", err, c.whole)
 			}
 		})
+	}
+}
+
+// TestWholeInPastes: a row whose own tags open more pastes than the
+// message's pieces isn't whole.
+func TestWholeInPastes(t *testing.T) {
+	long := strings.Repeat("line of words 中文 ", 400)
+	for _, c := range []struct {
+		name   string
+		sent   string
+		pieces int
+		row    string
+		whole  bool
+		says   string
+	}{
+		{"split in a word", long, 1, wrap("a1", long[:990]) + wrap("a2", long[990:]), false, "U+0065 at byte 990 was recorded as U+0020"},
+		{"split between words", "one two three four", 1, wrap("a1", "one two") + wrap("a2", "three four"), false, "as 2 pastes, of 1"},
+		{"two pieces, two tags", "one two\nthree four\n", 2, wrap("a1", "one two") + wrap("a2", "three four"), true, ""},
+		{"one piece, one tag", long, 1, wrap("a1", long), true, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := wholeIn(c.sent, 0, c.pieces, []heardRow{{c.row, 0}}, nil)
+			if (err == nil) != c.whole {
+				t.Fatalf("wholeIn = %v, want whole %v", err, c.whole)
+			}
+			if err != nil && !strings.Contains(err.Error(), c.says) {
+				t.Fatalf("wholeIn = %v, want %q", err, c.says)
+			}
+		})
+	}
+}
+
+// wrap is s in a paste tag of Claude Code's own.
+func wrap(id, s string) string {
+	return "\n\n<pasted_content id=\"" + id + "\">\n" + s + "\n</pasted_content id=\"" + id + "\">\n"
+}
+
+// TestMessageCutSaysWhere: a message recorded otherwise is told by where
+// it and its record first differ, with none of its words, and each error
+// fits the bridge's 200-character log line after Unpastable, with Windows
+// 10's cutHint.
+func TestMessageCutSaysWhere(t *testing.T) {
+	err := wholeIn("a secret word here", 0, 1, []heardRow{{"a secret ward here", 0}}, nil)
+	if err == nil || !strings.HasPrefix(err.Error(), "U+006F at byte 10 was recorded as U+0061 at 10") || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("wholeIn = %v, want where, with no words", err)
+	}
+	err = wholeIn("all of it", 0, 1, []heardRow{{"all of it and more", 0}}, nil)
+	if err == nil || !strings.HasPrefix(err.Error(), "the end at byte 9 was recorded as U+0020 at 10") {
+		t.Fatalf("wholeIn = %v, want the end named", err)
+	}
+	const hint = len("; on Windows 10, a conpty folder beside magpie.exe fixes it (#5205)")
+	n := 9999999
+	for _, cut := range []*messageCut{
+		{gotImages: n - 1, sentImages: n},
+		{pastes: n, pieces: n - 1},
+		{got: n - 1, sent: n},
+		{at: differs{n, n, 0x10fffd, -1}},
+	} {
+		said := Unpastable + strings.TrimSuffix(cut.Error(), cutHint())
+		if len(said)+hint > 200 || strings.Contains(said, ImageNotTaken) {
+			t.Errorf("%d characters with the hint: %s", len(said)+hint, said)
+		}
 	}
 }
 
@@ -184,7 +246,7 @@ func TestWholeInTaken(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := wholeIn(c.sent, c.images, []heardRow{c.row}, c.taken)
+			err := wholeIn(c.sent, c.images, 1, []heardRow{c.row}, c.taken)
 			if (err == nil) != c.whole {
 				t.Fatalf("wholeIn = %v, want whole %v", err, c.whole)
 			}
@@ -213,13 +275,13 @@ func TestWholeInUnexplained(t *testing.T) {
 		{"fewer said than taken", a + "\n" + `C:\s\b.png` + "\nlook", heardRow{"[Image #1] [Image #2]look", 2}, []string{a}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if err := wholeIn(c.sent, 0, []heardRow{c.row}, c.taken); !errors.Is(err, errUnexplained) {
+			if err := wholeIn(c.sent, 0, 1, []heardRow{c.row}, c.taken); !errors.Is(err, errUnexplained) {
 				t.Fatalf("wholeIn = %v, want errUnexplained", err)
 			}
 		})
 	}
 	// a later row of the message, whole, is still taken
-	if err := wholeIn("look", 0, []heardRow{{"[Image #1]", 1}, {"look", 0}}, nil); err != nil {
+	if err := wholeIn("look", 0, 1, []heardRow{{"[Image #1]", 1}, {"look", 0}}, nil); err != nil {
 		t.Fatalf("wholeIn = %v, want whole", err)
 	}
 }

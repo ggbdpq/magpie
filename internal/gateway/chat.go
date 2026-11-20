@@ -522,9 +522,11 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 			if think != "" && inlineThink && !(r.Resume && i == len(r.Messages)-1) {
 				t = "<think>" + think + "</think>\n\n" + t
 			}
-			if t != "" || len(calls) == 0 {
-				am["content"] = t
-			}
+			// A call with no text still carries content. Leaving the field
+			// out sends {"role":"assistant","tool_calls":[…]}, which a
+			// strict Chat upstream refuses: "Invalid message at index N:
+			// missing role or content" (#7307).
+			am["content"] = t
 			if len(calls) > 0 {
 				am["tool_calls"] = calls
 			}

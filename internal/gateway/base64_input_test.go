@@ -1,8 +1,11 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/jpeg"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -246,4 +249,62 @@ func TestURLSafeBase64ReachesUpstreamAsStandard(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A Gemini part built from an OpenAI-style image: snake_case, its type
+// image/jpg, its data the data URL whole (the request a client's health
+// check sent). Each route has the image's own bytes and a type its vendor
+// reads: before, a Gemini provider was sent "[An image of type image/jpg
+// was left out…]" in its place, a Chat one "data:image/jpg;base64,data:…"
+// and a Messages one image/jpg with the URL as its data.
+func TestGeminiDataURLImageReachesUpstream(t *testing.T) {
+	jpeg := base64.StdEncoding.EncodeToString(tinyJPEG(t))
+	ask := `{"contents":[{"role":"user","parts":[{"text":"what is it?"},{"inline_data":{"mime_type":"image/jpg","data":"data:image/jpeg;base64,` + jpeg + `"}}]}]}`
+	for _, c := range []struct {
+		up   provider.Protocol
+		want string // what the upstream must be sent of the image
+	}{
+		{provider.Gemini, `"inlineData":{"data":"` + jpeg + `","mimeType":"image/jpeg"}`},
+		{provider.Chat, `"url":"data:image/jpeg;base64,` + jpeg + `"`},
+		{provider.Anthropic, `"source":{"type":"base64","media_type":"image/jpeg","data":"` + jpeg + `"}`},
+	} {
+		t.Run(string(c.up), func(t *testing.T) {
+			b64Home(t)
+			f := &fake{t: t, reply: chatSSEReply("OK")}
+			path := "/v1beta/models/fake/m1:generateContent"
+			switch c.up {
+			case provider.Gemini:
+				f.reply = `data: {"candidates":[{"content":{"parts":[{"text":"OK"}],"role":"model"},"finishReason":"STOP"}]}` + "\n\n"
+				up := httptest.NewServer(f)
+				t.Cleanup(up.Close)
+				if err := provider.Save(provider.Provider{ID: "gemini-2", Name: "Gemini 2", Key: "AIza-test", Gemini: up.URL + "/v1beta", Models: []string{"gemini-3.8-flash"}}); err != nil {
+					t.Fatal(err)
+				}
+				path = "/v1beta/models/gemini-2/gemini-3.8-flash:generateContent"
+			case provider.Anthropic:
+				f.reply = anthropicReply()
+				setup(t, c.up, f)
+			default:
+				setup(t, c.up, f)
+			}
+			code, body := post(t, path, ask)
+			if code != 200 || f.calls == 0 {
+				t.Fatalf("%d %s", code, body)
+			}
+			sent := string(f.got)
+			if !strings.Contains(sent, c.want) || strings.Contains(sent, "left out") || strings.Contains(sent, "image/jpg") {
+				t.Fatalf("sent %.900s\nwant %s", sent, c.want)
+			}
+		})
+	}
+}
+
+// tinyJPEG is a 2x2 JPEG as image/jpeg writes it.
+func tinyJPEG(t *testing.T) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	if err := jpeg.Encode(&b, image.NewRGBA(image.Rect(0, 0, 2, 2)), nil); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
 }

@@ -99,11 +99,14 @@ var base64Class = func() (t [256]uint8) {
 // Gemini inlineData part's whatever its type (a PDF, a recording), written
 // as standard, padded base64; the body as it came when there is none.
 func stdBase64Body(proto provider.Protocol, body []byte) []byte {
+	if proto == provider.Gemini {
+		if !mayHoldOddBase64(body) && !geminiMayHoldDataURL(body) {
+			return body
+		}
+		return geminiStdBase64(body)
+	}
 	if !mayHoldOddBase64(body) {
 		return body
-	}
-	if proto == provider.Gemini {
-		return geminiStdBase64(body)
 	}
 	out, err := walkImages(proto, body, func(im imageAt) (json.RawMessage, error) {
 		rest, ok := strings.CutPrefix(im.Src, "data:")
@@ -127,9 +130,40 @@ func stdBase64Body(proto provider.Protocol, body []byte) []byte {
 	return out
 }
 
+// A Gemini inlineData part's data is bare base64, but clients that build
+// their parts from an OpenAI-style image send it as the data URL whole,
+// "data:image/jpeg;base64,/9j/…", and its type as image/jpg, a name no
+// registry gives JPEG. Read as base64 the URL failed: a Gemini provider's
+// request had the image swapped for "[An image of type image/jpg was left
+// out…]", a Chat one's had "data:image/jpg;base64,data:image/jpeg;…" and
+// a Messages one's a media_type and data Anthropic refuses. The URL's
+// head is taken off and image/jpg named image/jpeg, on every route.
+
+// geminiMayHoldDataURL is whether a Gemini body may hold an inlineData
+// part to be written again for its data's data URL head or its type's
+// image/jpg, read in place.
+func geminiMayHoldDataURL(body []byte) bool {
+	return bytes.Contains(body, []byte(`"data:`)) || bytes.Contains(body, []byte(`"image/jpg"`))
+}
+
+// dataURLBase64 is the base64 of a data URL ("data:image/png;base64,…"),
+// and true; s and false when s isn't a base64 data URL.
+func dataURLBase64(s string) (string, bool) {
+	rest, ok := strings.CutPrefix(s, "data:")
+	if !ok {
+		return s, false
+	}
+	head, b64, ok := strings.Cut(rest, ",")
+	if !ok || !strings.HasSuffix(strings.ToLower(head), ";base64") {
+		return s, false
+	}
+	return b64, true
+}
+
 // geminiStdBase64 writes every inlineData part's data of a Gemini request
 // (a turn's, a function response's, the system instruction's) as standard
-// base64, in place: the rest of the body keeps its bytes.
+// base64, without a data URL's head, and its image/jpg type as image/jpeg,
+// in place: the rest of the body keeps its bytes.
 func geminiStdBase64(body []byte) []byte {
 	if !gjson.ValidBytes(body) {
 		return body
@@ -143,12 +177,21 @@ func geminiStdBase64(body []byte) []byte {
 	parts = func(list gjson.Result) {
 		list.ForEach(func(_, part gjson.Result) bool {
 			for _, k := range []string{"inlineData", "inline_data"} {
+				for _, mk := range []string{"mimeType", "mime_type"} {
+					if m := part.Get(k + "." + mk); m.Type == gjson.String && m.Index > 0 && strings.EqualFold(m.Str, "image/jpg") {
+						edits = append(edits, edit{m.Index, m.Index + len(m.Raw), m.Raw, `"image/jpeg"`})
+					}
+				}
 				d := part.Get(k + ".data")
 				if d.Type != gjson.String || d.Index <= 0 {
 					continue
 				}
-				if std, ok := stdBase64(d.Str); ok {
-					q, _ := json.Marshal(std)
+				data, headless := dataURLBase64(d.Str)
+				if std, ok := stdBase64(data); ok {
+					data, headless = std, true
+				}
+				if headless {
+					q, _ := json.Marshal(data)
 					edits = append(edits, edit{d.Index, d.Index + len(d.Raw), d.Raw, string(q)})
 				}
 			}

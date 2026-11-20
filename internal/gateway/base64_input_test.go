@@ -308,3 +308,18 @@ func tinyJPEG(t *testing.T) []byte {
 	}
 	return b.Bytes()
 }
+
+// A client can misname the type while sending bare base64, the data URL's
+// head already off its data. The name alone trips geminiMayHoldDataURL, and
+// the type is written image/jpeg while the standard base64 goes byte for
+// byte as it came.
+func TestGeminiImageJpgNameAloneIsWrittenJPEG(t *testing.T) {
+	body := `{"contents":[{"role":"user","parts":[{"inline_data":{"mime_type":"image/jpg","data":"` + whitePNGStandard + `"}}]}]}`
+	out := stdBase64Body(provider.Gemini, []byte(body))
+	if got := gjson.GetBytes(out, "contents.0.parts.0.inline_data.mime_type").Str; got != "image/jpeg" {
+		t.Fatalf("the type is %q, want image/jpeg", got)
+	}
+	if got := gjson.GetBytes(out, "contents.0.parts.0.inline_data.data").Str; got != whitePNGStandard {
+		t.Fatalf("standard base64 was written again: %q", got)
+	}
+}

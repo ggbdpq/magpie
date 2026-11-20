@@ -544,8 +544,10 @@ a row of it reached the transcript, whatever the row held, so a cut
 message's tail was answered as the message. Now, while a message just sent
 waits for its row, the rows' words (a user row's text, a queued message's)
 are compared with the words pasted, white space, Claude Code's
-`<pasted_content>` tags, `[Image #N]` marks and format characters aside,
-in place with no copy; the paths of images Claude Code says it took
+`<pasted_content>` tags, `[Image #N]` marks and characters that show
+nothing aside (`unseen`: controls, format characters, variation selectors
+and the rest Unicode ignores by default, which Claude Code takes out of a
+paste), in place with no copy; the paths of images Claude Code says it took
 (`[Image: source: <path>]` meta rows) are left out, and the images are
 counted. What Claude Code answers meanwhile is held (`hold`) for up to
 `wholeWait`. A message that isn't whole ends the turn as `Unpastable`

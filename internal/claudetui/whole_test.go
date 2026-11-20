@@ -74,13 +74,45 @@ func BenchmarkWholeIn(b *testing.B) {
 	}
 }
 
-// TestWordsSkipRange: words reads U+3001 to U+FEFE as letters without
-// asking unicode, as none of them is white space or a format character.
+// TestWordsSkipRange: none of U+3001 to U+FDFF that words reads without
+// asking unicode is white space or unseen, and those it leaves out are
+// unseen.
 func TestWordsSkipRange(t *testing.T) {
-	for r := rune(0x3001); r < 0xfeff; r++ {
-		if unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) {
-			t.Fatalf("%U is white space or a format character", r)
+	for r := rune(0x3001); r < 0xfe00; r++ {
+		if r != 0x3164 && (unicode.IsSpace(r) || unseen(r)) {
+			t.Fatalf("%U is white space or unseen", r)
 		}
+	}
+	for _, r := range []rune{0x3164, 0xfe00, 0xfe0f} {
+		if !unseen(r) {
+			t.Fatalf("%U is seen", r)
+		}
+	}
+}
+
+// TestWholeInUnseen: characters that show nothing aren't compared, taken
+// out or left in; a letter lost beside one still is.
+func TestWholeInUnseen(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		sent, said string
+		whole      bool
+	}{
+		{"an ideographic variation selector", "葛\U000E0100城 here", "葛城 here", true},
+		{"a variation selector alone", "a\ufe0fb", "ab", true},
+		{"an emoji's variation selector, kept", "a \u2764\ufe0f b", "a \u2764\ufe0f b", true},
+		{"Hangul fillers", "a\u3164b a\u115fb a\uffa0b", "ab ab ab", true},
+		{"a grapheme joiner", "a\u034fb", "ab", true},
+		{"a C1 control", "a\u0080b", "ab", true},
+		{"zero-width and bidi characters", "a\u200b\u200d\u2060\u00ad\ufeff\u202eb", "ab", true},
+		{"a letter lost beside one", "a\u3164b", "a", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := wholeIn(c.sent, 0, []heardRow{{c.said, 0}}, nil)
+			if (err == nil) != c.whole {
+				t.Fatalf("wholeIn = %v, want whole %v", err, c.whole)
+			}
+		})
 	}
 }
 

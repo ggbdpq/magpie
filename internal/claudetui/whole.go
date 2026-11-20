@@ -31,7 +31,7 @@ const wholeWait = 2 * time.Second
 // words reads a message's words one space apart, as Claude Code keeps what
 // is pasted whatever it trims, wraps, numbers or takes out: a run of white
 // space, a paste tag or an image mark is a space, none at the ends, and a
-// format character (a zero-width space) is nothing. It reads in place, so
+// character that shows nothing (unseen) is nothing. It reads in place, so
 // two messages are compared without a copy of either.
 type words struct {
 	s     string
@@ -56,9 +56,8 @@ func (w *words) next() rune {
 			r, size = utf8.DecodeRuneInString(w.s[w.i:])
 		}
 		switch {
-		case 0x3000 < r && r < 0xfeff:
-			// CJK and the rest between: no white space, no format
-			// character (unicode.IsSpace, unicode.Cf)
+		case 0x3000 < r && r < 0xfe00 && r != 0x3164:
+			// CJK and the rest between: no white space, none unseen
 			if w.space {
 				w.space = false
 				return ' '
@@ -67,7 +66,7 @@ func (w *words) next() rune {
 			w.i += size
 			w.space = w.began
 			continue
-		case c >= utf8.RuneSelf && unicode.Is(unicode.Cf, r):
+		case c >= utf8.RuneSelf && unseen(r):
 			w.i += size
 			continue
 		case w.space:
@@ -79,6 +78,12 @@ func (w *words) next() rune {
 		return r
 	}
 	return -1
+}
+
+// unseen is a character that shows nothing: a control or format
+// character, a variation selector, or another Unicode ignores by default.
+func unseen(r rune) bool {
+	return unicode.In(r, unicode.Cc, unicode.Cf, unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point)
 }
 
 // asciiSpace is unicode.IsSpace's white space below 0x80.

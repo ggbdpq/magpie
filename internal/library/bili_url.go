@@ -93,11 +93,12 @@ var biliServing = func() bool {
 }
 
 // biliServer is the bili start magpie runs: under ctx (KeepLinked's,
-// which ends with magpie), stopped by cancel.
+// which ends with magpie), stopped by cancel, done closed once it exited.
 var biliServer struct {
 	sync.Mutex
 	ctx    context.Context
 	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 func biliServeLog() string { return filepath.Join(settings.Dir(), "bili-start.log") }
@@ -114,9 +115,20 @@ var biliServe = func(bin string) error {
 		return nil
 	}
 	if biliServer.cancel != nil {
-		// magpie's own, which stopped answering
-		biliServer.cancel()
-		biliServer.cancel = nil
+		select {
+		case <-biliServer.done:
+			// magpie's own, which exited
+			biliServer.cancel()
+			biliServer.cancel = nil
+		default:
+			// magpie's own, still running but slow to answer: bili saves
+			// a session synchronously, which holds its health check for
+			// seconds on a big session store, and ending it drops every
+			// request going through it. bili ends one wedged for five
+			// minutes itself (src/event-loop-watchdog.ts), and a tick after
+			// that runs a new one.
+			return nil
+		}
 	}
 	parent := biliServer.ctx
 	if parent == nil {
@@ -145,7 +157,7 @@ var biliServe = func(bin string) error {
 		out.Close()
 		close(done)
 	}()
-	biliServer.cancel = cancel
+	biliServer.cancel, biliServer.done = cancel, done
 	for end := time.Now().Add(biliWait); time.Now().Before(end); {
 		if biliServing() {
 			return nil
@@ -156,8 +168,14 @@ var biliServe = func(bin string) error {
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
-	cancel()
-	biliServer.cancel = nil
+	select {
+	case <-done:
+		cancel()
+		biliServer.cancel = nil
+	default:
+		// still starting, kept as above: bili opens a session store of a
+		// gigabyte for longer than biliWait
+	}
 	said, _ := os.ReadFile(biliServeLog())
 	why := lastLines(strings.TrimSpace(string(said)), 3)
 	if why == "" {

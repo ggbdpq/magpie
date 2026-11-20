@@ -686,3 +686,54 @@ func TestBiliVersionPastItsWarnings(t *testing.T) {
 		}
 	}
 }
+
+// magpie's own bili start is kept while it runs: one slow to answer (a big
+// session store's save, or its open) isn't ended, and a new one runs only
+// once it exited.
+func TestBiliServeKeepsItsOwnWhileRunning(t *testing.T) {
+	h := sandbox(t)
+	bin := filepath.Join(h, "bin", "bili")
+	if runtime.GOOS == "windows" {
+		// sandbox's PATH holds the fake CLIs only
+		bin += ".cmd"
+		ping := filepath.Join(os.Getenv("SystemRoot"), "System32", "ping.exe")
+		write(t, bin, "@\""+ping+"\" -n 60 127.0.0.1 >nul\r\n")
+	} else {
+		testenv.Program(t, bin, "#!/bin/sh\nexec /bin/sleep 60\n")
+	}
+	serving, wait := biliServing, biliWait
+	biliServing, biliWait = func() bool { return false }, 300*time.Millisecond
+	t.Cleanup(func() {
+		biliStop()
+		biliServing, biliWait = serving, wait
+	})
+	running := func(done chan struct{}) bool {
+		select {
+		case <-done:
+			return false
+		case <-time.After(500 * time.Millisecond):
+			return true
+		}
+	}
+
+	if err := biliServe(bin); err == nil {
+		t.Fatal("a bili start that never answered says it does")
+	}
+	first := biliServer.done
+	if !running(first) {
+		t.Fatal("bili start ended for not answering within biliWait")
+	}
+	if err := biliServe(bin); err != nil {
+		t.Fatal(err)
+	}
+	if biliServer.done != first || !running(first) {
+		t.Fatal("a tick that missed its health check ended magpie's running bili start")
+	}
+
+	biliServer.cancel()
+	<-first
+	_ = biliServe(bin)
+	if biliServer.done == first || !running(biliServer.done) {
+		t.Fatal("no new bili start after magpie's own exited")
+	}
+}

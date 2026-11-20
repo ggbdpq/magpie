@@ -45,7 +45,7 @@ func TestClaudeHookNoticesAreNotTheUsersMessage(t *testing.T) {
 	for name, body := range map[string]string{"2.1.296": cc296Hooks, "reported": reportedHooks} {
 		t.Run(name, func(t *testing.T) {
 			got, said, _ := continuing(t, body)
-			if text := resultText(got); text != "hi" && text != "package a" {
+			if text := resultText(got); !strings.HasPrefix(text, "hi") && !strings.HasPrefix(text, "package a") {
 				t.Fatalf("call-1 was answered %q", text)
 			}
 			if len(said) != 0 {
@@ -104,5 +104,29 @@ func TestAgentNoticeLeavesTheUsersWords(t *testing.T) {
 		if !agentNotice(s) {
 			t.Errorf("%q was taken for the user's words", s)
 		}
+	}
+}
+
+// A hook's notices go to the run's model with the result they follow, in a
+// reminder, without the token count or the user's words beside them.
+func TestClaudeHookNoticesGoWithTheResults(t *testing.T) {
+	got, _, _ := continuing(t, cc296HooksAndUser)
+	text := resultText(got)
+	for _, want := range []string{"hi\n\n<system-reminder>\n", "PreToolUse:Bash hook additional context: <context_guidance>prefer ctx_execute</context_guidance>",
+		"PostToolUse:Bash hook additional context: post context here\n</system-reminder>"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the result %q lacks %q", text, want)
+		}
+	}
+	if strings.Contains(text, "tokens left") || strings.Contains(text, "also tell me the date") {
+		t.Fatalf("the result took more than the notices: %q", text)
+	}
+}
+
+func TestHookNoticesLeaveSuccessOut(t *testing.T) {
+	got := hookNotices("<system-reminder>\nPostToolUse:Write hook success: ok\n</system-reminder>\n" +
+		"PostToolUse:Edit hook blocking error from command: fix it\n\nStop hook feedback: more")
+	if len(got) != 2 || got[0] != "PostToolUse:Edit hook blocking error from command: fix it" || got[1] != "Stop hook feedback: more" {
+		t.Fatalf("got %q", got)
 	}
 }

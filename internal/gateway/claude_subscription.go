@@ -6247,6 +6247,69 @@ func withTaskNotices(results []Part, msgs []Message) []Part {
 	return out
 }
 
+// withHookNotices hands the run what Claude Code's hooks told the model
+// beside the results (hookNotice: "PostToolUse:Write hook additional
+// context: …", "PostToolUse:Edit hook blocking error from command: …"), in
+// a reminder at the end of the last result. #2060 took them out of the
+// user's words, and with that they reached no one: a hook's feedback, a
+// PostToolUse hook's block, never got to the run's model. A hook's bare
+// "success" stays out: it says nothing to act on.
+func withHookNotices(results []Part, msgs []Message) []Part {
+	if len(results) == 0 {
+		return results
+	}
+	i := len(msgs)
+	for i > 0 && msgs[i-1].Role != "assistant" {
+		i--
+	}
+	var notices []string
+	seen := false
+	for _, m := range msgs[i:] {
+		if withImages(m) {
+			continue
+		}
+		for _, p := range m.Parts {
+			switch {
+			case p.Kind == ToolResult:
+				seen = true
+			case p.Kind == Text && seen:
+				notices = append(notices, hookNotices(p.Text)...)
+			}
+		}
+	}
+	if len(notices) == 0 {
+		return results
+	}
+	out := slices.Clone(results)
+	last := &out[len(out)-1]
+	if last.Text != "" {
+		last.Text += "\n\n"
+	}
+	last.Text += "<system-reminder>\n" + strings.Join(notices, "\n\n") + "\n</system-reminder>"
+	return out
+}
+
+// hookNotices is every hook's notice in a text, each up to the next one,
+// the reminder's end, a message of the user's or the token count.
+func hookNotices(text string) []string {
+	var out []string
+	starts := hookNoticeStart.FindAllStringIndex(text, -1)
+	for k, s := range starts {
+		end := len(text)
+		if k+1 < len(starts) {
+			end = starts[k+1][0]
+		}
+		n := text[s[0]:end]
+		if e := hookNoticeEnd.FindStringIndex(n); e != nil {
+			n = n[:e[0]]
+		}
+		if n = strings.TrimSpace(n); n != "" && !hookSuccess.MatchString(n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // skillBody is the text Claude Code sends after a Skill call's result:
 // the skill's SKILL.md, headed with where its files are.
 var skillBody = lazyre.New(`^Base directory for this skill: `)
@@ -6334,6 +6397,11 @@ var (
 	// these kinds: "Stop hook is broken: …" may be the user's.
 	hookNoticeLead = `[A-Z][A-Za-z]+(?::\S+)? hook (?:additional context|success|blocking error(?: from command)?|stopped continuation|feedback):`
 	hookNotice     = lazyre.New(`^` + hookNoticeLead)
+	// hookNoticeStart finds a hook's notice anywhere in a text, hookNoticeEnd
+	// where one ends, hookSuccess the notice a hook gives with nothing to say
+	hookNoticeStart = lazyre.New(`(?m)^` + hookNoticeLead)
+	hookNoticeEnd   = lazyre.New(`\n\n(?:<total_tokens>|The user sent )|</system-reminder>`)
+	hookSuccess     = lazyre.New(`^[A-Z][A-Za-z]+(?::\S+)? hook success:`)
 	// tokenCount is Claude Code's count of the tokens left, or used.
 	tokenCount = lazyre.New(`^(?:<total_tokens>[^<]*</total_tokens>|Token usage: \S+; \S+ remaining)$`)
 	// reminderTag is a <system-reminder> tag, open or close.
@@ -7603,7 +7671,7 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
 			run.allowed = allowedTools(req)
 			run.mu.Unlock()
 			run.adviseOn(r.Context(), req, s.adviceRound)
-			events, err = run.continueWith(withTaskNotices(withSkillBodies(results, req.Messages), req.Messages), saidWithResults(req.Messages), more)
+			events, err = run.continueWith(withTaskNotices(withSkillBodies(withHookNotices(results, req.Messages), req.Messages), req.Messages), saidWithResults(req.Messages), more)
 		}
 		if err != nil {
 			// it ended while it waited, or can't take the results: a new

@@ -84,6 +84,13 @@ var pathVars = sync.OnceValue(func() map[string]bool {
 // whose readers expand it. Most agent paths, like the XDG and Windows
 // folders, are used as given and would put a literal ~ under the working folder.
 func usable(name, v string) bool {
+	// billion-context reads BILI_CONFIG_FILE as a path or a bare name
+	// (src/paths.ts resolveConfigFileRef). A relative path or a name such
+	// as "work" is the config, and dropping it made magpie read the default
+	// file and pass --port over the one bili would bind.
+	if name == "BILI_CONFIG_FILE" {
+		return true
+	}
 	if rooted(v) {
 		return true
 	}
@@ -99,11 +106,12 @@ func usable(name, v string) bool {
 // LookupEnv is os.LookupEnv for what magpie itself reads: a folder variable
 // (pathVars) holding a relative path reads as unset, as the XDG spec asks of
 // one, so no file of magpie's or an agent's is written under the working
-// folder. The environment is left as it is: the programs magpie starts get
-// the variable as the user set it. The variables a login shell lends the
-// desktop app (proc.UserPath) are read through here too. On Windows an
-// agent's variable is the registry's now, not the one magpie started with
-// (follow.go).
+// folder (except BILI_CONFIG_FILE, which billion-context resolves as a
+// relative path or bare named config; see usable). The environment is left
+// as it is: the programs magpie starts get the variable as the user set it.
+// The variables a login shell lends the desktop app (proc.UserPath) are read
+// through here too. On Windows an agent's variable is the registry's now,
+// not the one magpie started with (follow.go).
 func LookupEnv(name string) (string, bool) {
 	v, ok := lookupEnv(name)
 	if ok && v != "" && pathVars()[name] && !usable(name, v) {

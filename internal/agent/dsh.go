@@ -297,6 +297,7 @@ func dshOn(at place, dir, list string, fresh, lead func() string) *Agent {
 		a.Fields = append(a.Fields, dshCompactField(func() bool { return !at.cold && joined() }, list))
 	}
 	a.through = func(prefix string) error { return dshThrough(at, dir, prefix, fresh) }
+	a.moveBili = func(prefix string) error { return dshMoveBili(dir, prefix) }
 	return a
 }
 

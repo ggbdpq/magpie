@@ -249,6 +249,7 @@ func hermesIn(at place) *Agent {
 	}
 	a.Fields = append(a.Fields, hermesProfileFields(at, dir)...)
 	a.through = func(prefix string) error { return hermesThrough(at, dir, path, prefix) }
+	a.moveBili = func(prefix string) error { return hermesMoveBili(at, path, prefix) }
 	return a
 }
 

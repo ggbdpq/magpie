@@ -370,6 +370,9 @@ type Agent struct {
 	// the gateway behind a proxy's prefix ("" for the gateway itself):
 	// Hermes's, through billion-context's /bili/ (HermesThrough)
 	through func(prefix string) error
+	// moveBili, when set, rewrites only the outer /bili/ prefix on URLs
+	// that already use one (MoveBiliPrefix). A custom URL stays.
+	moveBili func(prefix string) error
 	// dirShared says Dir is a folder another agent keeps its files in too
 	// (omp's, when PI_CODING_AGENT_DIR points it at Pi's): that it is there
 	// says nothing of this agent.

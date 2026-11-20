@@ -668,6 +668,152 @@ func TestBiliDshThroughPrefix(t *testing.T) {
 	}
 }
 
+// TestAlignBiliURLsKeepsCustomProfiles: moving the shared daemon's port
+// rewrites only the outer /bili/ prefix on URLs that already use one.
+// Another profile's https URL, and a path or query behind the prefix, stay.
+func TestAlignBiliURLsKeepsCustomProfiles(t *testing.T) {
+	h := sandbox(t)
+	unsetEnv(t, "ACP_PORT", "PORT")
+	holdCLI(t, h, "hermes")
+	gw := gateway.URL() + "/v1"
+	old := "http://127.0.0.1:8787/bili/"
+	next := "http://127.0.0.1:18787/bili/"
+	root := filepath.Join(h, ".hermes", "config.yaml")
+	bot := filepath.Join(h, ".hermes", "profiles", "bot", "config.yaml")
+	bot2 := filepath.Join(h, ".hermes", "profiles", "bot2", "config.yaml")
+	mainURL := old + gw + "/extra?q=1"
+	custom := "https://custom.example/v1/mine?keep=1"
+	inner := old + "https://api.example/v1/custom?x=2"
+	otherBili := "http://127.0.0.1:19555/bili/https://openrouter.ai/api/v1"
+	write(t, root, "# mine\nproviders:\n  magpie:\n    base_url: "+mainURL+"\n  openrouter:\n    base_url: "+otherBili+"\n")
+	write(t, bot, "# custom\nproviders:\n  magpie:\n    base_url: "+custom+"\n")
+	write(t, bot2, "# inner\nproviders:\n  magpie:\n    base_url: "+inner+"\n")
+	web := filepath.Join(h, ".dsh", "profiles", "web", "cordis.patch.yml")
+	other := filepath.Join(h, ".dsh", "profiles", "other", "cordis.patch.yml")
+	third := filepath.Join(h, ".dsh", "profiles", "third", "cordis.patch.yml")
+	webBody := "# web\n- id: llm-pi-ai\n  config:\n    providers:\n      magpie:\n        baseURL: " + mainURL + "\n      openrouter:\n        baseURL: " + otherBili + "\n"
+	otherBody := "# other\n- id: llm-pi-ai\n  config:\n    providers:\n      mine:\n        baseURL: " + custom + "\n"
+	thirdBody := "# third\n- id: llm-pi-ai\n  config:\n    providers:\n      magpie:\n        baseURL: " + inner + "\n"
+	write(t, web, webBody)
+	write(t, other, otherBody)
+	write(t, third, thirdBody)
+	biliRemember("http://127.0.0.1:18787")
+	t.Cleanup(resetBiliListen)
+	if err := alignBiliURLs(detected()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := read(t, root), "# mine\nproviders:\n  magpie:\n    base_url: "+next+gw+"/extra?q=1\n  openrouter:\n    base_url: "+otherBili+"\n"; got != want {
+		t.Fatalf("hermes root:\n%s\nwant:\n%s", got, want)
+	}
+	if got, want := read(t, bot), "# custom\nproviders:\n  magpie:\n    base_url: "+custom+"\n"; got != want {
+		t.Fatalf("custom hermes profile:\n%s", got)
+	}
+	if got, want := read(t, bot2), "# inner\nproviders:\n  magpie:\n    base_url: "+next+"https://api.example/v1/custom?x=2\n"; got != want {
+		t.Fatalf("hermes inner:\n%s\nwant:\n%s", got, want)
+	}
+	if got := read(t, other); got != otherBody {
+		t.Fatalf("custom dsh profile:\n%s", got)
+	}
+	if got, want := read(t, web), strings.Replace(webBody, old, next, 1); got != want {
+		t.Fatalf("dsh web:\n%s\nwant:\n%s", got, want)
+	}
+	if got, want := read(t, third), strings.Replace(thirdBody, old, next, 1); got != want {
+		t.Fatalf("dsh third:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestKeepBiliServeDoesNotUndoDisable: a disable that lands while the
+// background start is in flight is still off afterwards. The migration
+// must not write the bili prefix back onto the direct URL.
+func TestKeepBiliServeDoesNotUndoDisable(t *testing.T) {
+	h := sandbox(t)
+	unsetEnv(t, "ACP_PORT", "PORT")
+	holdCLI(t, h, "hermes")
+	gw := gateway.URL() + "/v1"
+	old := biliPrefix
+	cfg := filepath.Join(h, ".hermes", "config.yaml")
+	write(t, cfg, "# mine\nmodel:\n  default: deepseek/pro\n  provider: magpie\nproviders:\n  magpie:\n    name: magpie\n    base_url: "+old+gw+"\n    api_key: magpie\n    api_mode: chat_completions\n")
+	biliRemember("http://127.0.0.1:18787")
+	t.Cleanup(resetBiliListen)
+	wasPath, wasServe, wasStop, wasServing := biliPath, biliServe, biliStop, biliServing
+	stopped := 0
+	biliPath = func() string { return filepath.Join(h, "bin", "bili") }
+	biliStop = func() { stopped++ }
+	biliServing = func() bool { return false }
+	biliServe = func(string) error {
+		body := read(t, cfg)
+		return os.WriteFile(cfg, []byte(strings.Replace(body, old+gw, gw, 1)), 0o600)
+	}
+	t.Cleanup(func() {
+		biliPath = wasPath
+		biliServe = wasServe
+		biliStop = wasStop
+		biliServing = wasServing
+	})
+	keepBiliServe(context.Background())
+	got := read(t, cfg)
+	if strings.Contains(got, "/bili/") || !strings.Contains(got, "base_url: "+gw+"\n") {
+		t.Fatalf("a disable during startup was written back:\n%s", got)
+	}
+	if stopped != 1 {
+		t.Fatalf("biliStop called %d times, want 1 when disable lands mid-start", stopped)
+	}
+}
+
+// TestSetBiliURLSurvivesBrokenOtherAgent: enabling bili for one agent must
+// not fail and discard its Restart/Backup view when an unrelated agent has a
+// malformed config file.
+func TestSetBiliURLSurvivesBrokenOtherAgent(t *testing.T) {
+	h := sandbox(t)
+	unsetEnv(t, "ACP_PORT", "PORT")
+	holdCLI(t, h, "hermes")
+	gw := gateway.URL() + "/v1"
+
+	// Zed configured on magpie (target of SetBili).
+	zdir := filepath.Join(h, "zed-config")
+	t.Setenv("MAGPIE_ZED_CONFIG_DIR", zdir)
+	zs := filepath.Join(zdir, "settings.json")
+	write(t, zs, `{"language_models":{"openai_compatible":{"magpie":{"api_url":"`+gw+`","available_models":[]}}}}`)
+
+	// Hermes is ON bili in root, with a broken secondary profile YAML.
+	write(t, filepath.Join(h, ".hermes", "config.yaml"), "providers:\n  magpie:\n    base_url: http://127.0.0.1:8787/bili/"+gw+"\n")
+	write(t, filepath.Join(h, ".hermes", "profiles", "bot", "config.yaml"), "providers:\n  magpie: [unclosed\n")
+
+	// dsh has a valid profile plus a non-list legacy config.yaml.
+	write(t, filepath.Join(h, ".dsh", "profiles", "web", "cordis.patch.yml"), "- id: llm-pi-ai\n  config:\n    providers:\n      magpie:\n        baseURL: "+gw+"\n")
+	write(t, filepath.Join(h, ".dsh", "config.yaml"), "not_a_list: true\n")
+
+	wasPath, wasServe, wasThrough := biliPath, biliServe, zedThrough
+	biliPath = func() string { return filepath.Join(h, "bin", "bili") }
+	biliServe = func(string) error {
+		biliRemember("http://127.0.0.1:18787")
+		return nil
+	}
+	zedThrough = func(a *agent.Agent, prefix string) error {
+		body := read(t, a.Path)
+		return os.WriteFile(a.Path, []byte(strings.Replace(body, gw, prefix+gw, 1)), 0o600)
+	}
+	t.Cleanup(func() {
+		biliPath, biliServe, zedThrough = wasPath, wasServe, wasThrough
+		resetBiliListen()
+	})
+
+	v, err := SetBili("zed", true)
+	if err != nil {
+		t.Fatalf("SetBili(zed, true) failed because of another agent's broken file: %v", err)
+	}
+	if len(v.Restart) != 1 || v.Restart[0] != "zed" || v.Backup == "" {
+		t.Fatalf("unexpected view: Restart=%v Backup=%q", v.Restart, v.Backup)
+	}
+	if got := read(t, zs); !strings.Contains(got, "http://127.0.0.1:18787/bili/"+gw) {
+		t.Fatalf("zed not updated:\n%s", got)
+	}
+	// Hermes root was still aligned to 18787 despite bot/config.yaml being broken.
+	if got := read(t, filepath.Join(h, ".hermes", "config.yaml")); !strings.Contains(got, "http://127.0.0.1:18787/bili/"+gw) {
+		t.Fatalf("hermes root not aligned:\n%s", got)
+	}
+}
+
 // TestBiliVersionPastItsWarnings: `bili --version` is read with stderr,
 // and bili 0.1.213 on mote wrote a config warning before the version; the
 // card said "2026-11-09T23:44:06.211" for the version.

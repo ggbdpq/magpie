@@ -103,6 +103,59 @@ func TestBiliConfigFileWhereBiliLooks(t *testing.T) {
 	}
 }
 
+// TestBiliConfigFileNamedAndRelative is src/paths.ts resolveConfigFileRef:
+// a bare name is <config dir>/NAME.json, a relative path is absolute from
+// the working folder, a file of that name in the working folder wins, and
+// a directory there does not.
+func TestBiliConfigFileNamedAndRelative(t *testing.T) {
+	h := sandbox(t)
+	t.Chdir(h)
+	// Relative XDG_CONFIG_HOME is ignored per appdir.Getenv; rooted XDG_CONFIG_HOME is used.
+	t.Setenv("XDG_CONFIG_HOME", "xdg")
+	t.Setenv("BILI_CONFIG_FILE", "")
+	if got, want := BiliConfigFile(), filepath.Join(h, ".config", "billion-context", "billion-context.json"); got != want {
+		t.Fatalf("relative XDG_CONFIG_HOME not ignored: %s, want %s", got, want)
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, "xdg"))
+	dir := filepath.Join(h, "xdg", "billion-context")
+	write(t, filepath.Join(dir, "work.json"), "{}\n")
+	write(t, filepath.Join(dir, "billion-context.json"), "{}\n")
+	// Whitespace-only BILI_CONFIG_FILE is treated as unset.
+	t.Setenv("BILI_CONFIG_FILE", "   ")
+	if got, want := BiliConfigFile(), filepath.Join(dir, "billion-context.json"); got != want {
+		t.Fatalf("whitespace BILI_CONFIG_FILE: %s, want %s", got, want)
+	}
+	t.Setenv("BILI_CONFIG_FILE", "work")
+	if got, want := BiliConfigFile(), filepath.Join(dir, "work.json"); got != want {
+		t.Fatalf("named: %s, want %s", got, want)
+	}
+	if err := os.Mkdir(filepath.Join(h, "work"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := BiliConfigFile(), filepath.Join(dir, "work.json"); got != want {
+		t.Fatalf("a directory named work shadowed the named config: %s, want %s", got, want)
+	}
+	rel := filepath.Join("rel", "bili.json")
+	write(t, filepath.Join(h, rel), "{}\n")
+	t.Setenv("BILI_CONFIG_FILE", filepath.ToSlash(rel))
+	// a backslash is also a path, as bili treats both separators
+	if runtime.GOOS == "windows" {
+		t.Setenv("BILI_CONFIG_FILE", rel)
+	}
+	abs, err := filepath.Abs(rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := BiliConfigFile(); got != abs {
+		t.Fatalf("relative: %s, want %s", got, abs)
+	}
+	write(t, filepath.Join(h, "cwd.json"), "{}\n")
+	t.Setenv("BILI_CONFIG_FILE", "cwd.json")
+	if got, want := BiliConfigFile(), filepath.Join(h, "cwd.json"); got != want {
+		t.Fatalf("cwd file: %s, want %s", got, want)
+	}
+}
+
 // TestBiliFileCarried: a sync carries billion-context.json as it is,
 // comments and all, with magpie's recipe at the default address; the
 // other computer gets it with its own gateway in the recipe and the key

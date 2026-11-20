@@ -34,23 +34,89 @@ import (
 // key order and every key magpie doesn't know stay as they were.
 
 // BiliConfigFile is billion-context.json where bili itself looks for it
-// (src/paths.ts): BILI_CONFIG_FILE, else billion-context/ under
-// XDG_CONFIG_HOME, else under ~/.config — on Windows too, where bili's
-// homedir() is %USERPROFILE%.
+// (src/paths.ts configFile): BILI_CONFIG_FILE when it is set and not empty,
+// else billion-context/billion-context.json under XDG_CONFIG_HOME, else
+// under ~/.config — on Windows too, where bili's homedir() is %USERPROFILE%.
+// A set BILI_CONFIG_FILE is resolveConfigFileRef: a path (it contains a
+// separator, or names a file in the working folder) is made absolute; a
+// bare name is <config dir>/NAME.json. A directory in the working folder
+// does not count as that file.
 func BiliConfigFile() string {
-	if f := appdir.Getenv("BILI_CONFIG_FILE"); f != "" {
-		if abs, err := filepath.Abs(f); err == nil {
-			return abs
-		}
-		return f
+	if ref, ok := biliConfigRef(); ok {
+		p, _ := resolveBiliConfigRef(ref)
+		return p
 	}
+	return filepath.Join(biliConfigDir(), "billion-context.json")
+}
+
+// biliConfigRef is BILI_CONFIG_FILE when set and non-blank.
+// bili's checkNamedConfigRef trims whitespace and returns null (no error)
+// for a blank value, so whitespace-only values are treated as unset rather
+// than flagging a missing named config; non-blank values are returned as
+// set, matching bili's configFile.
+func biliConfigRef() (string, bool) {
+	ref, ok := appdir.LookupEnv("BILI_CONFIG_FILE")
+	if !ok || strings.TrimSpace(ref) == "" {
+		return "", false
+	}
+	return ref, true
+}
+
+// biliConfigDir is billion-context's config directory (src/paths.ts
+// configDir): XDG_CONFIG_HOME when set and rooted, else ~/.config, then
+// billion-context.
+func biliConfigDir() string {
 	base := appdir.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
 		base = filepath.Join(home(), ".config")
-	} else if abs, err := filepath.Abs(base); err == nil {
-		base = abs
 	}
-	return filepath.Join(base, "billion-context", "billion-context.json")
+	return filepath.Join(base, "billion-context")
+}
+
+// resolveBiliConfigRef is src/paths.ts resolveConfigFileRef. named is a
+// bare name, whose file is <config dir>/NAME.json.
+func resolveBiliConfigRef(ref string) (path string, named bool) {
+	if strings.ContainsAny(ref, `/\`) || biliConfigIsFile(ref) {
+		if abs, err := filepath.Abs(ref); err == nil {
+			return abs, false
+		}
+		return ref, false
+	}
+	return filepath.Join(biliConfigDir(), ref+".json"), true
+}
+
+// biliConfigIsFile reports a path that names a file, not a directory.
+// stat of a missing path is not a file, so a bare name stays a name.
+func biliConfigIsFile(ref string) bool {
+	st, err := os.Stat(ref)
+	return err == nil && st.Mode().IsRegular()
+}
+
+// biliNamedConfigError is src/paths.ts checkNamedConfigRef: a bare name
+// whose file is missing. bili start exits before it would listen, so the
+// port is not the default and --port is not passed for it.
+func biliNamedConfigError(ref, path string) error {
+	dir := filepath.Dir(path)
+	var names []string
+	if es, err := os.ReadDir(dir); err == nil {
+		for _, e := range es {
+			n := e.Name()
+			if !strings.HasSuffix(n, ".json") || strings.Contains(n, ".json.") {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			names = append(names, strings.TrimSuffix(n, ".json"))
+		}
+	}
+	slices.Sort(names)
+	msg := fmt.Sprintf("bili: named config %q not found (looked for %s)", ref, path)
+	if len(names) > 0 {
+		msg += ". Available: " + strings.Join(names, ", ") + " (in " + dir + ")"
+	}
+	return fmt.Errorf("%s", msg)
 }
 
 // biliCredFile is bili's private store of the keys its summary models

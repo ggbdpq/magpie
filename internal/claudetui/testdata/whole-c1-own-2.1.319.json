@@ -1,0 +1,14 @@
+{
+ "sent": [
+  "Code K-PJLR.\nL9B before \u009b1;2;3mAFTER9B tail words here\nL90 before \u00901;2;3mAFTER90 tail words here\nL98 before \u00981;2;3mAFTER98 tail words here\nL9D before \u009d1;2;3mAFTER9D tail words here\nL9E before \u009e1;2;3mAFTER9E tail words here\nL9F before \u009f1;2;3mAFTER9F tail words here\nL84 before \u00841;2;3mAFTER84 tail words here\nL8D before \u008d1;2;3mAFTER8D tail words here\nReply with exactly the K-XXXX codes you can see, space separated, and nothing else."
+ ],
+ "rows": [
+  {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "\n\n<pasted_content id=\"ed90\">\nCode K-PJLR.\nL9B before 1;2;3mAFTER9B tail words here\nL90 before 1;2;3mAFTER90 tail words here\nL98 before 1;2;3mAFTER98 tail words here\nL9D before 1;2;3mAFTER9D tail words here\nL9E before 1;2;3mAFTER9E tail words here\nL9F before 1;2;3mAFTER9F tail words here\nL84 before 1;2;3mAFTER84 tail words here\nL8D before 1;2;3mAFTER8D tail words here\nReply with exactly the K-XXXX codes you can see, space separated, and nothing else.\n</pasted_content id=\"ed90\">\n"
+   }
+  }
+ ]
+}

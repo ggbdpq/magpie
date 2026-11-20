@@ -1,0 +1,57 @@
+{
+ "sent": [
+  [
+   {
+    "type": "text",
+    "text": "Code K-FZYH. first piece"
+   },
+   {
+    "type": "image",
+    "source": {
+     "type": "base64",
+     "media_type": "image/png",
+     "data": ""
+    }
+   },
+   {
+    "type": "text",
+    "text": "second piece. Reply with exactly the K-XXXX codes you can see, space separated, and nothing else."
+   }
+  ]
+ ],
+ "rows": [
+  {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "Code K-FZYH. first piece\n\n[Image #1]\n\nsecond piece. Reply with exactly the K-XXXX codes you can see, space separated, and nothing else."
+     },
+     {
+      "type": "image",
+      "source": {
+       "type": "base64",
+       "media_type": "image/png",
+       "data": ""
+      }
+     }
+    ]
+   }
+  },
+  {
+   "type": "user",
+   "isMeta": true,
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "[Image: source: C:\\Users\\me\\AppData\\Local\\Temp\\magpie-claude-images-23452-2494443736\\image-1.png]"
+     }
+    ]
+   }
+  }
+ ]
+}

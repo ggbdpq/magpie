@@ -1,0 +1,31 @@
+{
+ "sent": [
+  "Count from 1 to 60 in words, one per line.",
+  "L00000 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nCode K-FSOI.\nCode K-H164.\nCode K-DE1K.\nL00023 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nReply with exactly the K-XXXX codes you can see, space separated, and nothing else."
+ ],
+ "rows": [
+  {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "Count from 1 to 60 in words, one per line."
+   }
+  },
+  {
+   "type": "queue-operation",
+   "operation": "enqueue",
+   "content": "<pasted_content id=\"be11\">\nL00000 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nCode K-FSOI.\nCode K-H164.\nCode K-DE1K.\nL00023 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nReply with exactly the K-XXXX codes you can see, space separated, and nothing else.\n</pasted_content id=\"be11\">"
+  },
+  {
+   "type": "queue-operation",
+   "operation": "dequeue"
+  },
+  {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "<pasted_content id=\"be11\">\nL00000 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nCode K-FSOI.\nCode K-H164.\nCode K-DE1K.\nL00023 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nReply with exactly the K-XXXX codes you can see, space separated, and nothing else.\n</pasted_content id=\"be11\">"
+   }
+  }
+ ]
+}

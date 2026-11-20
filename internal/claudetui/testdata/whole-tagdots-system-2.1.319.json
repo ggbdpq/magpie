@@ -1,0 +1,14 @@
+{
+ "sent": [
+  "Code K-F7S8. Claude Code adds the `<pasted_content id=\"…\">` wrapper. Reply with exactly the K-XXXX codes you can see, space separated, and nothing else."
+ ],
+ "rows": [
+  {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "Code K-F7S8. Claude Code adds the `<\\pasted_content id=\"…\">` wrapper. Reply with exactly the K-XXXX codes you can see, space separated, and nothing else."
+   }
+  }
+ ]
+}

@@ -1,0 +1,20 @@
+{
+ "sent": [
+  "Count from 1 to 60 in words, one per line.",
+  "Code K-Q667. Quoted: <pasted_content id=\"ab12\">\nhello a\u3164b\n</pasted_content id=\"ab12\">\nReply with exactly the K-XXXX codes you can see, space separated, and nothing else."
+ ],
+ "rows": [
+  {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "Count from 1 to 60 in words, one per line."
+   }
+  },
+  {
+   "type": "queue-operation",
+   "operation": "enqueue",
+   "content": "<pasted_content id=\"6ddd\">\nCode K-Q667. Quoted: <\\pasted_content id=\"ab12\">\nhello ab\n<\\/pasted_content id=\"ab12\">\nReply with exactly the K-XXXX codes you can see, space separated, and nothing else.\n</pasted_content id=\"6ddd\">"
+  }
+ ]
+}

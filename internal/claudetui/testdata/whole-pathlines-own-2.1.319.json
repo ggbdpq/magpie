@@ -1,0 +1,52 @@
+{
+ "sent": [
+  "C:\\Users\\me\\AppData\\Local\\Temp\\magpie-lite-paths-jdlm0fzo\\red.png\nCode K-SZP1.\nC:\\Users\\me\\AppData\\Local\\Temp\\magpie-lite-paths-jdlm0fzo\\blue.png\nCode K-6D01.\nC:\\Users\\me\\AppData\\Local\\Temp\\magpie-lite-paths-jdlm0fzo\\missing.png\nC:\\Users\\me\\AppData\\Local\\Temp\\magpie-lite-paths-jdlm0fzo\\red.png|\nCode K-MN94. Reply with exactly the K-XXXX codes you can see, space separated, and nothing else."
+ ],
+ "rows": [
+  {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "[Image #1] [Image #2]\n\n<pasted_content id=\"a0c3\">\nCode K-SZP1.\nCode K-6D01.\nC:\\Users\\me\\AppData\\Local\\Temp\\magpie-lite-paths-jdlm0fzo\\missing.png\nC:\\Users\\me\\AppData\\Local\\Temp\\magpie-lite-paths-jdlm0fzo\\red.png|\nCode K-MN94. Reply with exactly the K-XXXX codes you can see, space separated, and nothing else.\n</pasted_content id=\"a0c3\">\n"
+     },
+     {
+      "type": "image",
+      "source": {
+       "type": "base64",
+       "media_type": "image/png",
+       "data": ""
+      }
+     },
+     {
+      "type": "image",
+      "source": {
+       "type": "base64",
+       "media_type": "image/png",
+       "data": ""
+      }
+     }
+    ]
+   }
+  },
+  {
+   "type": "user",
+   "isMeta": true,
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "[Image: source: C:\\Users\\me\\AppData\\Local\\Temp\\magpie-lite-paths-jdlm0fzo\\red.png]"
+     },
+     {
+      "type": "text",
+      "text": "[Image: source: C:\\Users\\me\\AppData\\Local\\Temp\\magpie-lite-paths-jdlm0fzo\\blue.png]"
+     }
+    ]
+   }
+  }
+ ]
+}

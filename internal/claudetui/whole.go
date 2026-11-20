@@ -95,6 +95,14 @@ func (w *words) at(r rune) int {
 	return w.i - utf8.RuneLen(r)
 }
 
+// lettered is whether r is a letter or a digit.
+func lettered(r rune) bool {
+	if r < utf8.RuneSelf {
+		return isDigit(byte(r)) || 'a' <= r|0x20 && r|0x20 <= 'z'
+	}
+	return unicode.IsLetter(r) || unicode.IsNumber(r)
+}
+
 // unseen is a character that shows nothing: a control or format
 // character, a variation selector, or another Unicode ignores by default.
 func unseen(r rune) bool {
@@ -136,10 +144,12 @@ func isDigit(c byte) bool { return '0' <= c && c <= '9' }
 func isWord(c byte) bool  { return isDigit(c) || c == '_' || 'a' <= c|0x20 && c|0x20 <= 'z' }
 
 // sameWordsBut is whether b, Claude Code's record of the message a, has
-// a's words, read as words reads them, with any of taken, each once, left
-// out of a where b doesn't hold it: an image file's path Claude Code took
-// as the image (imageSources). n is how many were left out, tags how many
-// pastes b's own tags open, and at where a and b first differ.
+// a's words, read as words reads them: each of a's characters, in order,
+// where b may hold more that are neither letter nor digit, or another such
+// in place of one of a's. Any of taken, each once, is left out of a where
+// b doesn't hold it: an image file's path Claude Code took as the image
+// (imageSources). n is how many were left out, tags how many pastes b's
+// own tags open, and at where a and b first differ.
 func sameWordsBut(a, b string, taken []string) (same bool, n, tags int, at differs) {
 	used := make([]bool, len(taken))
 	x, y := words{s: a}, words{s: b, own: true}
@@ -152,6 +162,12 @@ func sameWordsBut(a, b string, taken []string) (same bool, n, tags int, at diffe
 			}
 		}
 		r, q := x.next(), y.next()
+		if r != q && r > ' ' && q > ' ' && !lettered(r) && !lettered(q) {
+			continue // another mark for the message's
+		}
+		for q != r && q >= 0 && !lettered(q) {
+			q = y.next() // a mark Claude Code put in
+		}
 		if r != q {
 			return false, n, y.tags, differs{x.at(r), y.at(q), r, q}
 		}

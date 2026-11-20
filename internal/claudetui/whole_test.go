@@ -3,6 +3,9 @@ package claudetui
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -128,7 +131,7 @@ func TestWholeInPastes(t *testing.T) {
 		whole  bool
 		says   string
 	}{
-		{"split in a word", long, 1, wrap("a1", long[:990]) + wrap("a2", long[990:]), false, "U+0065 at byte 990 was recorded as U+0020"},
+		{"split in a word", long, 1, wrap("a1", long[:990]) + wrap("a2", long[990:]), false, "as 2 pastes, of 1"},
 		{"split between words", "one two three four", 1, wrap("a1", "one two") + wrap("a2", "three four"), false, "as 2 pastes, of 1"},
 		{"two pieces, two tags", "one two\nthree four\n", 2, wrap("a1", "one two") + wrap("a2", "three four"), true, ""},
 		{"one piece, one tag", long, 1, wrap("a1", long), true, ""},
@@ -160,7 +163,7 @@ func TestMessageCutSaysWhere(t *testing.T) {
 		t.Fatalf("wholeIn = %v, want where, with no words", err)
 	}
 	err = wholeIn("all of it", 0, 1, []heardRow{{"all of it and more", 0}}, nil)
-	if err == nil || !strings.HasPrefix(err.Error(), "the end at byte 9 was recorded as U+0020 at 10") {
+	if err == nil || !strings.HasPrefix(err.Error(), "the end at byte 9 was recorded as U+0061 at 10") {
 		t.Fatalf("wholeIn = %v, want the end named", err)
 	}
 	const hint = len("; on Windows 10, a conpty folder beside magpie.exe fixes it (#5205)")
@@ -177,6 +180,187 @@ func TestMessageCutSaysWhere(t *testing.T) {
 		}
 	}
 }
+
+// TestWholeInRecorded: records of real runs of Claude Code 2.1.319 on
+// Windows 10, through the system's ConPTY and magpie's own
+// (testdata/whole-*-2.1.319.json), are judged as they were in truth.
+func TestWholeInRecorded(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		whole bool
+	}{
+		{"tagdots-system", true},
+		{"tagid-system", true},
+		{"inl-system", false},
+		{"ml-system", false},
+		{"c1-system", false},
+		{"queuetag-system", true},
+		{"queue-system", true},
+		{"mixed-system", true},
+		{"short2-system", true},
+		{"pathlines-system", true},
+		{"longpaths-system", false},
+		{"long64-system", false},
+		{"inl-own", true},
+		{"ml-own", true},
+		{"c1-own", true},
+		{"queuetag-own", true},
+		{"longpaths-own", true},
+		{"pathlines-own", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sent, images, pieces, rows, taken := recorded(t, "whole-"+c.name+"-2.1.319.json")
+			err := wholeIn(sent, images, pieces, rows, taken)
+			if (err == nil) != c.whole {
+				t.Fatalf("wholeIn = %v, want whole %v", err, c.whole)
+			}
+		})
+	}
+}
+
+// recorded reads a record of a run: the messages sent to the helper, and
+// the rows Claude Code's transcript holds after them. The last message is
+// pasted as send pastes it, and its rows are the ones after the first
+// message's.
+func recorded(t *testing.T, file string) (sent string, images, pieces int, rows []heardRow, taken []string) {
+	b, err := os.ReadFile(filepath.Join("testdata", file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d struct {
+		Sent []json.RawMessage `json:"sent"`
+		Rows []struct {
+			Type      string          `json:"type"`
+			IsMeta    bool            `json:"isMeta"`
+			Operation string          `json:"operation"`
+			Content   string          `json:"content"`
+			Message   json.RawMessage `json:"message"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(b, &d); err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	var blocks []struct{ Type, Text string }
+	if json.Unmarshal(d.Sent[len(d.Sent)-1], &text) == nil {
+		blocks = append(blocks, struct{ Type, Text string }{"text", text})
+	} else if err := json.Unmarshal(d.Sent[len(d.Sent)-1], &blocks); err != nil {
+		t.Fatal(err)
+	}
+	for _, bl := range blocks {
+		if bl.Type == "image" {
+			images++
+			continue
+		}
+		if pieces == 0 {
+			sent = pasteable(bl.Text, len(d.Sent) > 1) + "\n"
+		} else {
+			sent += pasteClean(bl.Text) + "\n"
+		}
+		pieces++
+	}
+	first := len(d.Sent) > 1
+	for _, r := range d.Rows {
+		switch {
+		case r.Type == "queue-operation" && r.Operation == "enqueue":
+			rows = append(rows, heardRow{r.Content, -1})
+		case r.Type == "user" && r.IsMeta:
+			taken = append(taken, imageSources(r.Message)...)
+		case r.Type == "user" && first:
+			first = false
+		case r.Type == "user":
+			rows = append(rows, promptRow(r.Message))
+		}
+	}
+	return sent, images, pieces, rows, taken
+}
+
+// TestWholeInTally: messages whole or not in truth, as Claude Code or the
+// console rewrote them (seen) or might (made up), each with whether the
+// check is known to judge it wrong.
+func TestWholeInTally(t *testing.T) {
+	long := strings.Repeat("line of words 中文 ", 400)
+	quoting := "Do NOT delete prod. The tags are <pasted_content id=\"ab12\"> and </pasted_content id=\"ab12\"> and <pasted_content>. Go on."
+	rule := strings.Repeat(strings.Repeat("=", 78)+"\n", 14)
+	screen := strings.Repeat("\u2502"+strings.Repeat(" ", 138)+"\u2502\n", 4) + strings.Repeat("\u2500", 140) + "\n"
+	told, missed := 0, 0
+	for _, c := range []struct {
+		kind   string // seen or made up
+		name   string
+		sent   string
+		pieces int
+		row    string
+		whole  bool // in truth
+		wrong  bool // the check says otherwise
+	}{
+		{"seen", "its tag quoted, escaped", quoting, 1, escaped(quoting), true, false},
+		{"seen", "its tag quoted, escaped and wrapped", quoting, 1, wrap("4302", escaped(quoting)), true, false},
+		{"seen", "every tag 2.1.319 escapes", tagsQuoted, 1, wrap("1584", tagsEscaped), true, false},
+		{"seen", "an ideographic variation selector taken out", "葛\U000E0100城 here", 1, "葛城 here", true, false},
+		{"seen", "a stray variation selector taken out", "a\ufe0fb \u2764\ufe0f", 1, "ab \u2764\ufe0f", true, false},
+		{"seen", "a Hangul filler taken out", "a\u3164b a\u115fb a\uffa0b", 1, "ab ab ab", true, false},
+		{"seen", "a joiner taken out", "a\u034fb", 1, "ab", true, false},
+		{"seen", "a C1 control taken out", "a\u0080b", 1, "ab", true, false},
+		{"seen", "an image mark of the message's own", "see [Image #1] in whole.go", 1, "see [Image #1] in whole.go", true, false},
+		{"seen", "an image mark of its own after Claude Code's", "see [Image #1] here", 1, "[Image #1] see [Image #1] here", true, false},
+		{"seen", "two pastes, two tags", "one two\nthree four\n", 2, wrap("a1", "one two") + wrap("a2", "three four"), true, false},
+		{"seen", "a fullwidth < before its tag", "a \uff1cpasted_content b", 1, "a <" + `\` + "pasted_content b", true, false},
+		{"made", "its tag quoted, not escaped (an older Claude Code)", "a <pasted_content id=\"ab12\"> b", 1, "a <pasted_content id=\"ab12\"> b", true, true},
+		{"made", "a < written as another mark", "a <pasted_content> b", 1, "a \u2039pasted_content> b", true, false},
+		{"made", "quotes made plain", "say \u201cyes\u201d to it", 1, "say \"yes\" to it", true, false},
+		{"made", "a < written as &lt;", "a <pasted_content> b", 1, "a &lt;pasted_content> b", true, true},
+		{"made", "its tag by another name", "one two", 1, "<paste id=\"4302\">\none two\n</paste>", true, true},
+
+		{"seen", "taken as two pastes in a word", long, 1, wrap("a1", long[:990]) + wrap("a2", long[990:]), false, false},
+		{"made", "taken as two pastes between words", "one two three four", 1, wrap("a1", "one two") + wrap("a2", "three four"), false, false},
+		{"made", "a word lost, as many backslashes put in", quoting, 1, escaped(strings.Replace(quoting, "NOT ", "", 1)), false, false},
+		{"seen", "a block lost of one that quotes its tag", long + quoting + long, 1, wrap("a1", long[:1024]+long[2048:]+escaped(quoting)+long), false, false},
+		{"made", "a letter garbled", "看图 中文 here", 1, "看图 \ufffd\ufffd文 here", false, false},
+		{"seen", "blocks out of place", "first block\nsecond block\nthe end\n", 1, "first block\nthe end\nsecond block\n", false, false},
+		{"made", "a line twice", "first line\nsecond line\n", 1, "first line\nfirst line\nsecond line\n", false, false},
+		{"made", "another message's row that holds its letters", "ok", 1, "look at this token", false, false},
+		{"made", "another message's row that begins and ends as it does", "fix the bug in the parser and run the tests", 1, "fix the bug in the lexer, not the parser, then stop; don't run the tests", false, false},
+		{"made", "its end lost", "all of this and the end", 1, "all of this and", false, false},
+		// nothing but marks or white space lost
+		{"made", "a rule of 1 KB lost", "above\n" + rule + "below\n", 1, "above\nbelow\n", false, false},
+		{"made", "1 KB of a screen's frame lost", "above\n" + screen + "below\n", 1, "above\nbelow\n", false, false},
+		{"made", "a table's rule row lost", "| a | b |\n|---|---|\n| 1 | 2 |\n", 1, "| a | b |\n| 1 | 2 |\n", false, false},
+		{"made", "closing braces lost", "func f() {\n\tif x {\n\t\tg()\n\t}\n}\nnext", 1, "func f() {\n\tif x {\n\t\tg()\nnext", false, false},
+		{"made", "a piece of emoji lost", "look at this\n\U0001F44D\U0001F44D\n", 2, "look at this", false, false},
+		{"made", "CJK marks lost", "真的吗\uff1f\uff01\u2026\u2026好", 1, "真的吗好", false, false},
+		{"made", "a mark at its end lost", "is it so?", 1, "is it so", false, false},
+		{"made", "a comma lost", "a, b; c", 1, "a b; c", false, false},
+		{"made", "a ! lost", "if a != b { stop }", 1, "if a = b { stop }", false, false},
+		{"made", "a minus lost", "set x to -5", 1, "set x to 5", false, false},
+		{"made", "a line break lost between two commands", "cd /tmp\nrm -rf x\n", 1, "cd /tmprm -rf x\n", false, false},
+		{"made", "a line's indent lost", "if x:\n    y()\nz()\n", 1, "if x:\ny()\nz()\n", false, true},
+	} {
+		err := wholeIn(c.sent, 0, c.pieces, []heardRow{{c.row, 0}}, nil)
+		if (err == nil) != (c.whole != c.wrong) {
+			t.Errorf("%s, %s: wholeIn = %v, want whole %v", c.kind, c.name, err, c.whole != c.wrong)
+		}
+		switch {
+		case c.whole && err != nil:
+			told++
+		case !c.whole && err == nil:
+			missed++
+		}
+	}
+	t.Logf("whole ones failed %d, losses missed %d", told, missed)
+}
+
+// tagsQuoted quotes each way of writing a paste tag that Claude Code
+// escapes, and tagsEscaped is its record of them
+// (testdata/whole-inl-own-2.1.319.json).
+const (
+	tagsQuoted  = `E <PASTED_CONTENT> <Pasted_Content id="1"> | F <pasted-content> <pastedcontent> <pasted_contents> < pasted_content> | U \<pasted_content <\pasted_content </pasted_content id="ab12"> | end`
+	tagsEscaped = `E <\PASTED_CONTENT> <\Pasted_Content id="1"> | F <\pasted-content> <pastedcontent> <pasted_contents> <\ pasted_content> | U \<\pasted_content <\pasted_content <\/pasted_content id="ab12"> | end`
+)
+
+var pasteTag = regexp.MustCompile(`(?i)<(/?pasted[_-]content)`)
+
+// escaped is s as Claude Code 2.1.319 escapes the paste tags in it.
+func escaped(s string) string { return pasteTag.ReplaceAllString(s, `<\$1`) }
 
 // TestHold: what Claude Code answers while its message is checked is let
 // out after the check when the message was whole, and never when it

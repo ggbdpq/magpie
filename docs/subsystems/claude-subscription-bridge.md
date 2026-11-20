@@ -549,9 +549,14 @@ nothing aside (`unseen`: controls, format characters, variation selectors
 and the rest Unicode ignores by default, which Claude Code takes out of a
 paste), in place with no copy; the paths of images Claude Code says it took
 (`[Image: source: <path>]` meta rows) are left out, and the images are
-counted. The tags are marks in the row only: Claude Code escapes a tag the
-message itself holds (2.1.319 writes `<\` for its `<`), so in the message
-it is words. A row whose own tags open more pastes than the message had
+counted. The comparison is one way (`sameWordsBut`): each of the
+message's characters is in the row, in order; the row may hold more that
+are neither letter nor digit, and another such mark in place of one of the
+message's, but none of the message's marks lost with nothing in its
+place. That is how Claude Code escapes: the tags are marks in the row
+only, and a tag the message itself holds it writes with a backslash after
+the `<` (2.1.319; a fullwidth `<` before a tag's name becomes `<\`), which
+is words in both. A row whose own tags open more pastes than the message had
 pieces of words took a paste as many, its marks lost on the way, and isn't
 whole either. What Claude Code answers meanwhile is held (`hold`) for up to
 `wholeWait`. A message that isn't whole ends the turn as `Unpastable`

@@ -1,0 +1,14 @@
+{
+ "sent": [
+  "Code K-FSKA. Quoted: <pasted_content id=\"ab12\">\nhello\n</pasted_content id=\"ab12\">\nReply with exactly the K-XXXX codes you can see, space separated, and nothing else."
+ ],
+ "rows": [
+  {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "\n\n<pasted_content id=\"4302\">\nCode K-FSKA. Quoted: <\\pasted_content id=\"ab12\">\nhello\n<\\/pasted_content id=\"ab12\">\nReply with exactly the K-XXXX codes you can see, space separated, and nothing else.\n</pasted_content id=\"4302\">\n"
+   }
+  }
+ ]
+}

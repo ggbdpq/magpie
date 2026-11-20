@@ -1,0 +1,81 @@
+{
+ "sent": [
+  [
+   {
+    "type": "text",
+    "text": "L00000 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nCode K-VCJ5.\nL00001 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nL00002 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nL00015 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nL00016 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nL00023 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \n"
+   },
+   {
+    "type": "image",
+    "source": {
+     "type": "base64",
+     "media_type": "image/png",
+     "data": ""
+    }
+   },
+   {
+    "type": "text",
+    "text": "L00000 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nCode K-5PQL.\nL00001 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nL00002 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nL00015 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \n"
+   },
+   {
+    "type": "image",
+    "source": {
+     "type": "base64",
+     "media_type": "image/png",
+     "data": ""
+    }
+   },
+   {
+    "type": "text",
+    "text": "Code K-NDL3. Reply with exactly the K-XXXX codes you can see, space separated, and nothing else. Then name the images' colour."
+   }
+  ]
+ ],
+ "rows": [
+  {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "\n\n<pasted_content id=\"f587\">\nL00000 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nCode K-VCJ5.\nL00001 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nL00002 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nL00015 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nL00016 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nL00023 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \n\n\n</pasted_content id=\"f587\">\n\n[Image #2]\n\nL00000 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nCode K-5PQL.\nL00001 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler \n\n<pasted_content id=\"f587\">\n中文 probe text filler 中文 \nL00002 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \nL00015 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 probe text filler 中文 \n\n\n</pasted_content id=\"f587\">\n\n[Image #4]\n\nCode K-NDL3. Reply with exactly the K-XXXX codes you can see, space separated, and nothing else. Then name the images' colour."
+     },
+     {
+      "type": "image",
+      "source": {
+       "type": "base64",
+       "media_type": "image/png",
+       "data": ""
+      }
+     },
+     {
+      "type": "image",
+      "source": {
+       "type": "base64",
+       "media_type": "image/png",
+       "data": ""
+      }
+     }
+    ]
+   }
+  },
+  {
+   "type": "user",
+   "isMeta": true,
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "[Image: source: C:\\Users\\me\\AppData\\Local\\Temp\\magpie-claude-images-8884-2803004158\\image-1.png]"
+     },
+     {
+      "type": "text",
+      "text": "[Image: source: C:\\Users\\me\\AppData\\Local\\Temp\\magpie-claude-images-8884-2803004158\\image-2.png]"
+     }
+    ]
+   }
+  }
+ ]
+}

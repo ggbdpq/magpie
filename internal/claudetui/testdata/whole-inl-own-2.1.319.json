@@ -1,0 +1,14 @@
+{
+ "sent": [
+  "Code K-INUW. A <teammate-message> x </teammate-message> | B <agent-message from=\"x\"> y </agent-message> | C <system-reminder>z</system-reminder> | D ＜pasted_content id=\"ab12\"＞ | E <PASTED_CONTENT> <Pasted_Content id=\"1\"> | F <pasted-content> <pastedcontent> <pasted_contents> < pasted_content> | G a\u3164b | H a\ufe0fb ❤\ufe0f 1\ufe0f\u20e3 | I 葛\udb40\udd00城 | J a\u0080b a\u0085b a\u009bb | K e\u0301 한 | L [Pasted text #1 +3 lines] [Pasted text #2] [...Truncated text #1 +2 lines...] | M [Image #1] [Image #7] | N a\tb\t\tc | O a\u200bb a\u200db a\u2060b a\u00adb a\ufeffb | P &lt;tag&gt; &amp; | Q ultrathink ultraplan | R a\u034fb a\u202eb a\u2028b | S <channel source=\"x\"> <cross-session-message> <function_results> <invoke> | T trailing    | U \\<pasted_content <\\pasted_content </pasted_content id=\"ab12\"> | V \udb40\udc41\udb40\udc42 a\u115fb a\uffa0b | Reply with exactly the K-XXXX codes you can see, space separated, and nothing else."
+ ],
+ "rows": [
+  {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "\n\n<pasted_content id=\"1584\">\nCode K-INUW. A <teammate-message> x </teammate-message> | B <agent-message from=\"x\"> y </agent-message> | C <system-reminder>z</system-reminder> | D <\\pasted_content id=\"ab12\"＞ | E <\\PASTED_CONTENT> <\\Pasted_Content id=\"1\"> | F <\\pasted-content> <pastedcontent> <pasted_contents> <\\ pasted_content> | G ab | H ab ❤\ufe0f 1\ufe0f\u20e3 | I 葛城 | J ab a\nb ab | K e\u0301 한 | L [Pasted text #1 +3 lines] [Pasted text #2] [...Truncated text #1 +2 lines...] | M [Image #1] [Image #7] | N a    b        c | O ab ab ab ab ab | P &lt;tag&gt; &amp; | Q ultrathink ultraplan | R ab ab a\nb | S <channel source=\"x\"> <cross-session-message> <function_results> <invoke> | T trailing    | U \\<\\pasted_content <\\pasted_content <\\/pasted_content id=\"ab12\"> | V  ab ab | Reply with exactly the K-XXXX codes you can see, space separated, and nothing else.\n</pasted_content id=\"1584\">\n"
+   }
+  }
+ ]
+}

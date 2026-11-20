@@ -1255,6 +1255,8 @@ func TestPasteable(t *testing.T) {
 		{"# note", true, userMark + "# note"},
 		{"a\r\nb\x1b[201~c", false, "a\nb[201~c"},
 		{"x / y", true, "x / y"},
+		{"before \u009b1;2;3mAFTER\u0080\u009f", false, "before 1;2;3mAFTER"},
+		{"one\u0085two", false, "one\ntwo"},
 	} {
 		if got := pasteable(c.in, c.busy); got != c.want {
 			t.Errorf("pasteable(%q, %v) = %q, want %q", c.in, c.busy, got, c.want)

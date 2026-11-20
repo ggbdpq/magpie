@@ -1312,16 +1312,16 @@ func pasteable(text string, busy bool) string {
 }
 
 // pasteClean is text without an escape that would end a paste early, nor
-// other control characters, its lines ended by \n.
+// other control characters (C0 and C1), its lines ended by \n.
 func pasteClean(text string) string {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	return strings.Map(func(r rune) rune {
 		switch {
-		case r == '\r':
+		case r == '\r', r == 0x85:
 			return '\n'
 		case r == '\n', r == '\t':
 			return r
-		case r < 0x20, r == 0x7f:
+		case r < 0x20, r == 0x7f, 0x80 <= r && r <= 0x9f:
 			return -1
 		}
 		return r

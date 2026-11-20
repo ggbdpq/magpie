@@ -688,8 +688,8 @@ func TestBiliVersionPastItsWarnings(t *testing.T) {
 }
 
 // magpie's own bili start is kept while it runs: one slow to answer (a big
-// session store's save, or its open) isn't ended, and a new one runs only
-// once it exited.
+// session store's save, or its open) isn't ended, a new one runs only
+// once it exited, and none runs on a port another bili holds.
 func TestBiliServeKeepsItsOwnWhileRunning(t *testing.T) {
 	h := sandbox(t)
 	bin := filepath.Join(h, "bin", "bili")
@@ -701,11 +701,11 @@ func TestBiliServeKeepsItsOwnWhileRunning(t *testing.T) {
 	} else {
 		testenv.Program(t, bin, "#!/bin/sh\nexec /bin/sleep 60\n")
 	}
-	serving, wait := biliServing, biliWait
-	biliServing, biliWait = func() bool { return false }, 300*time.Millisecond
+	serving, held, wait := biliServing, biliHeld, biliWait
+	biliServing, biliHeld, biliWait = func() bool { return false }, func() bool { return false }, 300*time.Millisecond
 	t.Cleanup(func() {
 		biliStop()
-		biliServing, biliWait = serving, wait
+		biliServing, biliHeld, biliWait = serving, held, wait
 	})
 	running := func(done chan struct{}) bool {
 		select {
@@ -735,5 +735,12 @@ func TestBiliServeKeepsItsOwnWhileRunning(t *testing.T) {
 	_ = biliServe(bin)
 	if biliServer.done == first || !running(biliServer.done) {
 		t.Fatal("no new bili start after magpie's own exited")
+	}
+
+	// a port another bili holds, slow to answer, gets no second one
+	biliStop()
+	biliHeld = func() bool { return true }
+	if err := biliServe(bin); err == nil || biliServer.cancel != nil {
+		t.Fatalf("a held port got a bili start of magpie's (err %v)", err)
 	}
 }

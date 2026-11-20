@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -92,6 +93,18 @@ var biliServing = func() bool {
 	return res.StatusCode == http.StatusOK && json.NewDecoder(res.Body).Decode(&h) == nil && h.OK
 }
 
+// biliHeld says something listens at biliOrigin, answering or not: the
+// system takes a connection for a bili whose event loop is busy. A var
+// for tests.
+var biliHeld = func() bool {
+	c, err := net.DialTimeout("tcp", strings.TrimPrefix(biliOrigin, "http://"), time.Second)
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
+}
+
 // biliServer is the bili start magpie runs: under ctx (KeepLinked's,
 // which ends with magpie), stopped by cancel, done closed once it exited.
 var biliServer struct {
@@ -129,6 +142,12 @@ var biliServe = func(bin string) error {
 			// that runs a new one.
 			return nil
 		}
+	}
+	if biliHeld() {
+		// another bili holds the port, slow to answer (one the user runs,
+		// used as it is): a second one would load the same session store
+		// only to fail to listen
+		return fmt.Errorf("bili start: %s is held but didn't answer its health check", biliOrigin)
 	}
 	parent := biliServer.ctx
 	if parent == nil {

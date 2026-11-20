@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"compress/gzip"
 	"io"
 	"mime"
 	"net/http"
@@ -22,7 +23,8 @@ import (
 // the name as they hold the model. Replies say the real model.
 
 // maxAliasBody is the largest JSON body read to find its model: a larger
-// one goes on as it came, which asks the model by its real id only.
+// one goes on as it came, which asks the model by its real id only. A body
+// that came gzip is held to it unpacked, and to it packed.
 const maxAliasBody = 32 << 20
 
 // aliasRequest is r with the model a key's name stands for in the model's
@@ -65,12 +67,21 @@ func withPath(r *http.Request, path string) *http.Request {
 
 // aliasBody swaps the model of a JSON body, every other byte as it was.
 func aliasBody(r *http.Request, who access.Identity) *http.Request {
-	if r.Body == nil || r.Body == http.NoBody || r.Header.Get("Content-Encoding") != "" {
+	if r.Body == nil || r.Body == http.NoBody {
 		return r
 	}
 	// a form or a multipart body is no JSON; a client that says no type
 	// sends it
 	if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt != "" && !strings.HasSuffix(mt, "json") {
+		return r
+	}
+	// a client that gzips the large bodies it sends, a proxy on the way to
+	// magpie among them, names the model in the packed body as any other:
+	// gzip is the one encoding a name is read through here
+	if gzipped(r) {
+		return aliasPackedBody(r, who)
+	}
+	if r.Header.Get("Content-Encoding") != "" {
 		return r
 	}
 	orig := r.Body
@@ -93,6 +104,61 @@ func aliasBody(r *http.Request, who access.Identity) *http.Request {
 	r.Header = r.Header.Clone()
 	r.Header.Set("Content-Length", strconv.Itoa(len(buf)))
 	r.GetBody = nil
+	return r
+}
+
+// gzipped is whether the body came gzip, which is the encoding a proxy that
+// packs the large bodies it forwards sets. "identity", which is no packing,
+// and every other encoding go the way they went.
+func gzipped(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))) {
+	case "gzip", "x-gzip":
+		return true
+	}
+	return false
+}
+
+// aliasPackedBody is aliasBody for a body that came gzip: the body is
+// unpacked to find its model, within maxAliasBody of unpacked bytes, and a
+// name of the key's is swapped in the unpacked body, which goes on as it is,
+// "Content-Encoding" taken off and the length set. A model that is no name of
+// the key's, a body that can't be unpacked and one larger than maxAliasBody
+// go on as they came, every packed byte of them, which the routes behind read
+// through their own decoding.
+func aliasPackedBody(r *http.Request, who access.Identity) *http.Request {
+	return aliasPackedBodyTo(r, who, maxAliasBody)
+}
+
+// aliasPackedBodyTo is aliasPackedBody with the limit given, so that a test
+// can hold a small body to a small one.
+func aliasPackedBodyTo(r *http.Request, who access.Identity, limit int64) *http.Request {
+	orig := r.Body
+	// the packed bytes read so far: a body given back goes on with them, then
+	// with the rest of itself, byte for byte as it came
+	var packed bytes.Buffer
+	z, err := gzip.NewReader(io.TeeReader(io.LimitReader(orig, limit+1), &packed))
+	if err == nil {
+		var plain []byte
+		if plain, err = io.ReadAll(io.LimitReader(z, limit+1)); err == nil && int64(len(plain)) <= limit {
+			if real, ok := who.AliasFor(modelOf(plain)); ok {
+				plain = rewriteModel(plain, real)
+				r.Body = io.NopCloser(bytes.NewReader(plain))
+				r.ContentLength = int64(len(plain))
+				r.Header = r.Header.Clone()
+				r.Header.Del("Content-Encoding")
+				r.Header.Set("Content-Length", strconv.Itoa(len(plain)))
+				// the body is one piece now and says how long it is, so a client
+				// that sent it chunked is not passed on as one
+				r.TransferEncoding = nil
+				r.GetBody = nil
+				return r
+			}
+		}
+	}
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(packed.Bytes()), orig), orig}
 	return r
 }
 

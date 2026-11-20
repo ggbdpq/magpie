@@ -7029,7 +7029,16 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// does the relay of one the provider understands as it came
 			body = withoutFields(body, "temperature", "top_p")
 		}
-		body = developerAsSystem(body)
+		if chatTakesNoDeveloper(p) || !s.fits(p.ID, developerRoleRefused(model), proto) {
+			// a backend that takes no developer turn is given system from
+			// the start: DeepSeek's own API turned Pi's away for good (422
+			// "unknown variant `developer`", #1), and one that has turned a
+			// request over it away before is not refused again (below).
+			// Every other upstream is given the caller's roles as sent
+			// (#7256): OpenAI keeps a developer turn's prompt cache apart
+			// from a system one's, so the swap cost a cache miss a turn
+			body = developerAsSystem(body)
+		}
 		// a content of text parts, which a vendor's server that takes a
 		// string alone turns the whole request away for (Atria on Discord)
 		body = textPartsAsString(body)
@@ -7447,6 +7456,22 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// asked once more without it, and not sent it again
 			if nb, changed := withoutToolStrict(proto, body); changed {
 				refused = append(refused, toolStrictRefused)
+				body = nb
+				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
+					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+				}
+				continue
+			}
+		}
+		if len(fs) == 0 && len(ms) == 0 && proto == provider.Chat && developerRoleRefusal.Match(wordsOf(b)) {
+			// a backend that takes no developer turn (DeepSeek's own API
+			// answers one "unknown variant `developer`", #1): asked once
+			// more with its messages as system, and so from then on. The
+			// caller's roles went as they were sent first (#7256): an
+			// upstream that takes the role keeps a developer turn's prompt
+			// cache apart from a system one's
+			if nb := developerAsSystem(body); !bytes.Equal(nb, body) {
+				refused = append(refused, developerRoleRefused(model))
 				body = nb
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
 					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
@@ -10416,10 +10441,15 @@ func rewriteModel(body []byte, model string) []byte {
 	return append(out, body[v.Index+len(v.Raw):]...)
 }
 
-// developerAsSystem turns "developer" messages into "system" ones. Agents
+// developerAsSystem turns "developer" messages into "system" ones, for a
+// backend that takes no developer turn: DeepSeek's own API answers one 422
+// "unknown variant `developer`" (#1), and one that has turned a request
+// over it away before is not refused again (developer_role.go). Agents
 // such as Pi send the developer role to reasoning models, which OpenAI
-// accepts, but other Chat Completions backends (DeepSeek among them) reject
-// the whole request; every backend accepts system, OpenAI included.
+// accepts. Every backend accepts system, OpenAI included, so the swap is
+// safe wherever it goes — but it goes only where the role isn't taken:
+// upstreams that take it keep a developer turn's prompt cache apart from a
+// system one's, and the swap cost a cache miss a turn there (#7256).
 func developerAsSystem(body []byte) []byte {
 	if !bodyHas(body, `"developer"`) {
 		return body

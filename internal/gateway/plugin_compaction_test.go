@@ -17,8 +17,10 @@ import (
 // can then keep the summarization turn out of its live tool validation,
 // where Claude Code's replayed history otherwise dies as a 409 the client
 // retried 87 times in one session (#7189). The mark is the gateway's own
-// verdict: a client's X-Magpie-Compaction of its own is not passed on as
-// one, and a plain turn says nothing.
+// verdict, read from the conversation: a client's X-Magpie-Compaction of
+// its own is not passed on as one, and a kind the caller's metadata named
+// (x-openai-subagent, a thread's source — #7189 review) or a plain turn
+// says nothing.
 func TestPluginToldTheCompaction(t *testing.T) {
 	var mu sync.Mutex
 	var got, vendored []http.Header
@@ -44,6 +46,7 @@ func TestPluginToldTheCompaction(t *testing.T) {
 	}))
 	for _, tc := range []struct {
 		name, system, body, forge string
+		extra                     map[string]string
 		want                      string
 	}{
 		{
@@ -58,6 +61,18 @@ func TestPluginToldTheCompaction(t *testing.T) {
 			body:  `,"messages":[{"role":"user","content":"hi"}]`,
 			forge: "X-Magpie-Compaction: 1\r\n",
 		},
+		{
+			// a plain turn whose caller names Codex's subagent kind: the
+			// kind is the caller's word for accounting, not the gateway's
+			// verdict on the conversation (#7189 review)
+			name:  "a caller's subagent kind is not the gateway's",
+			body:  `,"messages":[{"role":"user","content":"hi"}]`,
+			extra: map[string]string{"X-Openai-Subagent": "compact"},
+		},
+		{
+			name: "a caller's thread source is not the gateway's",
+			body: `,"client_metadata":{"thread_source":"compact"},"messages":[{"role":"user","content":"hi"}]`,
+		},
 	} {
 		mu.Lock()
 		got, vendored = nil, nil
@@ -70,6 +85,9 @@ func TestPluginToldTheCompaction(t *testing.T) {
 				return ""
 			}()+tc.body+`}`))
 		rec.Header.Set("X-Magpie-Compaction", "1")
+		for k, v := range tc.extra {
+			rec.Header.Set(k, v)
+		}
 		rr := httptest.NewRecorder()
 		New().Handler().ServeHTTP(rr, rec)
 		if rr.Code != 200 {

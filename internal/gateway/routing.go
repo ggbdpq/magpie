@@ -2455,6 +2455,13 @@ func keepRetry(dst, src http.Header, body []byte) {
 			dst[k] = vs
 		}
 	}
+	if v := src.Get("X-Should-Retry"); v != "" {
+		// the vendor said whether the agent should ask this again
+		// (Anthropic's false beside an error it won't take again; a plugin
+		// declining an oversized compaction, #7189): the rebuilt error
+		// keeps the word, or the agent retries a refusal for good
+		dst.Set("X-Should-Retry", v)
+	}
 	now := time.Now()
 	if d := resetsAt(body, now); d > 0 {
 		// the error the agent gets says it in words, not resets_at: the

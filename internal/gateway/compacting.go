@@ -66,15 +66,20 @@ var compactSystems = []string{
 // compactAsk is said in a text part of the last user message of a
 // compaction request: within compactLead of the part's start, or, for an
 // agent that sends the conversation ahead of it in the same part, anywhere
-// in a part that opens with that agent's own first line (opens).
+// in a part that opens with that agent's own first line (opens). An ask
+// with a with is one an ordinary turn may quote on its own ("Here is the
+// full conversation to compact." opens a question about Alma as well): a
+// turn that declares tools counts it only with the agent's own words
+// beside it (#7189 review).
 type compactAsk struct {
-	ask, opens string
+	ask, opens, with string
 }
 
 // compactAsks are in the last user message of a compaction request.
 var compactAsks = []compactAsk{
-	// Claude Code's /compact and auto-compact
-	{ask: "Your task is to create a detailed summary of the conversation so far"},
+	// Claude Code's /compact and auto-compact, behind its TEXT ONLY
+	// preamble when the system prompt is gone
+	{ask: "Your task is to create a detailed summary of the conversation so far", with: "CRITICAL: Respond with TEXT ONLY"},
 	// Codex (and magpie's own for a Codex compaction_trigger)
 	{ask: "You are performing a CONTEXT CHECKPOINT COMPACTION."},
 	// Kimi Code (prompts/compact.md, a part of its own after the conversation)
@@ -85,13 +90,23 @@ var compactAsks = []compactAsk{
 	// and sends the conversation behind it: a later compaction merges the
 	// summary it made before (#2833, as the report quotes it), the first
 	// has none (Alma 0.4.335's own prompt). Both are also known by their
-	// system prompt above, which a route that drops it loses.
-	{ask: "Merge the previous summary with the new conversation."},
-	{ask: "Here is the full conversation to compact."},
+	// system prompt above, which a route that drops it loses; both travel
+	// with their Produce the <analysis> instruction, which an ordinary
+	// turn quoting the ask alone hasn't.
+	{ask: "Merge the previous summary with the new conversation.", with: "Produce the <analysis>"},
+	{ask: "Here is the full conversation to compact.", with: "Produce the <analysis>"},
 	// DeepSeek Harness (compaction-basic's COMPACTION_INSTRUCTION, a user
 	// message after the conversation): its llm-pi-ai routes, magpie's
 	// among them, send no x-deepseek-harness-compact mark (#5395)
 	{ask: "You are now acting as a compaction engine for this AI coding assistant."},
+}
+
+// declaresTools says the request offers tools: its tools array, or the
+// web search or the Google tools a client offers beside them. A turn with
+// tools is a working turn, whose ordinary asks may quote a compaction
+// prompt (#7189 review), so its asks count only in their strong shapes.
+func declaresTools(req *Request) bool {
+	return len(req.Tools) > 0 || req.WebSearch || len(req.GoogleTools) > 0
 }
 
 // leads reports whether p begins within compactLead bytes of text's start.
@@ -110,10 +125,21 @@ func compacting(req *Request) bool {
 			return true
 		}
 	}
+	// a turn that declares tools is a working turn: an ask an ordinary
+	// turn may quote counts only with the agent's own words beside it
+	// (#7189 review)
+	strong := declaresTools(req)
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		m := req.Messages[i]
 		if m.Role != "user" {
-			continue
+			// a system or developer notice trailing the ask hides nothing;
+			// an assistant's tail does stop the reach-back, so a prefill
+			// after an ordinary turn isn't told by a user turn that quoted
+			// an ask before it (#7189 review)
+			if m.Role == "system" || m.Role == "developer" {
+				continue
+			}
+			break
 		}
 		for _, p := range m.Parts {
 			if p.Kind != Text {
@@ -122,6 +148,9 @@ func compacting(req *Request) bool {
 			for _, a := range compactAsks {
 				if a.opens == "" && leads(p.Text, a.ask) ||
 					a.opens != "" && strings.HasPrefix(strings.TrimSpace(p.Text), a.opens) && strings.Contains(p.Text, a.ask) {
+					if strong && a.with != "" && !leads(p.Text, a.with) {
+						continue
+					}
 					return true
 				}
 			}

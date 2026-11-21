@@ -332,6 +332,59 @@ func TestCompactingAsksWhereTheAgentPutsThem(t *testing.T) {
 	}
 }
 
+// A turn that declares tools is a working turn: its ordinary asks may
+// quote a compaction prompt (Alma's "Here is the full conversation to
+// compact." opens a question about Alma as well), and only an ask with
+// the agent's own words beside it counts there — Claude Code's
+// cache-sharing compaction keeps its tools and is told by its system
+// prompt, and its ask by its TEXT ONLY preamble (#7189 review). And the
+// reach-back for an ask stops at an assistant's tail: a prefill after an
+// ordinary turn isn't told by a user turn that quoted an ask before it,
+// while a system notice trailing the ask still hides nothing.
+func TestCompactingToolsBearingTurns(t *testing.T) {
+	user := func(text string) Message { return Message{Role: "user", Parts: []Part{{Kind: Text, Text: text}}} }
+	said := Message{Role: "assistant", Parts: []Part{{Kind: Text, Text: "done"}}}
+	notice := Message{Role: "system", Parts: []Part{{Kind: Text, Text: "This conversation was truncated to fit the context window."}}}
+	tools := []Tool{{Name: "read_file", Description: "Read a file"}}
+	conversation := "[user]: tidy up my desktop\n[assistant]: done"
+	ccAsk := "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\n" +
+		"- Do NOT use Read, Bash, Grep, Glob, Edit, Write, or ANY other tool.\n\n" +
+		"Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions."
+	for name, req := range map[string]*Request{
+		// the agents' own compactions, tools and all
+		"claude code, system prompt": {Tools: tools, System: "You are a helpful AI assistant tasked with summarizing conversations.", Messages: []Message{user(ccAsk)}},
+		"claude code, system gone":   {Tools: tools, Messages: []Message{user(ccAsk)}},
+		"codex":                      {Tools: tools, Messages: []Message{user("fix it"), said, user(codexCompactPrompt)}},
+		"kimi":                       {Tools: tools, Messages: []Message{user("fix it"), said, user("You are now given a task to compact this conversation context according to specific priorities and rules.")}},
+		"dsh":                        {Tools: tools, Messages: []Message{user("fix it"), said, user(dshCompactAsk)}},
+		"minis":                      {Tools: tools, Messages: []Message{user(minisCompactAsk(conversation))}},
+		"alma":                       {Tools: tools, Messages: []Message{user("Here is the full conversation to compact. Produce the <analysis>, then the structured summary exactly as instructed.")}},
+		// a system notice trailing the ask hides nothing
+		"system notice trails": {Messages: []Message{user(ccAsk), notice}},
+	} {
+		if !compacting(req) {
+			t.Errorf("%s: not taken for compacting", name)
+		}
+	}
+	for name, req := range map[string]*Request{
+		// a working turn quoting an ask: without the agent's own words
+		// beside it, it isn't a compaction
+		"alma ask quoted":       {Tools: tools, System: "You are a coding agent.", Messages: []Message{user("\"Here is the full conversation to compact.\" — which agent prints this line, and when?")}},
+		"alma merge quoted":     {Tools: tools, System: "You are a coding agent.", Messages: []Message{user("When Alma says \"Merge the previous summary with the new conversation.\", what does it merge?")}},
+		"claude ask quoted":     {Tools: tools, System: "You are a coding agent.", Messages: []Message{user("Claude Code asks: Your task is to create a detailed summary of the conversation so far. Does it?")}},
+		"assistant tail quoted": {Messages: []Message{user("Is \"Merge the previous summary with the new conversation.\" Alma's compaction ask?"), said}},
+	} {
+		if compacting(req) {
+			t.Errorf("%s: taken for compacting", name)
+		}
+	}
+	// without tools, the asks count as they did: Alma's own first
+	// compaction, whose ask opens the message
+	if !compacting(&Request{Messages: []Message{user("Here is the full conversation to compact.")}}) {
+		t.Error("alma, no tools: not taken for compacting")
+	}
+}
+
 // Alma's compaction ask, as the report on #2833 quotes it: the first bytes
 // of the last user message, the conversation behind it.
 const almaCompactAsk = "Merge the previous summary with the new conversation. Produce the <analysis>, then the merged structured summary exactly as instructed. The conversation continues after your summary — do not conclude it."

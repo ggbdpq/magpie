@@ -2776,13 +2776,17 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	var clientResponseID string // only a reply released to the client owns this ID
 	call := Call{Time: start, From: from, Model: unprefixed(modelOf(body)), Agent: who.agent, Via: who.via, Kind: requestCallKind(r.Header, metadata),
 		wire: archiving(r, capture, start, nil), headers: headerLogOf(r.Context())}
+	// the gateway's own verdict that this is an agent compacting its
+	// conversation, by the conversation's content or the compact path
+	// itself: a kind the caller's metadata named is not it (#7189 review)
+	ownVerdict := factsOf(from, plain).compact || unaryCompact(r)
 	// an agent compacting its conversation is recorded as the compaction
 	// it is, as Codex's are by their header: Claude Code's compaction is a
 	// call its transcript never records (skipTranscript), so this row is
 	// the only place it is counted, and as a plain turn it read as no
 	// compaction at all (shangyuan0818 on Discord), the OTel export left
 	// it to that transcript, and its reply ended the agent's turn
-	if call.Kind == "" && (factsOf(from, plain).compact || unaryCompact(r)) {
+	if call.Kind == "" && ownVerdict {
 		call.Kind = KindCompact
 	}
 	// Claude Code's auto mode classifier and AgentSummary name themselves
@@ -2794,8 +2798,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	// provider's fetch as CompactionHeader: a bridge that replays history
 	// through its live tool validation dies on the replayed results as a
 	// 409 the client retries (#7189). The try carries the verdict in its
-	// context; a client's X-Magpie-Compaction of its own is never it.
-	if call.Kind == KindCompact {
+	// context; the verdict is the gateway's own, read from the
+	// conversation, so a kind caller metadata named (x-openai-subagent, a
+	// thread's source) or a client's X-Magpie-Compaction of its own is
+	// never it.
+	if ownVerdict {
 		r = r.WithContext(withCompactionMark(r.Context()))
 	}
 	// the reply counted as it reaches the agent, for the Routing page
@@ -5872,6 +5879,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			}
 			if wait := time.Until(heldBack); wait > 0 {
 				w.Header().Set("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
+			}
+		}
+		if !hw.passing {
+			// the try's vendor said whether the agent should ask again
+			// (#7189): an error rebuilt for the agent keeps the word, as
+			// one released as it is would
+			if v := hw.header.Get("X-Should-Retry"); v != "" {
+				w.Header().Set("X-Should-Retry", v)
 			}
 		}
 		if hw.refused && !hw.passing && from == provider.Anthropic && hw.handBack() {

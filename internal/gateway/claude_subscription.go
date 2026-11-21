@@ -4445,7 +4445,8 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 	retell := false      // the run is told to make its calls once this turn's result is in
 	answerAsked := false // the interactive mode's turn was asked for its answer tool's call
 	retold := false      // this reply was told so
-	var pmu sync.Mutex   // held for each line, and by quiet's settle
+	var rejected *rejectedLimit
+	var pmu sync.Mutex // held for each line, and by quiet's settle
 	var quiet *time.Timer
 	text := func(s string) {
 		if s != "" && !r.schema {
@@ -4787,6 +4788,9 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 			if user, own := ownerAccount(r.owned()); user != "" && !(own && provider.ClaudeCodeMovedOff(user)) {
 				provider.NoteClaudeLimits(user, claudeLimits(envelope.RateLimitInfo))
 			}
+			if rej, seen := claudeRejectedLimit(envelope.RateLimitInfo); seen {
+				rejected = rej
+			}
 			return
 		}
 		if envelope.Type == "result" && retell && !envelope.IsError {
@@ -4820,6 +4824,8 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 		}
 		if envelope.Type == "result" {
 			retell, answerAsked = false, false
+			rej := rejected
+			rejected = nil
 			silent, said := !begun, aside
 			begun, aside = false, ""
 			// a turn that failed — out of quota, rate limited — ends with
@@ -4852,7 +4858,7 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 					!(own && provider.ClaudeCodeMovedOff(user)) {
 					provider.NoteClaudeSignInFailure(user, r.loginVersion, text)
 				}
-				r.emit(Event{Kind: KError, Text: text, Status: envelope.APIErrorStatus, Code: errKind, RequestID: reqID})
+				r.emit(Event{Kind: KError, Text: text, Status: envelope.APIErrorStatus, Code: errKind, RequestID: reqID, Rejected: rej})
 				r.endSegment()
 			case cut:
 				failed("and Claude Code ended the turn without asking again")
@@ -5175,6 +5181,50 @@ func claudeLimits(raw json.RawMessage) []provider.ClaudeLimit {
 		}
 	}
 	return out
+}
+
+// claudeRejectedLimit extracts a rejected unified rate-limit claim and reset
+// from a rate_limit_event's rate_limit_info. seen is true whenever status was
+// present, so a subsequent "allowed" event clears an earlier rejection.
+func claudeRejectedLimit(raw json.RawMessage) (*rejectedLimit, bool) {
+	type window struct {
+		Status      string  `json:"status"`
+		Utilization float64 `json:"utilization"`
+		ResetsAt    int64   `json:"resetsAt"`
+	}
+	var info struct {
+		Status         string            `json:"status"`
+		RateLimitType  string            `json:"rateLimitType"`
+		ResetsAt       int64             `json:"resetsAt"`
+		OverageStatus  string            `json:"overageStatus"`
+		UnifiedWindows map[string]window `json:"unifiedWindows"`
+	}
+	if json.Unmarshal(raw, &info) != nil || info.Status == "" {
+		return nil, false
+	}
+	if info.Status != "rejected" {
+		return nil, true
+	}
+	claim, at := info.RateLimitType, info.ResetsAt
+	if at <= 0 && claim != "" {
+		at = info.UnifiedWindows[claim].ResetsAt
+	}
+	if claim == "" || at <= 0 {
+		for _, kind := range []string{"five_hour", "seven_day", "seven_day_overage_included", "seven_day_opus", "seven_day_sonnet"} {
+			w, ok := info.UnifiedWindows[kind]
+			if !ok || (w.Status != "rejected" && w.Utilization < 1) {
+				continue
+			}
+			if claim == "" {
+				claim = kind
+			}
+			if at <= 0 && w.ResetsAt > 0 {
+				at = w.ResetsAt
+			}
+			break
+		}
+	}
+	return &rejectedLimit{claim: claim, resetsAt: at, overageStatus: info.OverageStatus}, true
 }
 
 // carryUpdate keeps this message's known 1h writes when a partial split
@@ -7373,6 +7423,163 @@ var ratelimitWindows = map[string]string{
 	"seven_day_overage_included": "7d_oi",
 }
 
+// claudeResetText reads the reset time written in a Claude Code usage-limit
+// refusal such as "You've hit your 5-hour limit · resets 1:20pm (Asia/Taipei)"
+// or "You've hit your weekly limit · resets Oct 9, 2:59pm (UTC)".
+var claudeResetText = lazyre.New(`(?i)\bresets\s+([^()\r\n·]+(?:\([^()\r\n]+\))?)`)
+
+// claudeMonthWord distinguishes a weekly date-and-time reset ("Oct 9, 2:59pm")
+// from a 5-hour clock-only reset ("1:20pm (Asia/Taipei)").
+var claudeMonthWord = lazyre.New(`(?i)\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b`)
+
+func claudeClaimFromText(msg string) string {
+	l := strings.ToLower(msg)
+	switch {
+	case strings.Contains(l, "5-hour"), strings.Contains(l, "5 hour"),
+		strings.Contains(l, "five-hour"), strings.Contains(l, "five hour"),
+		strings.Contains(l, "session limit"):
+		return "five_hour"
+	case strings.Contains(l, "weekly"), strings.Contains(l, "7-day"),
+		strings.Contains(l, "7 day"), strings.Contains(l, "seven-day"),
+		strings.Contains(l, "seven day"):
+		return "seven_day"
+	case strings.Contains(l, "fable limit"):
+		return "seven_day_overage_included"
+	case strings.Contains(l, "opus limit"):
+		return "seven_day_opus"
+	case strings.Contains(l, "sonnet limit"):
+		return "seven_day_sonnet"
+	}
+	return ""
+}
+
+func claudeClaimSpan(claim string) time.Duration {
+	switch {
+	case claim == "five_hour":
+		return 5 * time.Hour
+	case strings.HasPrefix(claim, "seven_day"):
+		return 7 * 24 * time.Hour
+	}
+	return 0
+}
+
+// rejectedLimitHeaders writes Anthropic's unified rejection headers on a
+// Claude subscription 429 so a downstream Claude Code signed in to claude.ai
+// (including T3 Code's claudeAgent) emits rate_limit_event and
+// api_error_params.rate_limit_info with resetsAt and can auto-resume.
+func rejectedLimitHeaders(w http.ResponseWriter, from provider.Protocol, owner, msg string, rej *rejectedLimit, now time.Time) {
+	if rej == nil && !quotaSaid(msg) {
+		return
+	}
+	var claim, overage string
+	var at int64
+	if rej != nil {
+		claim, at, overage = rej.claim, rej.resetsAt, rej.overageStatus
+	}
+	if claim == "" {
+		claim = claudeClaimFromText(msg)
+	}
+	if at <= now.Unix() {
+		if user, own := ownerAccount(owner); user != "" && !(own && provider.ClaudeCodeMovedOff(user)) {
+			var best provider.ClaudeLimit
+			for _, l := range provider.KeptClaudeLimits(user) {
+				if l.Used < 1 || l.ResetsAt <= now.Unix() {
+					continue
+				}
+				if claim != "" && l.Kind == claim {
+					best = l
+					break
+				}
+				if l.ResetsAt > best.ResetsAt {
+					best = l
+				}
+			}
+			if best.ResetsAt > now.Unix() {
+				at = best.ResetsAt
+				if claim == "" {
+					claim = best.Kind
+				}
+			}
+		}
+	}
+	if at <= now.Unix() {
+		if d := resetsAt([]byte(msg), now); d > 0 {
+			at = now.Add(d).Unix()
+			if claim == "" {
+				if d <= 7*time.Hour {
+					claim = "five_hour"
+				} else {
+					claim = "seven_day"
+				}
+			}
+		}
+	}
+	if at <= now.Unix() {
+		if m := claudeResetText.FindStringSubmatch(msg); m != nil {
+			clock := strings.TrimRight(strings.TrimSpace(m[1]), ".,;")
+			span := claudeClaimSpan(claim)
+			if span == 0 {
+				if claudeMonthWord.MatchString(clock) {
+					span, claim = 7*24*time.Hour, "seven_day"
+				} else {
+					span, claim = 5*time.Hour, "five_hour"
+				}
+			}
+			if t, ok := provider.ClaudeResetTime(clock, now, span); ok && t.After(now) {
+				at = t.Unix()
+			}
+		}
+	}
+	if at <= now.Unix() || claim == "" {
+		return
+	}
+	resetStr := strconv.FormatInt(at, 10)
+	if hw, ok := w.(*holdWriter); ok {
+		hw.note(resetsHeader, resetStr)
+	}
+	if from != provider.Anthropic {
+		return
+	}
+	set := func(k, v string) {
+		if hw, ok := w.(*holdWriter); ok {
+			hw.note(k, v)
+		} else {
+			w.Header().Set(k, v)
+		}
+	}
+	set("anthropic-ratelimit-unified-status", "rejected")
+	set("anthropic-ratelimit-unified-reset", resetStr)
+	set("anthropic-ratelimit-unified-representative-claim", claim)
+	if overage != "" {
+		set("anthropic-ratelimit-unified-overage-status", overage)
+	}
+	if win, ok := ratelimitWindows[claim]; ok {
+		set("anthropic-ratelimit-unified-"+win+"-status", "rejected")
+		set("anthropic-ratelimit-unified-"+win+"-utilization", "1")
+		set("anthropic-ratelimit-unified-"+win+"-reset", resetStr)
+	}
+}
+
+// replayUnifiedRejectedHeaders writes a resting candidate's saved
+// anthropic-ratelimit-unified-* rejection headers onto a held 429 reply
+// (timedHeld / quotaHeld), clamping the top-level reset to back when another
+// resting candidate in the pool recovers sooner.
+func replayUnifiedRejectedHeaders(hw *holdWriter, saved http.Header, back, now time.Time) {
+	if !strings.EqualFold(saved.Get("anthropic-ratelimit-unified-status"), "rejected") {
+		return
+	}
+	for k, vs := range saved {
+		if len(vs) > 0 && strings.HasPrefix(strings.ToLower(k), "anthropic-ratelimit-unified-") {
+			hw.note(k, vs[0])
+		}
+	}
+	if back.After(now) {
+		if at, err := strconv.ParseInt(saved.Get("anthropic-ratelimit-unified-reset"), 10, 64); err != nil || at > back.Unix() {
+			hw.note("anthropic-ratelimit-unified-reset", strconv.FormatInt(back.Unix(), 10))
+		}
+	}
+}
+
 // serveSubscription answers a request through an agent's own binary: a new
 // turn starts it, a request carrying tool results resumes the turn waiting
 // on them.
@@ -7711,9 +7918,16 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
 	// the allowance as kept now, and again as the reply begins, its turn
 	// having told it by then
 	var begin func()
+	var onLimit func(code int, msg string, rej *rejectedLimit)
 	if name == "Claude Code" {
 		limitHeaders(w, owner)
 		begin = func() { limitHeaders(w, owner) }
+		onLimit = func(code int, msg string, rej *rejectedLimit) {
+			if code == http.StatusTooManyRequests {
+				limitHeaders(w, owner)
+				rejectedLimitHeaders(w, from, owner, msg, rej, time.Now())
+			}
+		}
 	}
 	run.mu.Lock()
 	req.interactive = run.tui
@@ -7723,7 +7937,7 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
 		defer close(quit)
 		events = keepBridgeHeard(events, quit)
 	}
-	code, msg := relayFailing(w, r, from, name, req, events, usage, abort, begin, func(said, stop string, ok bool) {
+	code, msg := relayFailing(w, r, from, name, req, events, usage, abort, begin, onLimit, func(said, stop string, ok bool) {
 		if !gone() {
 			return // the client went first: letGo has the run
 		}
@@ -8050,13 +8264,14 @@ func keepBridgeHeard(events <-chan Event, quit <-chan struct{}) <-chan Event {
 // event goes out.
 func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name string, req *Request, events <-chan Event, usage *Usage,
 	abort, begin func(), ended func(said, stop string, ok bool)) (int, string) {
-	return relayFailing(w, r, from, name, req, events, usage, func(int, string) { abort() }, begin, ended)
+	return relayFailing(w, r, from, name, req, events, usage, func(int, string) { abort() }, begin, nil, ended)
 }
 
 // relayFailing is relay with abort told the status and words the client
-// is answered with (bridgeFailed).
+// is answered with (bridgeFailed), and onLimit told a failure's rejected
+// rate-limit info before the error response is written.
 func relayFailing(w http.ResponseWriter, r *http.Request, from provider.Protocol, name string, req *Request, events <-chan Event, usage *Usage,
-	abort func(code int, msg string), begin func(), ended func(said, stop string, ok bool)) (int, string) {
+	abort func(code int, msg string), begin func(), onLimit func(code int, msg string, rej *rejectedLimit), ended func(said, stop string, ok bool)) (int, string) {
 	stream := req.Stream
 	if stream {
 		// an error before any of the answer — out of quota, rate limited —
@@ -8100,6 +8315,13 @@ func relayFailing(w http.ResponseWriter, r *http.Request, from provider.Protocol
 				}
 				usage.add(Usage{ErrType: head[n-1].Code, RequestID: head[n-1].RequestID})
 				msg = thirdPartyRefused(name, req, code, msg)
+			}
+			if onLimit != nil {
+				var rej *rejectedLimit
+				if n > 0 {
+					rej = head[n-1].Rejected
+				}
+				onLimit(code, msg, rej)
 			}
 			return writeError(w, from, code, name+": "+msg), msg
 		}
@@ -8187,6 +8409,9 @@ func relayFailing(w http.ResponseWriter, r *http.Request, from provider.Protocol
 		}
 		usage.add(Usage{ErrType: col.errCode})
 		msg = thirdPartyRefused(name, req, code, msg)
+		if onLimit != nil {
+			onLimit(code, msg, col.errRejected)
+		}
 		return writeError(w, from, code, name+": "+msg), msg
 	}
 	ended(said, stop, col.err == "" && r.Context().Err() == nil)

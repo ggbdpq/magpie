@@ -496,6 +496,14 @@ const (
 	KAdvice
 )
 
+// rejectedLimit is the rejected unified rate-limit claim and reset a Claude
+// subscription run reported in its rate_limit_event before failing with 429.
+type rejectedLimit struct {
+	claim         string
+	resetsAt      int64
+	overageStatus string
+}
+
 // Event is one thing a streaming reply said.
 type Event struct {
 	Kind   EventKind
@@ -511,6 +519,7 @@ type Event struct {
 	// request the event is of, when it is known by then
 	Code             string
 	RequestID        string
+	Rejected         *rejectedLimit
 	Usage            Usage
 	Hits             []Hit
 	SafeguardResults json.RawMessage
@@ -737,9 +746,10 @@ type collector struct {
 	fresh bool
 	err   string
 	// the error's status and kind, as its event gave them
-	errStatus int
-	errCode   string
-	errSaid   json.RawMessage
+	errStatus   int
+	errCode     string
+	errSaid     json.RawMessage
+	errRejected *rejectedLimit
 }
 
 func (c *collector) last(k Kind) *Part {
@@ -862,7 +872,7 @@ func (c *collector) add(ev Event) {
 			c.res.Model = ev.Model // another model went on with the reply
 		}
 	case KError:
-		c.err, c.errStatus, c.errCode, c.errSaid = ev.Text, ev.Status, ev.Code, ev.Said
+		c.err, c.errStatus, c.errCode, c.errSaid, c.errRejected = ev.Text, ev.Status, ev.Code, ev.Said, ev.Rejected
 	case KSearch:
 		c.closeTool()
 		c.res.Parts = append(c.res.Parts, Part{Kind: Search, Text: ev.Text, Hits: ev.Hits})

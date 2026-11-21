@@ -4544,6 +4544,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// the answer names who held it, as one asked would: a magpie
 			// using this one rests that model of it alone (remoteModelRest)
 			noteMember(hw, r, c.p, c.model)
+			if from == provider.Anthropic && rested.outHeader != nil {
+				replayUnifiedRejectedHeaders(hw, rested.outHeader, back, time.Now())
+			}
 			writeError(hw, from, call.Status, msg)
 		} else if rested, back, ok := timedHeld(cands[i:]); ok && last {
 			// it rests on a 429 till the time its vendor named, and so
@@ -4575,6 +4578,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				// (TestCodexEveryAccountOutToldAsTheBackend)
 				writeCodexOut(hw, rested.outHeader, call.Status, msg, rested.out)
 			} else {
+				if from == provider.Anthropic && rested.outHeader != nil {
+					replayUnifiedRejectedHeaders(hw, rested.outHeader, back, time.Now())
+				}
 				writeError(hw, from, call.Status, msg)
 			}
 		} else {
@@ -5856,14 +5862,25 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			rest := s.restAfterMarked(c, hw.code(), hw.header, hw.errBody(), hw.sharedPool)
 			try.Fail, try.Rest = rest.Why, &rest
 		}
-		if !hw.passing && hw.code() == http.StatusTooManyRequests && hw.header.Get("Retry-After") == "" {
-			// the vendor said nothing of when: the agent is told when
-			// magpie asks again, the first of those it rested back
+		if !hw.passing && hw.code() == http.StatusTooManyRequests {
 			if heldBack.IsZero() {
 				heldBack, _ = soonestBack(cands[:i+1])
 			}
-			if wait := time.Until(heldBack); wait > 0 {
-				w.Header().Set("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
+			now := time.Now()
+			if hw.header.Get("Retry-After") == "" {
+				// the vendor said nothing of when: the agent is told when
+				// magpie asks again, the first of those it rested back
+				if wait := heldBack.Sub(now); wait > 0 {
+					w.Header().Set("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
+				}
+			}
+			// Across a multi-account pool where every account is spent, tell a
+			// Claude client the soonest account back rather than only the last
+			// candidate's reset.
+			if i > 0 && from == provider.Anthropic && hw.header.Get("anthropic-ratelimit-unified-status") == "rejected" && heldBack.After(now) {
+				if at, err := strconv.ParseInt(hw.header.Get("anthropic-ratelimit-unified-reset"), 10, 64); err != nil || at > heldBack.Unix() {
+					hw.note("anthropic-ratelimit-unified-reset", strconv.FormatInt(heldBack.Unix(), 10))
+				}
 			}
 		}
 		if hw.refused && !hw.passing && from == provider.Anthropic && hw.handBack() {

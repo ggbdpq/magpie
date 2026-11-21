@@ -2237,7 +2237,22 @@ Anthropic sends (`limitHeaders`, from `provider.KeptClaudeLimits`): a share
 from 0 to 1 and a Unix-seconds reset, for each kept window that says when
 it renews. They are set when the request comes in, from what is kept, and
 again as the reply begins (`relay`'s `begin`), once the turn's own
-`rate_limit_event` is in. A run on Claude Code's own home that has moved to
+`rate_limit_event` is in. When a Claude subscription turn fails with 429
+because its allowance is spent, `relayFailing` refreshes `limitHeaders` and
+calls `rejectedLimitHeaders` to also emit Anthropic's unified rejection
+headers (`anthropic-ratelimit-unified-status: rejected`,
+`anthropic-ratelimit-unified-reset`,
+`anthropic-ratelimit-unified-representative-claim`, and
+`anthropic-ratelimit-unified-overage-status` when reported) for Anthropic
+clients — taken from the turn's rejected `rate_limit_event`
+(`claudeRejectedLimit`), else from the account's kept full window
+(`provider.KeptClaudeLimits`) or the refusal's reset time
+(`provider.ClaudeResetTime`). `restAfterMarked` keeps those headers on the
+candidate's `Rest.outHeader` so `timedHeld`/`quotaHeld` replays them on
+subsequent held 429s, `keepRetry` preserves upstream
+`anthropic-ratelimit-unified-*` headers on 429s, and a multi-account pool
+clamps `anthropic-ratelimit-unified-reset` to the soonest account back.
+A run on Claude Code's own home that has moved to
 another account says nothing (`ClaudeCodeMovedOff`), as its event isn't
 kept either.
 An event names only some windows (often `five_hour` alone): the rest

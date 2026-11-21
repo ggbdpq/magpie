@@ -333,6 +333,13 @@ func clipReason(s string) string {
 	return s
 }
 
+// ClaudeResetTime parses a Claude Code reset clock string such as
+// "1:20pm (Asia/Taipei)" or "Oct 9, 2:59pm (UTC)" relative to now for a
+// window of length span.
+func ClaudeResetTime(s string, now time.Time, span time.Duration) (time.Time, bool) {
+	return claudeResetTime(s, now, span)
+}
+
 // claudeResetTime reads "Oct 1 at 3:30pm (Asia/Shanghai)", "Oct 9, 2:59pm
 // (UTC)" (Claude Code 2.1.285 on) or "3pm (Asia/Shanghai)", in the zone
 // named, else local time. It ends a window span long, so it is never further

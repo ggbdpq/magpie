@@ -1681,6 +1681,13 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 				r.outHeader[k] = slices.Clone(vs)
 			}
 		}
+	} else if status == http.StatusTooManyRequests && strings.EqualFold(header.Get("anthropic-ratelimit-unified-status"), "rejected") {
+		r.outHeader = http.Header{}
+		for k, vs := range header {
+			if strings.HasPrefix(strings.ToLower(k), "anthropic-ratelimit-unified-") {
+				r.outHeader[k] = slices.Clone(vs)
+			}
+		}
 	}
 	switch why {
 	case failCredit:
@@ -2451,7 +2458,7 @@ func (c candidate) allowance() (provider.Allowance, bool) {
 func keepRetry(dst, src http.Header, body []byte) {
 	for k, vs := range src {
 		l := strings.ToLower(k)
-		if l == "retry-after" || strings.Contains(l, "ratelimit") && strings.Contains(l, "reset") {
+		if l == "retry-after" || strings.HasPrefix(l, "anthropic-ratelimit-unified-") || strings.Contains(l, "ratelimit") && strings.Contains(l, "reset") {
 			dst[k] = vs
 		}
 	}

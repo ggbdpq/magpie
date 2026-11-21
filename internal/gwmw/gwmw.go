@@ -33,6 +33,8 @@ type Info struct {
 	Stream   bool   `json:"stream"`
 	Path     string `json:"path"`
 	Agent    string `json:"agent,omitempty"`
+	// Kind is set by the host for its own compaction, never by request metadata.
+	Kind string `json:"kind,omitempty"`
 }
 
 // Reject is a request a middleware turned away: the agent gets Status with

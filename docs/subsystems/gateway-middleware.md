@@ -69,3 +69,22 @@ node --test internal/gui/tests/plugin-middleware.test.cjs
 # in magpie-community/plugins: each package runs its cases.json through the hooks
 bun test packages/think-tags packages/model-map packages/param-override packages/system-prompt packages/word-guard packages/antigravity-cloak
 ```
+
+
+## Internal Codex compaction attempts
+
+Codex summary requests and native `/responses/compact` requests initialize
+fresh provider-only middleware chains through `compactionMiddleware`.
+Their context has the host-owned `kind: "compact"`; ordinary requests omit
+it. Request metadata cannot set this field. `onRequest`, `onAccount`, response
+hooks and asynchronous context hooks do not run on these internal attempts.
+Each attempt owns and releases its runtimes; provider attempts still derive
+from unchanged source bytes. A plugin can therefore sanitize an official
+Codex compaction copy with `onProvider` and `ctx.provider.account === "codex"`
+without changing the conversation or another provider's copy. An API-key
+request on the direct native compaction route is left unchanged.
+
+Regression coverage: `TestCompactionMiddlewareOfficialSummaryCopy`,
+`TestCompactionMiddlewareNativeCompactCopy` and
+`TestCompactionMiddlewareOtherProviderUntouched` and
+`TestCompactionMiddlewareRetainedHistoryContinuesWithSignature`.

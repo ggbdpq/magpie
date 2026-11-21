@@ -261,3 +261,31 @@ func hookKind(r *http.Request, agent string) string {
 	}
 	return ""
 }
+
+// compactionMiddleware gives each summary attempt a fresh provider-only chain.
+// Agent hooks and response hooks are not run on the host's internal request.
+// Every provider starts from that attempt's original bytes through triedOn.
+func compactionMiddleware(r *http.Request, body []byte) (*http.Request, func()) {
+	info := gwmw.Info{Protocol: string(provider.Responses), Model: modelOf(body), Stream: streamOf(body), Path: r.URL.Path, Agent: agentOf(r), Kind: KindCompact}
+	var runs mwRuns
+	var active []gwmw.Run
+	for _, a := range gwmw.AgentsWanted(middlewareWanted) {
+		run := a.Begin(info)
+		if run == nil {
+			continue
+		}
+		active = append(active, run)
+		if tried, ok := run.(gwmw.Tried); ok {
+			runs.tried = append(runs.tried, tried)
+		}
+	}
+	done := func() {
+		for i := len(active) - 1; i >= 0; i-- {
+			active[i].End()
+		}
+	}
+	if len(runs.tried) == 0 {
+		return r, done
+	}
+	return r.WithContext(context.WithValue(r.Context(), triedKey{}, runs)), done
+}

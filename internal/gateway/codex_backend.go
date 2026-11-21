@@ -1002,6 +1002,19 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	// row written below sums this call's tries in its own context (#4456)
 	r = r.WithContext(s.countBytes(r.Context()))
 	w0, body0 := w, body // as they came, for the fallbacks (codexFallBack)
+	if r.Method == http.MethodPost && rest == "/responses/compact" {
+		var done func()
+		r, done = compactionMiddleware(r, body)
+		defer done()
+		to := provider.Provider{ID: "codex", Name: "Codex", Account: &provider.Account{Agent: "codex"}}
+		if on != nil {
+			to = *on
+		}
+		// An OpenAI API key is not the Codex subscription target of this hook.
+		if !apiKey(r.Header) {
+			body = triedOn(r.Context(), to, modelOf(body), body)
+		}
+	}
 	// Claude's blocks magpie gave Codex (claudeseal) are Claude's alone:
 	// to OpenAI each item is its summary, as before magpie carried them
 	body = withoutClaudeSeals(body)
@@ -3883,6 +3896,8 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
 	r = askWhole(r)
 	r = askCompaction(r)
 	ask := func(r *http.Request, b []byte) (*recorder, compactResult, error) {
+		r, done := compactionMiddleware(r, b)
+		defer done()
 		rec := &recorder{header: http.Header{}, status: 200}
 		s.serve(rec, r, provider.Responses, b)
 		if rec.status >= 400 {

@@ -2589,12 +2589,23 @@ func (s *Server) handle(from provider.Protocol) http.HandlerFunc {
 			}
 			// Codex compacts remotely, a compaction_trigger here, on a
 			// provider table named "OpenAI" (CC Switch's relay tables,
-			// which magpie points here, #1301): the summary is magpie's to
-			// make, as on CodexPath, and magpie's summaries go back as text;
-			// a provider set to compact natively is asked Codex's own (#1099)
+			// which magpie points here, #1301, and T3 Code's magpie · Codex
+			// instance, #7398): the summary is magpie's to make, as on
+			// CodexPath, and magpie's summaries go back as text; a provider
+			// set to compact natively is asked Codex's own (#1099). One of
+			// magpie's models compacts on the model set for Codex's
+			// compactions, as on CodexPath — left on the thread's model, a
+			// long agy-cli thread's whole history went to the plugin, whose
+			// single-prompt cap left the summary a few last messages
 			if bodyHas(body, `"compaction`) {
+				native := s.nativeCompactionFor(model)
 				var compact bool
-				if body, compact = codexInputAs(body, true, s.nativeCompactionFor(modelOf(body))); compact {
+				if body, compact = codexInputAs(body, true, native); compact {
+					if strings.Contains(model, "/") {
+						if to := codexCompactTo(r, model, native, s.nativeCompactionFor); to != "" {
+							body = withModel(body, to)
+						}
+					}
 					s.codexCompact(w, r, body)
 					return
 				}

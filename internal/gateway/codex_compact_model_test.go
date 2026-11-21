@@ -60,6 +60,40 @@ func TestCodexCompactOnItsOwnModel(t *testing.T) {
 	}
 }
 
+// T3 Code's magpie · Codex instance points Codex at /v1 (t3CodexArgs), not
+// CodexPath, so its compactions arrive on /v1/responses with a
+// compaction_trigger: a compaction magpie makes there goes on the model
+// set for it, as one on CodexPath does (#7398 — left on the thread's
+// model, a long agy-cli thread's whole history went to the plugin, whose
+// single-prompt cap left the summary a few last messages).
+func TestCodexCompactOnV1OnItsOwnModel(t *testing.T) {
+	setup(t, provider.Responses, &fake{t: t})
+	sessionURL, session := summaryUpstream(t)
+	otherURL, other := summaryUpstream(t)
+	for _, p := range []provider.Provider{
+		{ID: "fake", Name: "Fake", Key: "k", Models: []string{"m1"}, Responses: sessionURL},
+		{ID: "cheap", Name: "Cheap", Key: "k", Models: []string{"m2"}, Responses: otherURL},
+	} {
+		if err := provider.Save(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, body := post(t, "/v1/responses", systemCompaction)
+	if code != 200 || session() != 1 || other() != 0 {
+		t.Fatalf("unset: %d %s; session %d, other %d", code, body, session(), other())
+	}
+	if err := provider.SetCodexCompactModel("cheap/m2"); err != nil {
+		t.Fatal(err)
+	}
+	code, body = post(t, "/v1/responses", systemCompaction)
+	if code != 200 || session() != 1 || other() != 1 {
+		t.Fatalf("set: %d %s; session %d, other %d", code, body, session(), other())
+	}
+	if sum := compactedText(t, body); !strings.Contains(sum, "SUMMARY") {
+		t.Errorf("summary %q", sum)
+	}
+}
+
 // A compaction a ChatGPT account seals, or one put on such a model, is
 // left where it is: only the account that wrote the summary reads it.
 func TestCodexCompactToLeavesNative(t *testing.T) {

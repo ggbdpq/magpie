@@ -29,26 +29,38 @@ import (
 	"github.com/yetone/magpie/internal/lazyre"
 )
 
-// unlimitedQuotaBalance is the account-level field a new-api key-usage
-// reply carries when the key has no quota of its own (unlimited_quota:
-// true): its token-scoped total_available is what the key has spent, not
-// what is left, and it goes negative once use passes the token's grant
-// (#5436, AnxForever: $-4.38 shown where the account held $106.44). The
-// account's own total_available, under user_quota in the same reply, in
-// the same units, is the balance then.
-func unlimitedQuotaBalance(b []byte) (string, bool) {
+// unlimitedKeyRead says what the default key-usage read shows on a reply
+// for a key with no quota of its own (unlimited_quota: true, #5436): the
+// account's own total_available under user_quota, in the same units, is
+// the balance when the reply carries one — the token-scoped figure is
+// then what the key has spent, not what is left, and it goes negative
+// once use passes the token's grant (AnxForever: $-4.38 shown where the
+// account held $106.44). When the reply carries no user_quota — two of
+// shrekcg's three relays (#5436) — or the token-scoped figure has gone
+// negative (a limited key spent past its grant), no amount is shown at
+// all: a grant spent past its end is not a balance, and "unlimited"
+// would say the account is. ok is false otherwise, and the key's own
+// total_available reads as before (a limited key with grant left).
+func unlimitedKeyRead(b []byte) (path string, none, ok bool) {
 	var r struct {
 		Data struct {
-			UnlimitedQuota bool `json:"unlimited_quota"`
+			UnlimitedQuota bool     `json:"unlimited_quota"`
+			TotalAvailable *float64 `json:"total_available"`
 			UserQuota      *struct {
 				TotalAvailable *float64 `json:"total_available"`
 			} `json:"user_quota"`
 		} `json:"data"`
 	}
-	if json.Unmarshal(b, &r) != nil || !r.Data.UnlimitedQuota || r.Data.UserQuota == nil || r.Data.UserQuota.TotalAvailable == nil {
-		return "", false
+	if json.Unmarshal(b, &r) != nil {
+		return "", false, false
 	}
-	return "$data.user_quota.total_available / 500000", true
+	if r.Data.UserQuota != nil && r.Data.UserQuota.TotalAvailable != nil {
+		return "$data.user_quota.total_available / 500000", false, true
+	}
+	if r.Data.UnlimitedQuota || (r.Data.TotalAvailable != nil && *r.Data.TotalAvailable < 0) {
+		return "", true, true
+	}
+	return "", false, false
 }
 
 // balanceSource is where one provider's balance is asked and how the
@@ -84,7 +96,13 @@ func balanceSourceOf(p Provider) (balanceSource, bool) {
 		mind := strings.TrimSpace(p.BalancePath) == "" && balanceURLPath(p.BalanceURL) == newAPIKeyUsage
 		return balanceSource{p.BalanceURL, func(b []byte) (string, error) {
 			if mind {
-				if alt, ok := unlimitedQuotaBalance(b); ok {
+				if alt, none, ok := unlimitedKeyRead(b); ok {
+					if none {
+						// no user_quota in the reply, or the token-scoped
+						// figure spent past its grant: no balance to show
+						// (#5436, shrekcg's relays)
+						return "", nil
+					}
 					return readBalancePath(b, alt)
 				}
 			}

@@ -51,4 +51,39 @@ func TestUnlimitedQuotaBalance(t *testing.T) {
 	if got != "$-4.38" {
 		t.Fatalf("a hand-set field was second-guessed: %q (want the key's own negative)", got)
 	}
+
+	// shrekcg's three relays (#5436): two carry no user_quota at all —
+	// the token-scoped figure is what the key has spent, and it reads as
+	// a negative balance where there is no balance to show. A limited
+	// key spent past its grant reads negative the same way.
+	if src, ok = balanceSourceOf(p); !ok {
+		t.Fatal("no balance source")
+	}
+	noUserQuota := []byte(`{"code":true,"message":"","data":{"name":"x","object":"token","expires_at":0,"model_limits":{},"model_limits_enabled":false,"total_available":-4469172,"total_granted":0,"total_used":4469172,"unlimited_quota":true}}`)
+	got, err = src.read(noUserQuota)
+	if err != nil {
+		t.Fatalf("read relay A: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("relay A (unlimited, no user_quota) balance %q, want no amount: a grant spent past its end is not a balance", got)
+	}
+
+	overspent := []byte(`{"code":true,"data":{"total_available":-349725,"total_used":349725,"unlimited_quota":false}}`)
+	got, err = src.read(overspent)
+	if err != nil {
+		t.Fatalf("read overspent: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("overspent limited key balance %q, want no amount", got)
+	}
+
+	// relay B carries user_quota: the account's own figure wins as before
+	relayB := []byte(`{"code":true,"data":{"total_available":-349725,"total_used":349725,"unlimited_quota":true,"user_quota":{"total_available":49650275,"total_used":349725}}}`)
+	got, err = src.read(relayB)
+	if err != nil {
+		t.Fatalf("read relay B: %v", err)
+	}
+	if got != "$99.30" {
+		t.Fatalf("relay B balance %q, want $99.30 (the account's own)", got)
+	}
 }

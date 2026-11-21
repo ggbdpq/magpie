@@ -594,3 +594,52 @@ func TestServedByFindsAGatewayOnTheNetwork(t *testing.T) {
 		t.Fatalf("nothing answering: %+v", s)
 	}
 }
+
+// ServedAt reads a gateway's refusal of a keyless probe as the gateway
+// being up, as ServedBy does: a gateway listening on one address only
+// refuses this computer's probe of the address it wrote (the probe asks
+// for it and leaves by it, so it isn't loopback), and the record's pid
+// is nowhere in a refusal (#1677).
+func TestServedAtReadsARefusedProbe(t *testing.T) {
+	sv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":{"message":"no API key was sent: send a magpie gateway key from Settings' Gateway page"}}`))
+	}))
+	defer sv.Close()
+	if s := ServedAt(sv.URL); !s.Running {
+		t.Fatalf("a refused probe: %+v", s)
+	}
+}
+
+// The address the gateway wrote is asked as it wrote it when the
+// loopback miss says it is not on loopback: a gateway bound to one
+// address only answers its refusal there, and the record's pid is
+// nowhere in it (#1677, m-try1's LAN-ip bind: healthcheck and status
+// looked at 3425 while gateway.json named the address the serve held).
+func TestClientURLAsksTheAddressTheGatewayWrote(t *testing.T) {
+	fresh(t)
+	if err := settings.Save(settings.Settings{LAN: true}); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.2:0")
+	if err != nil {
+		t.Skipf("127.0.0.2 not dialable here: %v", err)
+	}
+	sv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":{"message":"no API key was sent: send a magpie gateway key from Settings' Gateway page"}}`))
+	}))
+	sv.Listener = ln
+	sv.Start()
+	defer sv.Close()
+	written := strings.TrimPrefix(sv.URL, "http://")
+	t.Setenv("MAGPIE_ADDR", "")
+	b, _ := json.Marshal(Listening{Addr: written, Pid: 999999999, Serves: "serve"})
+	os.MkdirAll(filepath.Dir(ListeningPath()), 0o700)
+	if err := os.WriteFile(ListeningPath(), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if u := ClientURL(); u != sv.URL {
+		t.Fatalf("ClientURL() = %q, want %s (the address the gateway wrote)", u, sv.URL)
+	}
+}

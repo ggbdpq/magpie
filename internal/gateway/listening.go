@@ -129,6 +129,17 @@ func ClientURL() string {
 		if u == URL() || ServedAt(u).Pid == l.Pid {
 			return u
 		}
+		// a gateway bound to one address only is not answered on loopback:
+		// the loopback probe found nothing, and the address it wrote is
+		// the one it answers — its refusal of a keyless probe says so,
+		// and the record's pid is nowhere in a refusal (#1677, m-try1's
+		// LAN-ip bind: healthcheck and status looked at 3425 while
+		// gateway.json named the address the serve held). A magpie that
+		// answers as itself with another pid is still not the record's:
+		// the note is stale there, and the pid match is what says so.
+		if s := ServedAt(u); s.Pid == l.Pid || (s.Running && s.Pid == 0) {
+			return u
+		}
 	}
 	return URL()
 }

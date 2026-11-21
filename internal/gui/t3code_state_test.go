@@ -29,8 +29,8 @@ func TestStateListsT3Code(t *testing.T) {
 	if a == nil {
 		t.Fatal("T3 Code not listed")
 	}
-	if a.Name != "T3 Code" || a.Icon != "t3code" || a.Path != filepath.Join("~", ".t3", "userdata", "settings.json") || len(a.Fields) != 1 || a.Fields[0].Key != "provider" ||
-		len(a.Fields[0].Options) != 1 || a.Fields[0].Options[0].Value != "magpie" {
+	if a.Name != "T3 Code" || a.Icon != "t3code" || a.Path != filepath.Join("~", ".t3", "userdata", "settings.json") || len(a.Fields) != 2 || a.Fields[0].Key != "provider" ||
+		len(a.Fields[0].Options) != 1 || a.Fields[0].Options[0].Value != "magpie" || a.Fields[1].Key != "login" || len(a.Fields[1].Options) != 0 {
 		t.Fatalf("T3 Code: %+v", a)
 	}
 }

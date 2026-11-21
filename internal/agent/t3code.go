@@ -53,6 +53,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -79,6 +80,13 @@ const (
 // instance into T3 Code's settings: one gone after that the user removed in
 // T3, and a sync doesn't bring it back.
 const t3CodexOffered = "t3code.codex"
+
+// t3Login is the stash key for how T3 Code's magpie Claude Code instance signs
+// in to the gateway: "" for magpie's key, or "claudeai" to leave
+// ANTHROPIC_AUTH_TOKEN empty so Claude Code keeps its claude.ai sign-in (and
+// reads anthropic-ratelimit-unified-* headers for status lines and T3 Code
+// usage-limit auto-resume).
+const t3Login = "t3code.login"
 
 // t3Base is T3 Code's folder for home: $T3CODE_HOME, else ~/.t3. Its
 // settings are userdata/settings.json in it.
@@ -164,6 +172,9 @@ func t3code(home string) *Agent {
 			if why := wiringOff("T3 Code", path, func(k string) (string, bool) { return t3EnvOf(path, k) }, "ANTHROPIC_BASE_URL", gateway.URL()); why != "" {
 				return why
 			}
+			if tok, _ := t3EnvOf(path, "ANTHROPIC_AUTH_TOKEN"); t3KeepSignIn(gateway.URL()) && tok != "" {
+				return "T3 Code's ANTHROPIC_AUTH_TOKEN (" + filepath.Base(path) + ") is set, so Claude Code sends magpie that key, not its claude.ai sign-in as magpie set it"
+			}
 			at := here(home)
 			return claudeCloud(at, filepath.Join(at.claudeDir(), "settings.json"))
 		},
@@ -191,6 +202,37 @@ func t3code(home string) *Agent {
 			},
 			Options: func(map[string]string) []Option {
 				return []Option{{Value: magpieID, Label: "magpie", Icon: "magpie", Note: "every magpie model in T3 Code twice: magpie on Claude Code, magpie · Codex on Codex; pick one in T3's model picker"}}
+			},
+		}, {
+			Key: "login", Label: "sign-in", Quiet: true,
+			Get: func() string {
+				if claudeOn() && t3KeepSignIn(gateway.URL()) {
+					return "claudeai"
+				}
+				return ""
+			},
+			Set: func(v string) error {
+				if v != "" && v != "claudeai" {
+					return fmt.Errorf("sign-in is claudeai or empty (magpie's key), not %q", v)
+				}
+				if !claudeOn() {
+					if v == "" {
+						stash(map[string]string{t3Login: ""})
+						return nil
+					}
+					return fmt.Errorf("connect T3 Code to magpie first; it can then keep its claude.ai sign-in")
+				}
+				if v != "" && keyAt(gateway.URL()) != gateway.Token && t3StashedValue(t3Login) != v {
+					return fmt.Errorf("T3 Code reaches magpie at %s with a sharing key, so it can't keep its claude.ai sign-in there", gateway.URL())
+				}
+				stash(map[string]string{t3Login: v})
+				return edit.SetJSON(path, edit.KV{Path: t3Instance, Value: t3Merged(path, gateway.URL())})
+			},
+			Options: func(map[string]string) []Option {
+				if !claudeOn() || keyAt(gateway.URL()) != gateway.Token {
+					return nil
+				}
+				return claudeSignIns()
 			},
 		}},
 	}
@@ -239,9 +281,13 @@ func t3InstanceJSON(path, gw string) map[string]any {
 			config[k] = v
 		}
 	}
+	token := keyAt(gw)
+	if t3KeepSignIn(gw) {
+		token = ""
+	}
 	environment := []map[string]any{
 		{"name": "ANTHROPIC_BASE_URL", "value": gw, "sensitive": false},
-		{"name": "ANTHROPIC_AUTH_TOKEN", "value": keyAt(gw), "sensitive": false},
+		{"name": "ANTHROPIC_AUTH_TOKEN", "value": token, "sensitive": false},
 	}
 	// auto mode's review off unless every model it lists is one whose
 	// review comes back, as for Claude Code itself (claudeReviewEnv); a value in the
@@ -549,11 +595,22 @@ func t3CodexBaseOf(args string) string {
 	return base
 }
 
-// t3Stashed reports whether the stash holds key.
-func t3Stashed(key string) bool {
+// t3StashedValue returns the stashed value for key.
+func t3StashedValue(key string) string {
 	stashMu.Lock()
 	defer stashMu.Unlock()
-	return stashShared()[key] != ""
+	return stashShared()[key]
+}
+
+// t3Stashed reports whether the stash holds key.
+func t3Stashed(key string) bool {
+	return t3StashedValue(key) != ""
+}
+
+// t3KeepSignIn reports whether T3 Code's magpie Claude Code instance should
+// leave ANTHROPIC_AUTH_TOKEN empty so Claude Code keeps its claude.ai sign-in.
+func t3KeepSignIn(gw string) bool {
+	return keyAt(gw) == gateway.Token && t3StashedValue(t3Login) == "claudeai"
 }
 
 // t3Tokens is T3 Code's tokenizeCliArgs (packages/shared/src/cliArgs.ts),

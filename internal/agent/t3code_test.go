@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/yetone/magpie/internal/edit"
@@ -431,5 +432,112 @@ func TestT3CodeKeepsTheUsersSettings(t *testing.T) {
 		return m.Slug == "gone/old"
 	}) || len(got.Config.CustomModels) == 0 {
 		t.Errorf("custom models not magpie's: %+v", got.Config.CustomModels)
+	}
+}
+
+// T3 Code's magpie Claude Code instance can keep Claude Code's claude.ai
+// sign-in (login=claudeai): ANTHROPIC_AUTH_TOKEN is left empty so Claude Code
+// stays signed in to claude.ai and reads anthropic-ratelimit-unified-* headers
+// (for status lines and T3 Code usage-limit auto-resume). Sync, reconnect and
+// Check all preserve it, and setting login back to "" restores magpie's key.
+func TestT3CodeKeepsItsClaudeAISignIn(t *testing.T) {
+	home := syncHome(t)
+	t.Setenv("T3CODE_HOME", "")
+	t.Setenv("MAGPIE_ADDR", "")
+	path := filepath.Join(home, ".t3", "userdata", "settings.json")
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	os.WriteFile(path, []byte(t3User), 0o600)
+
+	a := t3code(home)
+	login := a.Field("login")
+	if login == nil {
+		t.Fatal("T3 Code has no sign-in field")
+	}
+	if opts := login.Options(a.Values()); len(opts) != 0 {
+		t.Fatalf("sign-in options offered before T3 Code is connected: %v", opts)
+	}
+	if err := login.Set("claudeai"); err == nil {
+		t.Fatal("sign-in set to claudeai before T3 Code is connected")
+	}
+	if err := a.Apply("provider", magpieID); err != nil {
+		t.Fatal(err)
+	}
+	if tok, ok := t3EnvOf(path, "ANTHROPIC_AUTH_TOKEN"); !ok || tok != gateway.Token {
+		t.Fatalf("magpie's key by default: %q (%v)", tok, ok)
+	}
+	if opts := login.Options(a.Values()); len(opts) != 2 {
+		t.Fatalf("sign-in options: %v", opts)
+	}
+	if err := login.Set("bogus"); err == nil {
+		t.Fatal("unknown sign-in accepted")
+	}
+	if err := a.Apply("login", "claudeai"); err != nil {
+		t.Fatal(err)
+	}
+	kept := func(when string) {
+		t.Helper()
+		raw, ok := edit.GetJSON(path, t3Instance)
+		if !ok {
+			t.Fatalf("%s: magpie instance missing", when)
+		}
+		t3Format(t, []byte(raw))
+		if tok, has := t3EnvOf(path, "ANTHROPIC_AUTH_TOKEN"); !has || tok != "" {
+			t.Fatalf("%s: ANTHROPIC_AUTH_TOKEN %q (has %v), want empty", when, tok, has)
+		}
+		if u, _ := t3EnvOf(path, "ANTHROPIC_BASE_URL"); u != gateway.URL() {
+			t.Fatalf("%s: ANTHROPIC_BASE_URL %q", when, u)
+		}
+		if got := a.Values()["login"]; got != "claudeai" {
+			t.Fatalf("%s: login %q, want claudeai", when, got)
+		}
+		if why := a.Check(); why != "" {
+			t.Fatalf("%s: unexpected check drift %q", when, why)
+		}
+	}
+	kept("set")
+
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	kept("after sync")
+
+	// a non-empty key put back by hand is caught by Check and repaired by Sync
+	var inst map[string]any
+	raw, _ := edit.GetJSON(path, t3Instance)
+	json.Unmarshal([]byte(raw), &inst)
+	for _, v := range inst["environment"].([]any) {
+		if m := v.(map[string]any); m["name"] == "ANTHROPIC_AUTH_TOKEN" {
+			m["value"] = "sk-hand"
+		}
+	}
+	if err := edit.SetJSON(path, edit.KV{Path: t3Instance, Value: inst}); err != nil {
+		t.Fatal(err)
+	}
+	if why := a.Check(); !strings.Contains(why, "sends magpie that key, not its claude.ai sign-in") {
+		t.Fatalf("hand-set key not caught: %q", why)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	kept("repaired by sync")
+
+	// turning T3 Code off and back on keeps claude.ai sign-in
+	if err := a.Apply("provider", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.Values()["login"]; got != "" {
+		t.Fatalf("login %q when disconnected", got)
+	}
+	if err := a.Apply("provider", magpieID); err != nil {
+		t.Fatal(err)
+	}
+	kept("reconnected")
+
+	// switching back to magpie's key restores gateway.Token
+	if err := a.Apply("login", ""); err != nil {
+		t.Fatal(err)
+	}
+	if tok, ok := t3EnvOf(path, "ANTHROPIC_AUTH_TOKEN"); !ok || tok != gateway.Token || a.Values()["login"] != "" || a.Check() != "" {
+		t.Fatalf("back to magpie's key: tok=%q (%v) login=%q check=%q", tok, ok, a.Values()["login"], a.Check())
 	}
 }

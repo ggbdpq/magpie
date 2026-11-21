@@ -8139,7 +8139,7 @@ const groupAdvanced = (b) => self.advGroups?.(b);
 // advancedSet says whether a setting under the editor's Advanced is set,
 // which opens it: none hides behind a fold
 function advancedSet(d, p) {
-  return (d.headers || []).some(([k]) => (k || "").trim()) || !!(d.extraBody || "").trim() || !!(d.replyHeaders || d.passHeaders || "").trim() ||
+  return (d.headers || []).some(([k]) => (k || "").trim()) || !!(d.extraBody || "").trim() || !!(d.replyHeaders || d.passHeaders || d.passFields || "").trim() ||
     !!d.proxyMode || Object.values(d.accountProxies || {}).some((x) => x?.mode) || Object.values(d.keyPriceRates || {}).some((v) => String(v).trim()) ||
     [d.concurrency, d.maxAccounts, d.queueLimit, d.queueWait, d.maxRPM, d.priceRate, d.topUpRate ?? p?.topUpRate, d.contexts, d.outputs, d.compacts].some((v) => String(v ?? "").trim()) ||
     !!d.rateWindows?.length ||
@@ -9482,7 +9482,7 @@ function baseAPIOf(p) {
 
 // draftOf is a saved provider as its editor's form holds it.
 function draftOf(p) {
-  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, best: !!p.bestInFamily, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), replyHeaders: (p.replyHeaders || []).join(", "), passHeaders: (p.passHeaders || []).join(", "), icon: p.icon || "", iconFrom: p.iconFrom || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, hiddenDrawers: [...(p.hiddenDrawers || [])], hiddenVideomakers: [...(p.hiddenVideomakers || [])], searches: !!p.searches, unredacted: !!p.unredacted, countFree: !!p.countFree, billing: p.billing || "", insecureTLS: !!p.insecureTLS, http1: !!p.http1, clientCert: p.clientCert || "", clientKey: p.clientKey || "", serverCA: p.serverCA || "", serverPin: p.serverPin || "", resolve: p.resolve, socket: p.socket || "", limitRestOff: !!p.limitRestOff, noBalanceProbe: !!p.noBalanceProbe, upstreamProviders: !!p.upstreamProviders, passErrors: !!p.passErrors, imageFilesOff: !!p.imageFilesOff, nativeCompaction: !!p.nativeCompaction, passUserAgent: p.passUserAgent !== false, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", listOff: !!p.listOff, contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p), rateWindows: (p.rateWindows || []).map((w) => ({ ...w })) };
+  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, best: !!p.bestInFamily, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), replyHeaders: (p.replyHeaders || []).join(", "), passHeaders: (p.passHeaders || []).join(", "), passFields: (p.passFields || []).join(", "), icon: p.icon || "", iconFrom: p.iconFrom || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, hiddenDrawers: [...(p.hiddenDrawers || [])], hiddenVideomakers: [...(p.hiddenVideomakers || [])], searches: !!p.searches, unredacted: !!p.unredacted, countFree: !!p.countFree, billing: p.billing || "", insecureTLS: !!p.insecureTLS, http1: !!p.http1, clientCert: p.clientCert || "", clientKey: p.clientKey || "", serverCA: p.serverCA || "", serverPin: p.serverPin || "", resolve: p.resolve, socket: p.socket || "", limitRestOff: !!p.limitRestOff, noBalanceProbe: !!p.noBalanceProbe, upstreamProviders: !!p.upstreamProviders, passErrors: !!p.passErrors, imageFilesOff: !!p.imageFilesOff, nativeCompaction: !!p.nativeCompaction, passUserAgent: p.passUserAgent !== false, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", listOff: !!p.listOff, contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p), rateWindows: (p.rateWindows || []).map((w) => ({ ...w })) };
 }
 
 // duplicateProvider opens the Add form on a copy of p, its key p's unless another is pasted (#268).
@@ -10074,6 +10074,10 @@ function drawEditor(p, presetID) {
   passIn.classList.add("pass-headers");
   passIn.oninput = () => { draft.passHeaders = passIn.value; };
   advIn.append(...field(t("Request headers to pass"), passIn, t("Headers of the agent's request passed on as sent, separated by commas. The agent's value stands over a header above. Keys, cookies and the connection's own never are.")));
+  const passFieldsIn = input(draft.passFields || "", "chat_template_kwargs, enable_thinking");
+  passFieldsIn.classList.add("pass-fields");
+  passFieldsIn.oninput = () => { draft.passFields = passFieldsIn.value; };
+  advIn.append(...field(t("Request fields to pass"), passFieldsIn, t("Top-level fields of the agent's request that a cross-protocol build would drop, passed on to the vendor as sent, separated by commas (imxzt, #7376). A field the build maps itself — model, messages, thinking, … — is never overwritten.")));
   const proxies = el("div", "stack");
   proxies.append(proxyPicker());
   const perKey = keyProxyPicker(p);
@@ -10525,6 +10529,7 @@ function drawEditor(p, presetID) {
     const ph = replyHeadersOf(draft.passHeaders, true);
     if (ph.error) { shown(ed.querySelector(".pass-headers"))?.focus(NO_SCROLL); return editorError(t("Request headers to pass: {why}", { why: ph.error }), "warn"); }
     body.passHeaders = ph.value;
+    body.passFields = (draft.passFields || "").split(",").map((s) => s.trim()).filter(Boolean);
     if (decides || custom) body.decide = (draft.decide || "").trim();
     if ((body.decide || "").includes(WORKSPACE)) { ed.querySelector(".workspace-id")?.focus(NO_SCROLL); return editorError(t("Give the workspace ID your API key belongs to, or pick the Token Plan"), "warn"); }
     if (custom) {

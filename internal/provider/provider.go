@@ -165,6 +165,17 @@ type Provider struct {
 	// gateway.standInsOut.
 	NoStandIn bool `json:"noStandIn,omitempty"`
 
+	// PassFields forwards a request's unknown top-level fields, by name,
+	// on a cross-protocol build (imxzt, #7376): a client that talks the
+	// Anthropic entry to an OpenAI-compatible upstream loses fields like
+	// chat_template_kwargs in the translation, and some vendors' reasoning
+	// toggles ride on exactly such a field. Off, the default, a translated
+	// build carries only what the translation knows. A name matches the
+	// body's own key exactly; a field the translation knows (its own
+	// schema — model, messages, thinking, …) is the translation's to map
+	// and is never overwritten by the client's copy.
+	PassFields []string `json:"passFields,omitempty"`
+
 	// Affinity is how long a conversation stays with the key or account
 	// that answered it, so the vendor's prompt cache it filled is read
 	// again rather than lost (see Affinities): "" auto, "session",

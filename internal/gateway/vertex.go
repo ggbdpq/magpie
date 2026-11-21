@@ -40,6 +40,7 @@ func buildVertex(r *Request, model string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	withPassFields(req, r)
 	return json.Marshal(req)
 }
 

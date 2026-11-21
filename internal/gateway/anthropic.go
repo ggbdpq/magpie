@@ -172,6 +172,7 @@ func readAdvised(body []byte, clientMarks, facts, advised bool) (*Request, error
 	if !facts {
 		r.askedTTL = askedCacheTTL(&a)
 	}
+	r.rawBody, r.knownTop = body, anthropicTop
 	if clientMarks {
 		var err error
 		r.clientCache, err = readClientCache(a)
@@ -1261,6 +1262,7 @@ func anthropicBody(r *Request, model, host string, replay bool) []byte {
 			out["tool_choice"] = tc
 		}
 	}
+	withPassFields(out, r)
 	b, _ := marshalBody(out, "messages")
 	return b
 }

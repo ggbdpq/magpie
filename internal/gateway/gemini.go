@@ -143,6 +143,7 @@ func buildGemini(r *Request, model string) ([]byte, error) {
 		return nil, err
 	}
 	req["model"] = model
+	withPassFields(req, r)
 	return marshalBody(req, "")
 }
 

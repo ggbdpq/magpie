@@ -350,6 +350,7 @@ func readResponsesFor(body []byte, facts, keepInstructions bool) (*Request, erro
 	r := &Request{Model: q.Model, System: q.Instructions, MaxTokens: q.MaxOutputTokens, Temp: q.Temperature,
 		TopP: q.TopP, Stream: q.Stream, Parallel: q.ParallelToolCalls, Fast: q.ServiceTier == "priority" || q.ServiceTier == "ultrafast", Ultrafast: q.ServiceTier == "ultrafast", Tier: q.ServiceTier, CacheKey: q.PromptCacheKey, Include: q.Include,
 		ClientMetadata: sentRaw(q.ClientMetadata), AccessPrograms: q.AccessPrograms}
+	r.rawBody, r.knownTop = body, responsesTop
 	r.Text, r.Format = textFormat(sentRaw(q.Text))
 	if q.Instructions != "" {
 		r.systemParts = []string{q.Instructions}
@@ -1640,6 +1641,7 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 	if len(include) > 0 {
 		out["include"] = include
 	}
+	withPassFields(out, r)
 	b, _ := marshalBody(out, "input")
 	// a call the client left unanswered (a turn it interrupted) gets its
 	// synthetic result, as buildChat's pairToolMessages and

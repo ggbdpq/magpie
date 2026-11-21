@@ -10291,6 +10291,11 @@ func buildFor(p provider.Provider, proto provider.Protocol, r *Request, model st
 		c.signer = p.ID
 		r = &c
 	}
+	if len(p.PassFields) > 0 && len(r.rawBody) > 0 && r.knownTop != nil {
+		c := *r
+		c.passthrough = passFields(c.rawBody, c.knownTop, p.PassFields)
+		r = &c
+	}
 	return build(proto, r, model, buildHost(p), p.RejectsTemperature(model))
 }
 

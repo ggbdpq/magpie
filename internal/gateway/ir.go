@@ -248,6 +248,15 @@ type Request struct {
 	// request is Claude Code's interactive mode, not claude -p: what a
 	// refusal it ends in is told with (thirdPartyRefused, #4503)
 	interactive bool
+	// rawBody and knownTop are the request body as the entry read it and
+	// the entry parser's own top-level keys: provider.PassFields sends
+	// what the body carries besides them on a cross-protocol build
+	// (passFields, #7376)
+	rawBody  []byte
+	knownTop map[string]bool
+	// passthrough is what PassFields picked, set per provider at
+	// buildFor: a build merges it where its own schema leaves a key free
+	passthrough map[string]any
 	// tuiRefused, for the Claude bridge, is a request whose agent's
 	// system prompt Anthropic refused in the interactive mode as a
 	// third-party app's (#4503): its run is claude -p, which is served

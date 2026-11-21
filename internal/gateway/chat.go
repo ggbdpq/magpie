@@ -130,6 +130,7 @@ func readChat(body []byte, facts bool) (*Request, error) {
 	r := &Request{Model: c.Model, MaxTokens: c.MaxCompletionTokens, Temp: c.Temperature, TopP: c.TopP,
 		Stream: c.Stream, Effort: chatEffort(&c), Parallel: c.ParallelToolCalls, Fast: c.ServiceTier == "priority" || c.ServiceTier == "ultrafast", Ultrafast: c.ServiceTier == "ultrafast", Tier: c.ServiceTier,
 		CacheKey: c.PromptCacheKey, Format: openAIFormat(c.ResponseFormat), AccessPrograms: c.AccessPrograms}
+	r.rawBody, r.knownTop = body, chatTop
 	if r.MaxTokens == 0 {
 		r.MaxTokens = c.MaxTokens
 	}
@@ -707,6 +708,7 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 		// OpenRouter's own search, for any of its models
 		out["plugins"] = []map[string]any{{"id": "web"}}
 	}
+	withPassFields(out, r)
 	b, _ := marshalBody(out, "messages")
 	return b
 }

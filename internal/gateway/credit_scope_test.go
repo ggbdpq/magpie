@@ -7,12 +7,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/testenv"
@@ -141,6 +143,112 @@ func TestOutOfCreditLeavesFreeModels(t *testing.T) {
 	defer mu.Unlock()
 	if len(keys) != 1 || keys[0] != "Bearer k1" {
 		t.Fatalf("fake-1 went with %v, want the first account's (k1); rests %v", keys, got)
+	}
+}
+
+// opencodeModels writes models.dev's shape for OpenCode Go (catalog
+// "opencode"): the -free models carry no free word anywhere — models.dev's
+// API has no free field — only a cost of $0 on every count, beside the paid
+// ones (tkhs101's #7496).
+func opencodeModels(t *testing.T) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(catalog.CachePath(), []byte(`{"opencode":{"id":"opencode","name":"OpenCode","models":{
+		"glm-5.3":{"id":"glm-5.3","cost":{"input":3,"output":15,"cache_read":0.3,"cache_write":3.75}},
+		"hy4-flash-free":{"id":"hy4-flash-free","cost":{"input":0,"output":0,"cache_read":0,"cache_write":0}}
+	}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalog.Reset()
+	t.Cleanup(catalog.Reset)
+}
+
+// ocgoWeekly is OpenCode Go's weekly-limit refusal, as the reporter's
+// routing trace has it (tkhs101's #7496).
+const ocgoWeekly = `{"error":{"message":"OpenCode Go usage limit reached (weekly, resets in 14h 54m)"}}`
+
+// A key out of its weekly window still serves its cost-zero free models
+// (opencode.ai's docs: "If you reach the usage limit, you can continue
+// using the free models"): the rest is the paid model's own, and a free
+// one is asked as before — not answered the key's kept 429 without going
+// out (#7496: 9-10ms of the same 429, the request never sent).
+func TestOutOfQuotaLeavesCostZeroFreeModels(t *testing.T) {
+	fresh(t)
+	opencodeModels(t)
+	var mu sync.Mutex
+	var asked []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var q struct {
+			Model string `json:"model"`
+		}
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &q)
+		mu.Lock()
+		asked = append(asked, q.Model)
+		mu.Unlock()
+		if q.Model == "glm-5.3" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(429)
+			io.WriteString(w, ocgoWeekly)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, `data: {"id":"c","object":"chat.completion.chunk","model":"hy4-flash-free","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}`+"\n\n")
+		io.WriteString(w, `data: {"id":"c","object":"chat.completion.chunk","model":"hy4-flash-free","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
+	}))
+	defer up.Close()
+	p := provider.Provider{ID: "ocgo", Name: "OpenCode Go", Key: "sk-ocgo", Catalog: "opencode", Chat: up.URL + "/v1"}
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	got, err := provider.Find("ocgo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FreeModel("glm-5.3") || !got.FreeModel("hy4-flash-free") {
+		t.Fatalf("glm-5.3 free %v, hy4-flash-free free %v", got.FreeModel("glm-5.3"), got.FreeModel("hy4-flash-free"))
+	}
+
+	s := New()
+	ask := func(model string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+			strings.NewReader(`{"model":"ocgo/`+model+`","messages":[{"role":"user","content":"hello"}]}`)))
+		return rec
+	}
+	if rec := ask("glm-5.3"); rec.Code != 429 {
+		t.Fatalf("glm-5.3 answered %d %s", rec.Code, rec.Body.String())
+	}
+	restingUntil.Lock()
+	var rests []string
+	scoped := 0
+	for id, r := range restingUntil.note {
+		rests = append(rests, fmt.Sprintf("%s: %v by %s (%s)", id, time.Until(restingUntil.m[id]).Round(time.Minute), r.By, r.Why))
+		if r.Why == failQuota && id == "ocgo/glm-5.3" {
+			scoped++
+		} else {
+			t.Errorf("rests more than the paid model: %s by %s (%s)", id, r.By, r.Why)
+		}
+	}
+	restingUntil.Unlock()
+	if scoped == 0 {
+		t.Errorf("no rest of glm-5.3 for the key's window: %v", rests)
+	}
+
+	// the free model goes out as before: the vendor answers it, not the
+	// key's kept 429
+	if rec := ask("hy4-flash-free"); rec.Code != 200 {
+		t.Errorf("hy4-flash-free answered %d %s (rests %v)", rec.Code, rec.Body.String(), rests)
+	}
+	mu.Lock()
+	if len(asked) != 2 || asked[0] != "glm-5.3" || asked[1] != "hy4-flash-free" {
+		t.Errorf("the vendor saw %v, want glm-5.3 then hy4-flash-free", asked)
+	}
+	mu.Unlock()
+	if !got.PaidBesideFree("glm-5.3") {
+		t.Errorf("glm-5.3 is paid beside the cost-zero hy4-flash-free: PaidBesideFree says no")
 	}
 }
 

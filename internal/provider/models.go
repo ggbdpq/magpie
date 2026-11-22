@@ -2114,18 +2114,22 @@ func (p Provider) Thinks(model string) bool {
 }
 
 // PaidBesideFree says model costs its subscription's credits while the
-// subscription serves other models at no cost to them (catalog.Model's
-// Free: WorkBuddy's "x0.00", Qoder's is_free, Cline's free models). Its
-// credits running out then says nothing of those: they draw on none
-// (Creat.wu on Discord). False for a model not on the list, or where no
-// model is free.
+// subscription serves other models at no cost to them — a model free by
+// the vendor's own word (catalog.Model's Free: WorkBuddy's "x0.00",
+// Qoder's is_free, Cline's free models) or listed at $0 on every count,
+// as OpenCode Go's -free ones are, which no models.dev word marks
+// (FreeModel). Its credits running out then says nothing of those: they
+// draw on none (Creat.wu on Discord). False for a model not on the list,
+// or where no model is free.
 func (p Provider) PaidBesideFree(model string) bool {
 	listed, paid, free := false, false, false
 	for _, m := range p.Available() {
-		if strings.EqualFold(m.ID, model) {
-			listed, paid = true, !m.Free
+		switch {
+		case strings.EqualFold(m.ID, model):
+			listed, paid = true, !p.FreeModel(m.ID)
+		case p.FreeModel(m.ID):
+			free = true
 		}
-		free = free || m.Free
 	}
 	return listed && paid && free
 }

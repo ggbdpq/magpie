@@ -1712,7 +1712,7 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 			// under below; another computer's magpie rests its model
 			// for it, as before
 			id := c.restKey()
-			if c.p.PaidBesideFree(c.model) || modelLimited(c, why, body) {
+			if c.p.PaidBesideFree(c.model) || c.p.FreeModel(c.model) || modelLimited(c, why, body) {
 				id = c.restID()
 			}
 			d, r.By, r.Failures, guessed = creditBackoff(id, header, body, now)
@@ -1947,8 +1947,11 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	// ones draw on no credits, and the account still serves them (Creat.wu
 	// on Discord: WorkBuddy AI's 14018 "Credits exhausted" on glm-5.3-flash
 	// rested the account, and its free models went nowhere). A free model
-	// the vendor refuses all the same rests on its own refusal.
-	if (why == failCredit || why == failQuota) && c.p.PaidBesideFree(c.model) {
+	// the vendor refuses all the same rests on its own refusal — one
+	// models.dev prices at $0 with no free word of its own too, as
+	// OpenCode Go's -free ones are (#7496): drawn on no window, its
+	// refusal says nothing of the key's other models.
+	if (why == failCredit || why == failQuota) && (c.p.PaidBesideFree(c.model) || c.p.FreeModel(c.model)) {
 		id = c.restID()
 	}
 	if remoteModelRest(c, why, header) {

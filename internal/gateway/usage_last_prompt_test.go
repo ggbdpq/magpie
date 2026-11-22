@@ -272,3 +272,41 @@ func TestLaterTryZeroCacheReadNotTold(t *testing.T) {
 		}
 	})
 }
+
+// A reply that more than one upstream request answered carries the earlier
+// rounds' counts beside the last request's prompt, as the additive object
+// magpie already reads from its plugins (saiswj's #7492: a gateway billing
+// from the reply's usage cannot see the earlier rounds — about a tenth of
+// a searching account's day of prompt tokens). The told prompt stays the
+// last request's: Claude Code reads it as how full the conversation is,
+// and summing made it compact early.
+func TestDeferredRoundsToldBesideThePrompt(t *testing.T) {
+	u := Usage{Input: 900, Output: 40, CacheRead: 12000, CacheWrite: 300,
+		Deferred: &Usage{Input: 500, Output: 8, CacheRead: 4000, CacheWrite: 100}}
+	chat := u.chat()
+	if chat["prompt_tokens"] != 13200 {
+		t.Fatalf("chat prompt_tokens %v, want 13200 (the last round's, not summed)", chat["prompt_tokens"])
+	}
+	d, ok := chat["magpie_deferred"].(map[string]any)
+	if !ok {
+		t.Fatalf("chat usage carries no magpie_deferred: %v", chat)
+	}
+	if d["prompt_tokens"] != 4600 || d["completion_tokens"] != 8 || d["cached_tokens"] != 4000 || d["cache_write_tokens"] != 100 {
+		t.Fatalf("chat magpie_deferred %v, want the earlier rounds' counts", d)
+	}
+	resp := u.responses()
+	if resp["input_tokens"] != 13200 {
+		t.Fatalf("responses input_tokens %v, want 13200 (the last round's)", resp["input_tokens"])
+	}
+	dr, ok := resp["magpie_deferred"].(map[string]any)
+	if !ok {
+		t.Fatalf("responses usage carries no magpie_deferred: %v", resp)
+	}
+	if dr["prompt_tokens"] != 4600 || dr["completion_tokens"] != 8 || dr["cached_tokens"] != 4000 || dr["cache_write_tokens"] != 100 {
+		t.Fatalf("responses magpie_deferred %v, want the earlier rounds' counts", dr)
+	}
+	plain := Usage{Input: 900, Output: 40}.responses()
+	if _, ok := plain["magpie_deferred"]; ok {
+		t.Fatal("a reply with no deferred rounds carries magpie_deferred")
+	}
+}

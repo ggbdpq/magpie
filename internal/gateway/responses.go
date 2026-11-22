@@ -1685,9 +1685,17 @@ func (u rUsage) usage() Usage {
 
 func (u Usage) responses() map[string]any {
 	in := u.prompt()
-	return map[string]any{"input_tokens": in, "output_tokens": u.Output, "total_tokens": in + u.Output,
+	out := map[string]any{"input_tokens": in, "output_tokens": u.Output, "total_tokens": in + u.Output,
 		"input_tokens_details":  map[string]any{"cached_tokens": u.CacheRead, "cache_write_tokens": u.CacheWrite},
 		"output_tokens_details": map[string]any{"reasoning_tokens": u.Reasoning}}
+	// the earlier requests of the conversation, billed with this reply and
+	// never told as its prompt: a gateway billing from the reply's usage
+	// cannot otherwise see them (#7492, saiwj's day of Responses traffic)
+	if d := u.Deferred; d != nil && d.Input+d.Output+d.CacheRead+d.CacheWrite > 0 {
+		out["magpie_deferred"] = map[string]any{"prompt_tokens": d.prompt(), "completion_tokens": d.Output,
+			"cached_tokens": d.CacheRead, "cache_write_tokens": d.CacheWrite}
+	}
+	return out
 }
 
 // responsesDecoder turns a Responses stream into events.

@@ -122,9 +122,16 @@ func TestEmptyStopEndsAtTheLastMember(t *testing.T) {
 	}
 }
 
-// A reply that only reasoned and then stopped said something: the agent
-// has its reasoning, and the next member isn't asked.
-func TestReasonedThenStoppedStaysTheAnswer(t *testing.T) {
+// A reply that only reasoned and then stopped said nothing an agent
+// shows or acts on (thinking is not said, #2972): the group's next
+// member answers, the reasoning the client has staying and the next
+// try's following it (#667). This was pinned the other way while #6712
+// landed — the reasoning stood as the member's answer and the next
+// member wasn't asked — until paom-x's longcat-2.5 spent whole turns on
+// reasoning that ended in a stop with no text and no call, and the turn
+// stood as a 200 empty one (takomitkm reproduced it on the current
+// release through the plugin path, #7446).
+func TestReasonedThenStoppedGoesToTheNextMember(t *testing.T) {
 	fresh(t)
 	reasoned := sse(`data: {"id":"r","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`,
 		`data: {"id":"r","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"thinking it over"}}]}`,
@@ -135,7 +142,7 @@ func TestReasonedThenStoppedStaysTheAnswer(t *testing.T) {
 	c := &scripted{replies: []reply{{200, "text/event-stream", chatFromB}}}
 	threeGroup(t, a, b, c)
 	code, body := postAs(t, New(), "", `{"model":"group/g","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
-	if code != 200 || !strings.Contains(body, "thinking it over") || b.n != 0 {
+	if code != 200 || strings.Contains(body, "thinking it over") || !strings.Contains(body, "from b") || b.n != 1 {
 		t.Fatalf("%d %s (b asked %d)", code, body, b.n)
 	}
 }
@@ -228,6 +235,58 @@ func TestEmptyEndFromEachUpstreamFailsOver(t *testing.T) {
 				t.Fatalf("%d %s (a %d, b %d) %+v", code, body, a.n, b.n, s.trace.routes[len(s.trace.routes)-1].Tries)
 			}
 			if r := s.trace.routes[len(s.trace.routes)-1]; r.Tries[0].Rest != nil || !strings.Contains(r.Tries[0].Error, emptyReply) {
+				t.Fatalf("tries: %+v", r.Tries)
+			}
+		})
+	}
+}
+
+// thoughtStop is paom-x's #7446 stream, as catpaw/longcat-2.5 sent it: a
+// turn spent entirely on reasoning — the deltas the client kept seeing —
+// that then ended with finish_reason "stop", no text and no tool call.
+// Thinking is not said (#2972): the reply said nothing, yet the turn
+// stood as a 200 empty one and the group's next member was never asked.
+// takomitkm reproduced it on the current release through the plugin path.
+var thoughtStop = sse(
+	`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+	`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"Let me output tool calls."}}]}`,
+	`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	`data: {"id":"c1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":50000,"completion_tokens":811,"total_tokens":50811}}`,
+	`data: [DONE]`)
+
+// A member's reply that only reasoned and then stopped is no answer
+// (#7446): relayed as it came or translated, the held reply fails for the
+// group's next member, with nothing of it reaching the agent.
+func TestThoughtOnlyStopFailsOverToTheNextMember(t *testing.T) {
+	for _, x := range []struct {
+		name, path, body string
+	}{
+		{"chat", "/v1/chat/completions", `{"model":"group/g","stream":true,"messages":[{"role":"user","content":"hi"}]}`},
+		{"messages", "/v1/messages", `{"model":"group/g","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"hi"}]}`},
+	} {
+		t.Run(x.name, func(t *testing.T) {
+			fresh(t)
+			a := &scripted{replies: []reply{{200, "text/event-stream", thoughtStop}}}
+			b := &scripted{replies: []reply{{200, "text/event-stream", chatFromB}}}
+			c := &scripted{replies: []reply{{200, "text/event-stream", chatFromB}}}
+			threeGroup(t, a, b, c)
+			s := New()
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", x.path, strings.NewReader(x.body)))
+			code, body := rec.Code, rec.Body.String()
+			// relayed as it came, nothing of the failed reply reaches the
+			// agent (#6712); translated, the reasoning the client has
+			// stays and the next member's answer follows it (#667)
+			if code != 200 || !strings.Contains(body, "from b") ||
+				x.name == "chat" && strings.Contains(body, "Let me output") {
+				t.Fatalf("%d %s", code, body)
+			}
+			if b.n != 1 || c.n != 0 {
+				t.Fatalf("a asked %d, b asked %d, c asked %d", a.n, b.n, c.n)
+			}
+			r := s.trace.routes[len(s.trace.routes)-1]
+			if len(r.Tries) != 2 || r.Tries[0].Status != 502 || r.Tries[0].Fail != failOther || r.Tries[0].Rest != nil ||
+				!strings.Contains(r.Tries[0].Error, emptyReply) {
 				t.Fatalf("tries: %+v", r.Tries)
 			}
 		})

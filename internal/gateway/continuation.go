@@ -507,6 +507,10 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 	named := request.MaxTokens
 	empties := 0 // the times such a reply was asked again here
 	said, stop := false, ""
+	// thought: this try's stream reasoned (chatTail), while nothing has
+	// been said in it — a stop then ends a reply that said nothing an
+	// agent shows or acts on (#7446)
+	thought := false
 	var kept []Event       // the reply's end, while nothing is said in it
 	var before, this Usage // what the tries before this one billed, and this try
 	tried := false         // a try began: the next one's prompt is the reply's (restart)
@@ -698,6 +702,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 					defer wmu.Unlock()
 					heard()
 					tail.see([]byte(data))
+					thought = thought || tail.thought
 					found.see(actual, []byte(data))
 					st := upstreamStop([]byte(data))
 					u.add(Usage{Upstream: upstreamOf([]byte(data)), Stop: st, Tier: upstreamTier([]byte(data)), searches: found.count()})
@@ -768,7 +773,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 			// ends the reply with the loop's error.
 			relooped = false
 			before, this = before.plus(this, false), Usage{}
-			kept, stop = nil, ""
+			kept, stop, thought = nil, "", false
 			enc.keepalive()
 			select {
 			case <-time.After(retryPause):
@@ -780,17 +785,23 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 			if held != nil {
 				held()
 			}
-			if (empty || counts && uncounted(this) || voids && stop == "") && !said && answersNothing(stop) {
+			if (empty || actual == provider.Chat && thought && stop != "" ||
+				counts && uncounted(this) || voids && stop == "") && !said && answersNothing(stop) {
 				if empties < emptyRetries(w, r.Context()) && r.Context().Err() == nil && !p.PassesErrors() {
 					// asked again here first, for the agent to have the
 					// answer rather than the error: Gemini on a long
 					// conversation now and then ends with only its
 					// reasoning several times running, and an agent told
 					// the error stops its run (#667, Pi). What reasoning
-					// the client has stays, the next try's follows it.
+					// the client has stays, the next try's follows it. A
+					// Chat upstream's turn spent on its reasoning and ended
+					// with a stop said nothing either (#7446): thinking is
+					// not said (#2972), and a reply that only reasoned is
+					// asked again here as Gemini's is, not relayed as a
+					// 200 empty one.
 					empties++
 					before, this = before.plus(this, false), Usage{}
-					kept, stop = nil, ""
+					kept, stop, thought = nil, "", false
 					enc.keepalive()
 					select {
 					case <-time.After(retryPause << (empties - 1)):
@@ -819,7 +830,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 						roomed := *request
 						roomed.MaxTokens, request = n, &roomed
 						before, this = before.plus(this, false), Usage{}
-						kept, stop = nil, ""
+						kept, stop, thought = nil, "", false
 						enc.keepalive()
 						continue
 					}

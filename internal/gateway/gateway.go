@@ -8510,6 +8510,25 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			}
 			return res.StatusCode, msg, true
 		}
+		if !sniff.tail.said() && sniff.tail.thought && answersNothing(sniff.u.Stop) &&
+			replyCheck(r.Context()) == nil {
+			// a turn spent on its reasoning that ended as it should said
+			// nothing an agent shows or acts on — thinking is not said
+			// (#2972) — yet it stood as a 200 empty reply, the group's
+			// next member never asked (paom-x's longcat-2.5, takomitkm on
+			// the plugin path, #7446). The held end is dropped and the
+			// empty reply's error said in its place, [DONE] after, as a
+			// void cut's is. An empty reply without reasoning goes as it
+			// came (#6712).
+			msg := p.Name + ": " + emptyReply
+			dropHalf()
+			w.Write(append(apart(), streamFailure(provider.Chat, msg)...))
+			w.Write([]byte("data: [DONE]\n\n"))
+			if f != nil {
+				f.Flush()
+			}
+			return res.StatusCode, msg, true
+		}
 		// not a void, or a short probe's answer: the end goes as it came
 		holdTail = false
 		if _, err := write(heldTail); err != nil {

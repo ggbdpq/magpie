@@ -122,3 +122,44 @@ func TestChatPassthroughVoidStreamFailsOver(t *testing.T) {
 		}
 	}
 }
+
+// A reply that only reasoned and then stopped asked of one provider, not
+// a group, is an empty reply too (#7446): asked again in place, the
+// error when it comes empty again, the answer when the retry says
+// something. An empty reply that ended with a stop without reasoning
+// goes as it came, as it did (#6712).
+func TestChatThoughtOnlyStopIsEmpty(t *testing.T) {
+	pause := retryPause
+	retryPause = time.Millisecond
+	t.Cleanup(func() { retryPause = pause })
+	fresh(t)
+	var calls atomic.Int32
+	var replies []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		n := int(calls.Add(1))
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, replies[min(n, len(replies))-1])
+	}))
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{ID: "cp", Name: "Catpaw", Key: "k", Models: []string{"longcat-2.5"}, Chat: up.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	role := `data: {"choices":[{"index":0,"delta":{"content":"","role":"assistant"}}],"created":1763600000,"id":"c1","model":"longcat-2.5"}`
+	reasoned := `data: {"choices":[{"index":0,"delta":{"reasoning_content":"Let me output tool calls."}}],"created":1763600000,"id":"c1","model":"longcat-2.5"}`
+	stopped := `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"created":1763600000,"id":"c1","model":"longcat-2.5"}`
+	usage := `data: {"choices":[],"created":1763600000,"id":"c1","usage":{"completion_tokens":811,"prompt_tokens":50000,"total_tokens":50811},"model":"longcat-2.5"}`
+	thought := sse(role, reasoned, stopped, usage, `data: [DONE]`)
+	text := `data: {"choices":[{"index":0,"delta":{"content":"hello"}}],"created":1763600000,"id":"c1","model":"longcat-2.5"}`
+	ask := func(r ...string) (int, string) {
+		calls.Store(0)
+		replies = r
+		return post(t, "/v1/messages", `{"model":"cp/longcat-2.5","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	}
+	if code, body := ask(thought); code != 200 || !strings.Contains(body, "an empty reply") || calls.Load() < 2 {
+		t.Errorf("a reply that only reasoned answered %d after %d calls, not the empty-reply error: %q", code, calls.Load(), body)
+	}
+	if code, body := ask(thought, sse(role, text, stopped, usage, `data: [DONE]`)); code != 200 || !strings.Contains(body, "hello") || strings.Contains(body, "an empty reply") || calls.Load() != 2 {
+		t.Errorf("a reply that only reasoned, then a reply: %d after %d calls: %q", code, calls.Load(), body)
+	}
+}

@@ -26,7 +26,11 @@ import (
 // ones. Ordinary writing doesn't come near it, even when lines repeat:
 // code, a table, a list or a log differs from line to line in its names,
 // numbers and cells, and a unit with no word in it (a brace, a rule, a
-// row of 0x00 or of numbers) isn't counted at all. The cycle need not be exact,
+// row of 0x00 or of numbers) isn't counted at all — except a blank one:
+// an unbroken run of blank lines is what a degenerate reply looks like
+// when it is not repeating words, and blankRun of those in a row are a
+// loop too (SORAXEE's #7511: 64,000 output tokens of newlines, 81
+// visible characters, the turn billed as incomplete). The cycle need not be exact,
 // as the reporter's wasn't ("Here." "Produce." one round, "Final." or
 // "Producing." the next).
 type loopGuard struct {
@@ -52,6 +56,10 @@ const (
 	unitKept = 256
 	// pendingMost bounds an event that never ends, which isn't read.
 	pendingMost = 1 << 20
+	// blankRun is how many blank lines in a row are a loop: no reply
+	// writes a hundred of them and nothing else, and a degenerate one
+	// writes thousands (#7511).
+	blankRun = 128
 )
 
 // unitRun is one channel's units: its reasoning's, or its text's.
@@ -67,6 +75,10 @@ type unitRun struct {
 	// runOn is how many units in a row were cut at unitMost, with no break
 	// in them, as the same few words over and over (runOnWords)
 	runOn int
+	// blanks is how many blank units in a row were seen: units with
+	// nothing in them at all, which no worded or wordless one interrupts
+	// without ending the run (blanks, #7511)
+	blanks int
 }
 
 type unitCount struct {
@@ -83,6 +95,9 @@ type loopTrip struct {
 	// runOn: the loop had no break in it, and units are its words and
 	// window how many characters it ran to
 	runOn bool
+	// blank: the loop is a run of blank lines, and window how many of
+	// them it ran to (#7511)
+	blank bool
 }
 
 // message is what the agent and the logs are told.
@@ -102,6 +117,10 @@ func (t loopTrip) message() string {
 	if t.runOn {
 		return fmt.Sprintf(loopGuardSaid+": the model's %s was stuck in a loop, its last %d characters the same over and over without a break (%s), and would have run on to its output limit. Ask again, or set Settings › Models › Replies › Stop looping replies off",
 			what, t.window, strings.Join(quoted, " "))
+	}
+	if t.blank {
+		return fmt.Sprintf(loopGuardSaid+": the model's %s was stuck in a loop, its last %d lines blank, and would have run on to its output limit. Ask again, or set Settings › Models › Replies › Stop looping replies off",
+			what, t.window)
 	}
 	return fmt.Sprintf(loopGuardSaid+": the model's %s was stuck in a loop, its last %d lines and sentences all among the same %d (%s), and would have run on to its output limit. Ask again, or set Settings › Models › Replies › Stop looping replies off",
 		what, t.window, len(t.units), strings.Join(quoted, " "))
@@ -307,8 +326,16 @@ func (r *unitRun) end() (loopTrip, bool) {
 	r.stop, r.lettered = false, false
 	key, ok := unitKey(raw)
 	if !ok {
+		// a blank unit joins a run of them; any other wordless one — a
+		// brace, a rule, a table row — ends the run it may have been in
+		if strings.TrimSpace(raw) != "" {
+			r.blanks = 0
+		} else if r.blanks++; r.blanks >= blankRun {
+			return loopTrip{blank: true, window: r.blanks}, true
+		}
 		return loopTrip{}, false
 	}
+	r.blanks = 0
 	h := fnv.New64a()
 	h.Write([]byte(key))
 	sum := h.Sum64()

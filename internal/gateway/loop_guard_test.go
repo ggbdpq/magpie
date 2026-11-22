@@ -655,3 +655,103 @@ func TestLoopGuardOff(t *testing.T) {
 		t.Fatalf("let go %v after %d lines", letGo, v.sent.Load())
 	}
 }
+
+// SORAXEE's #7511 reply: two sentences, then an unbroken run of blank
+// lines to the reply's limit. A blank line is a unit with no word in it,
+// which the guard leaves out, so the run never fills the window and the
+// reply ran to 64,000 output tokens of newlines, billed, ending as
+// incomplete instead of magpie's loop error. A run of blank units is a
+// loop: found within some hundred lines of it, and ordinary writing —
+// whose blank lines never come unbroken — is left alone.
+func TestLoopGuardFindsABlankLineRun(t *testing.T) {
+	g := &loopGuard{}
+	if _, ok := feedAll(t, g, "content", "The parse is done and the tests pass. The table below is empty.\n\n"); ok {
+		t.Fatal("found a loop in ordinary prose")
+	}
+	for lines := 0; lines < 2000; lines++ {
+		unit := "\n"
+		if lines%3 == 0 {
+			unit = "   \n" // whitespace-only units are blank too
+		}
+		if trip, ok := g.feed([]byte(chatEvent("content", unit))); ok {
+			if !trip.blank || trip.units != nil {
+				t.Fatalf("trip %+v", trip)
+			}
+			if trip.window < blankRun {
+				t.Fatalf("cut after %d blank lines", trip.window)
+			}
+			msg := trip.message()
+			for _, w := range []string{"blank", "loop", "Stop looping replies"} {
+				if !strings.Contains(msg, w) {
+					t.Errorf("message %q doesn't say %s", msg, w)
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("no loop found in 2000 blank lines")
+
+}
+
+// Blank lines scattered through ordinary writing — a paragraph, a code
+// block, a table — never come unbroken, and are no loop.
+func TestScatteredBlankLinesAreNoLoop(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 2000; i++ {
+		fmt.Fprintf(&b, "Step %d routes the caller's question through its own words and names.\n", i)
+		if i%3 == 0 {
+			b.WriteString("\n")
+		}
+	}
+	for _, field := range []string{"content", "reasoning_content"} {
+		g := &loopGuard{}
+		if trip, ok := feedAll(t, g, field, b.String()); ok {
+			t.Errorf("%s: taken for a loop: %s", field, trip.message())
+		}
+	}
+}
+
+// The turn as the reporter had it on the record (#7511): Codex asked for
+// 64,000 output tokens and got them, all but 81 characters newlines,
+// billed, and the reply ended as incomplete — as if the limit were too
+// small. The guard ends it as a loop instead: asked again once, and when
+// that reply degenerates too, magpie's error reaches the agent, not the
+// vendor's clean end.
+func TestLoopEndsABlankDegenerateReply(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("The parse is done and the tests pass.\n")
+	for i := 0; i < 4000; i++ {
+		b.WriteString("\n")
+	}
+	v := &loopingVendor{reasoning: b.String(), letGo: make(chan bool, 4)}
+	gw := deepseekOn(t, v)
+	got := askStream(t, gw+"/v1/chat/completions", `{"model":"ds/deepseek-v4-max","stream":true,"messages":[{"role":"user","content":"add TOML"}]}`)
+	if !strings.Contains(got, "magpie ended this reply") || !strings.Contains(got, "blank") ||
+		strings.Contains(got, "data: [DONE]") || strings.Contains(got, "Done: parse()") {
+		t.Fatalf("the stream doesn't end with magpie's loop error:\n%s", got[max(len(got)-1200, 0):])
+	}
+	if n := v.asked.Load(); n != 2 {
+		t.Fatalf("the vendor was asked %d times, want 2", n)
+	}
+	for range 2 {
+		select {
+		case letGo := <-v.letGo:
+			if !letGo {
+				t.Fatal("the vendor's request was not let go")
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("the vendor's request was not let go")
+		}
+	}
+	var rec usage.Record
+	for i := 0; i < 50; i++ {
+		if recs := usage.Load(time.Time{}); len(recs) > 0 {
+			rec = recs[len(recs)-1]
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if rec.ErrType != loopErrType || !strings.Contains(rec.Error, "stuck in a loop") {
+		t.Fatalf("usage record %+v", rec)
+	}
+}

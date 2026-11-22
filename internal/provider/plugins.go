@@ -891,8 +891,11 @@ const SentModelHeader = "X-Magpie-Sent-Model"
 // may not exist or you may not have access to it.", from the API
 // {"type":"not_found_error","message":"model: claude-mythos-5-2"} — that
 // model rests on that account, not the account for all its models
-// (ZacharyZhang on X).
-var ModelUnserved = lazyre.New(`(?i)model.{0,80}(not (supported|accessible|available|found|enabled|allowed)|unsupported|does ?n[o']t exist|may not exist or you may not have access|unknown|invalid)|not_found_error.{0,40}"model: |(no such|unknown|invalid|unsupported) model|model_not_found|has no provider supported|deployment[ _]?not[ _]?found|deployment.{0,60}does ?n[o']t exist|模型.{0,12}(不存在|不支持|无权|未开通)`)
+// (ZacharyZhang on X). And magpie's own 404 for a model whose provider is
+// switched off, "… is switched off in Magpie, so … is not served; switch
+// it on again …", which a remote magpie member answers and is asked again
+// on every request unless it rests like any unserved model's (#7503).
+var ModelUnserved = lazyre.New(`(?i)model.{0,80}(not (supported|accessible|available|found|enabled|allowed)|unsupported|does ?n[o']t exist|may not exist or you may not have access|unknown|invalid)|not_found_error.{0,40}"model: |(no such|unknown|invalid|unsupported) model|model_not_found|has no provider supported|is not served|deployment[ _]?not[ _]?found|deployment.{0,60}does ?n[o']t exist|模型.{0,12}(不存在|不支持|无权|未开通)`)
 
 // signInWords are words of a refusal about the sign-in itself, which a
 // model named beside them doesn't make the model's: "model gpt-x: invalid

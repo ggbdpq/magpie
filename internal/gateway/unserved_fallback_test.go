@@ -79,3 +79,63 @@ func TestGroupFailsOverAModelWithNoProvider(t *testing.T) {
 		t.Errorf("modelRefused false: the model wouldn't rest alone on its key")
 	}
 }
+
+// magpieSwitchedOff404 is what a remote magpie member answers when the
+// provider that would serve the model there is switched off (#7503):
+// magpie's own switchedOff wording in a 404. It says "is not served" —
+// words unservedWords matched nowhere, so the member was read as any
+// unknown failure and the group asked it again on every request.
+const magpieSwitchedOff404 = `{"error":{"message":"ZCode is switched off in Magpie, so \"GLM-5.3-Flash-Trial\" is not served; switch it on again in Magpie's Providers to use it","type":"not_found_error"}}`
+
+// A member whose magpie has the model's provider switched off answers
+// that 404 for as long as it stays off: as any unserved model's, it hands
+// the request to the group's next member and rests for that model alone,
+// so the client's next request, landing on the group again, is not sent
+// to the dead seat first (#7503).
+func TestGroupFailsOverASwitchedOffMember(t *testing.T) {
+	fresh(t)
+	a := &scripted{replies: []reply{{404, "", magpieSwitchedOff404}}}
+	b := &scripted{replies: []reply{{200, "", chatOK}}}
+	scriptedOn(t, "school", provider.Chat, a)
+	scriptedOn(t, "b", provider.Chat, b)
+	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"school/m", "b/m"}, Routing: provider.Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 || !strings.Contains(body, "hello") || a.n != 1 || b.n != 1 {
+		t.Fatalf("%d %s (school %d, b %d)", code, body, a.n, b.n)
+	}
+	r := s.trace.routes[len(s.trace.routes)-1]
+	if len(r.Tries) != 2 || r.Tries[0].Status != 404 || r.Tries[0].Fail != failOther {
+		t.Fatalf("tries %+v", r.Tries)
+	}
+	if rest := r.Tries[0].Rest; rest == nil || rest.Key != "school/m" || rest.Model != "m" {
+		t.Fatalf("the model alone was to rest on the member: %+v", r.Tries[0].Rest)
+	}
+
+	// the rested seat is passed over: the next group request, as the
+	// client's retry is, is answered by the second member alone
+	code, body = postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 || !strings.Contains(body, "hello") || a.n != 1 || b.n != 2 {
+		t.Fatalf("next: %d %s (school %d, b %d)", code, body, a.n, b.n)
+	}
+
+	// magpie's own wording, the member's label before it or not, is an
+	// unserved model's refusal, not the request's or a shape's
+	for _, x := range []struct {
+		status int
+		body   string
+		want   bool
+	}{
+		{404, magpieSwitchedOff404, true},
+		{404, `school: ZCode is switched off in Magpie, so "GLM-5.3-Flash-Trial" is not served; switch it on again in Magpie's Providers to use it`, true},
+	} {
+		if got := modelRefused(x.status, []byte(x.body)); got != x.want {
+			t.Errorf("modelRefused(%d, %s) = %v", x.status, x.body, got)
+		}
+		if got := shapeRefused(x.status, []byte(x.body)); got {
+			t.Errorf("shapeRefused(%d, %s) = %v; an unserved model rests, it is not a shape", x.status, x.body, got)
+		}
+	}
+}

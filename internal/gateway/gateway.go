@@ -261,6 +261,19 @@ func standIn(agent, asked string) string {
 	return m
 }
 
+// standInFor is standIn for one call of the kind it came with. Codex's
+// memory calls keep out — the only ones codexMemoryStandIn, called for
+// every call right after the moves here, routes on their own: what Codex's
+// config names is not the model they follow, and its reaching them first
+// left the conversation's model out (#7518). Every other call is stood in
+// for as before.
+func standInFor(agent, kind, asked string) string {
+	if agent == "codex" && isMemoryKind(kind) {
+		return ""
+	}
+	return standIn(agent, asked)
+}
+
 // claudeFamily is a full id of one of the model families Claude Code has a
 // tier for, as Claude Code or a wrapper of it names one: claude-sonnet-4-6,
 // claude-fable-5-1, claude-haiku-4-5-20251001, claude-3-5-sonnet-20241022,
@@ -2935,7 +2948,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		move(m, movedClaudeTier)
 	} else if g := grouped(asked); g != asked {
 		asked = g
-	} else if m := standIn(agent, asked); m != "" {
+	} else if m := standInFor(agent, call.Kind, asked); m != "" {
 		// Codex's config on a group by its bare name (model = "my-group",
 		// or gpt-6.1-sol for group/auto-gpt-6-1-sol): its turns reached the
 		// group, and its auto-review's codex-auto-review, stood in for by

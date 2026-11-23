@@ -3,10 +3,13 @@ package gateway
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/usage"
 )
@@ -146,6 +149,69 @@ func TestCodexMemoryOnACollidingBareNameFollowsTheSession(t *testing.T) {
 	}
 	if reqs := relay.requests(); len(reqs) != 2 {
 		t.Fatalf("the provider with the name got %d requests, the turn among them", len(reqs))
+	}
+}
+
+// #7518 (slideslide): Codex with magpie as its provider, its config naming
+// a model magpie serves (top-level model = "fake/m2") while the
+// conversation runs on another (fake/m1): its memory call on its own bare
+// default (gpt-6-luna) is one magpie doesn't serve, and the stand-in for
+// what the config names reached it first — the call went to the config's
+// model, not the conversation's, though it follows the session (the same
+// request's affinity had named the conversation's model too). A memory
+// call keeps to its own routing (codexMemoryStandIn): what Codex's config
+// names is not its pick; the config's model stands in for every other call
+// as before.
+func TestCodexMemoryCallIsNotStoodInForTheConfigsModel(t *testing.T) {
+	f := &fake{t: t}
+	setup(t, provider.Chat, f)
+	home := t.TempDir()
+	setHome(t, home)
+	cfg := filepath.Join(home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte("model_provider = \"magpie\"\nmodel = \"fake/m2\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// what the agent package wires for a Codex on magpie (agent.StandIn):
+	// the model the config names, read as codexStandIn reads it
+	StandIn = func(agent, asked string) string {
+		if agent != "codex" {
+			return ""
+		}
+		if p, _ := edit.GetTOMLTop(cfg, "model_provider"); p != "magpie" {
+			return ""
+		}
+		m, _ := edit.GetTOMLTop(cfg, "model")
+		return m
+	}
+	t.Cleanup(func() { StandIn = nil })
+	was := CodexSideSet
+	CodexSideSet = func(string) bool { return false } // no [memories] in the config
+	t.Cleanup(func() { CodexSideSet = was })
+
+	reply := func() string {
+		return sse(
+			`data: {"id":"c1","choices":[{"index":0,"delta":{"content":"ok"}}]}`,
+			`data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`,
+			`data: [DONE]`)
+	}
+	s := New()
+	f.reply = reply()
+	if rec := codexCall(t, s, "fake/m1", ""); rec.Code != 200 {
+		t.Fatalf("a turn on the conversation's model: %d %q", rec.Code, rec.Body.String())
+	}
+	f.reply = reply()
+	if rec := codexCall(t, s, "gpt-6-luna", "memory_consolidation"); rec.Code != 200 {
+		t.Fatalf("the memory call: %d %q", rec.Code, rec.Body.String())
+	}
+	var sent struct {
+		Model string `json:"model"`
+	}
+	json.Unmarshal(f.got, &sent)
+	if sent.Model != "m1" {
+		t.Errorf("the memory call went to %q, the conversation's is m1", sent.Model)
 	}
 }
 

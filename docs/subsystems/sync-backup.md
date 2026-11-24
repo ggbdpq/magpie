@@ -416,7 +416,7 @@ switch that anyone with the file and the passphrase can use those accounts.
   takes magpie's own copies only (`carried`): not an agent's own account
   (`own`), not one in an agent's own home (`Home`), not a hidden row, not a
   `plugin:` row, not a retired built-in. Codex's live auth.json goes as its
-  own record. Plugins' sign-ins come from [`plugin.CarriedAuth`](../../internal/plugin/carry.go).
+  own record. Plugins' sign-ins come from [`plugin.AuthEntries`](../../internal/plugin/carry.go).
   Each record has an id that names the account (agent, lower-case email and
   organisation; or the account key), its time of renewal and a hash; ids two
   rows share are left out on both sides, as no one can tell which is which.
@@ -429,7 +429,15 @@ switch that anyone with the file and the passphrase can use those accounts.
   out one an older file carried, so a sync neither sends nor takes one
   and a Restore writes none. Each computer signs in to them itself
   (`TestCollectSignInsLeavesARotatingSignInOut`,
-  `TestKnownRotatingSignInsStayWithNoPluginListed`).
+  `TestKnownRotatingSignInsStayWithNoPluginListed`). A manual API key
+  (type "api") of such a provider is carried still: a static key the user
+  signed in to by hand, which magpie never renews, so there is no token
+  the vendor spends once in it and nothing to race (#7624). An entry that
+  doesn't say it is one stays out
+  (`TestCollectSignInsCarriesARotatingProvidersAPIKey`,
+  `TestKnownRotatingProvidersAPIKeyIsCarriedWithNoPluginListed`,
+  `TestMergeSignInsCarriesARotatingProvidersAPIKey`,
+  `TestRestoreSignInsPutsARotatingProvidersAPIKeyIn`).
 - **Sealed:** a backup or export seals them with the rest of the file. An
   automatic backup, which has no passphrase on a schedule, seals them
   alone (`SealData`) with the passphrase asked for as they are turned on,

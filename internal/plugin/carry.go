@@ -54,6 +54,16 @@ func AuthExpires(raw json.RawMessage) int64 {
 	return a.Expires
 }
 
+// AuthIsAPI is whether a sign-in entry is a static API key (type "api"):
+// a key a user signed in to by hand, which magpie never renews (RenewAt
+// renews an OAuth sign-in only), so carrying it to another computer races
+// nothing, whatever the plugin's provider says of its refresh tokens
+// (#7624). What doesn't read as one isn't one.
+func AuthIsAPI(raw json.RawMessage) bool {
+	var a storedAuth
+	return json.Unmarshal(raw, &a) == nil && a.Type == "api"
+}
+
 // EditAuth changes plugin-auth.json under plugin-auth.json.lock, which
 // host.js takes too, read afresh there: f gets the sign-ins by key and
 // says whether it changed them. A file that can't be read is not written

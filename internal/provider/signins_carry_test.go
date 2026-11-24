@@ -451,3 +451,129 @@ func TestKnownRotatingSignInsStayWithNoPluginListed(t *testing.T) {
 		t.Fatal("a plain sign-in stopped being carried")
 	}
 }
+
+// WorkBuddy's auth hook says its refresh tokens rotate (plugins #1027; in
+// rotatesKnown too), and its sign-in a user signed in to with a key by
+// hand is type "api": a static key, which magpie never renews (RenewAt
+// renews an OAuth sign-in only), so carrying it to another computer races
+// nothing — there is no token the vendor spends once in it (#7624).
+func workbuddyRotating(t *testing.T) {
+	t.Helper()
+	t.Setenv("MAGPIE_BUN", "") // nothing here runs a plugin
+	write := func(name string, v any) {
+		b, _ := json.Marshal(v)
+		os.MkdirAll(settings.Dir(), 0o700)
+		if err := os.WriteFile(filepath.Join(settings.Dir(), name), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wb := "@magpie-community/opencode-workbuddy-auth"
+	write("plugins.json", map[string]any{"plugins": []map[string]any{{"spec": wb}}})
+	plugin.UseCached([]plugin.Provider{
+		{ID: "workbuddy", Spec: wb, Renews: true, Rotating: true},
+	})
+	t.Cleanup(func() { plugin.UseCached(nil) })
+}
+
+func workbuddyAPIKey() json.RawMessage {
+	return json.RawMessage(`{"type":"api","key":"wbkey-1234567890","accountId":"k@x.com"}`)
+}
+
+func TestCollectSignInsCarriesARotatingProvidersAPIKey(t *testing.T) {
+	signIn(t)
+	workbuddyRotating(t)
+	writePluginAuth(t, map[string]any{
+		"workbuddy":    workbuddyAPIKey(),
+		"workbuddy-ai": map[string]any{"type": "oauth", "access": "w", "refresh": "r2", "expires": 3000, "accountId": "k3@x.com"},
+		"kiro":         map[string]any{"type": "oauth", "access": "k", "refresh": "r", "expires": 3000, "accountId": "k2@x.com"},
+	})
+	s, err := CollectSignIns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Plugins["workbuddy"]; !ok {
+		t.Fatal("a rotating provider's manual API key isn't carried: nothing in it is renewed, so nothing races (#7624)")
+	}
+	if _, ok := s.Plugins["workbuddy-ai"]; ok {
+		t.Fatal("a rotating provider's OAuth sign-in is carried: the token's second owner (#5583)")
+	}
+	if _, ok := s.Plugins["kiro"]; !ok {
+		t.Fatal("a plain sign-in stopped being carried")
+	}
+}
+
+// Before the plugin host's list is read, workbuddy is known to rotate from
+// rotatesKnown; its manual API key is carried all the same (#7624).
+func TestKnownRotatingProvidersAPIKeyIsCarriedWithNoPluginListed(t *testing.T) {
+	signIn(t)
+	plugin.UseCached(nil)
+	writePluginAuth(t, map[string]any{
+		"workbuddy":    workbuddyAPIKey(),
+		"workbuddy-ai": map[string]any{"type": "oauth", "access": "w", "refresh": "r2", "expires": 3000, "accountId": "k3@x.com"},
+	})
+	s, err := CollectSignIns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Plugins["workbuddy"]; !ok {
+		t.Fatal("a known rotating provider's manual API key isn't carried (#7624)")
+	}
+	if _, ok := s.Plugins["workbuddy-ai"]; ok {
+		t.Fatal("a known rotating provider's OAuth sign-in is carried: the token's second owner (#5583)")
+	}
+}
+
+func TestMergeSignInsCarriesARotatingProvidersAPIKey(t *testing.T) {
+	signIn(t)
+	workbuddyRotating(t)
+	remote := &SignIns{Plugins: map[string]json.RawMessage{
+		"workbuddy":    workbuddyAPIKey(),
+		"workbuddy-ai": json.RawMessage(`{"type":"oauth","access":"w","refresh":"r2","expires":5000,"accountId":"k3@x.com"}`),
+	}}
+	_, plan, hashes := MergeSignIns(nil, remote, nil) // a computer joining
+	put := false
+	for _, r := range plan.put {
+		if r.key == "workbuddy" {
+			put = true
+		}
+		if r.key == "workbuddy-ai" {
+			t.Fatal("a rotating provider's OAuth sign-in is put in here: the token's second owner (#5583)")
+		}
+	}
+	if !put {
+		t.Fatal("a rotating provider's manual API key isn't put in here (#7624)")
+	}
+	if _, ok := hashes["plugin|workbuddy|k@x.com"]; !ok {
+		t.Fatal("a rotating provider's manual API key doesn't go up (#7624)")
+	}
+	if _, ok := hashes["plugin|workbuddy-ai|k3@x.com"]; ok {
+		t.Fatal("a rotating provider's OAuth sign-in goes up (#5583)")
+	}
+}
+
+func TestRestoreSignInsPutsARotatingProvidersAPIKeyIn(t *testing.T) {
+	signIn(t)
+	workbuddyRotating(t)
+	writePluginAuth(t, map[string]any{})
+	s := &SignIns{Plugins: map[string]json.RawMessage{
+		"workbuddy":    workbuddyAPIKey(),
+		"workbuddy-ai": json.RawMessage(`{"type":"oauth","access":"w","refresh":"r2","expires":5000,"accountId":"k3@x.com"}`),
+	}}
+	r, err := RestoreSignIns(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Added != 1 {
+		t.Fatalf("a backup's manual API key isn't put in alone (#7624): %+v", r)
+	}
+	m, err := plugin.AuthEntries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m["workbuddy"]; !ok {
+		t.Fatal("a backup's manual API key wasn't written to plugin-auth.json (#7624)")
+	}
+	if _, ok := m["workbuddy-ai"]; ok {
+		t.Fatal("a backup's rotating OAuth sign-in was written to plugin-auth.json (#5583)")
+	}
+}

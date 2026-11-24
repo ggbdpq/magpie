@@ -25,7 +25,10 @@ package provider
 //     renew it, and the vendor would turn the loser away for good, with
 //     no newer generation anywhere to come back from (#5583). It stays
 //     signed in on the computer that signed in, and one carried by a
-//     backup or a sync made before the plugin said so is left out here.
+//     backup or a sync made before the plugin said so is left out here;
+//     a manual API key (type "api") of the same provider is carried
+//     still: it is static, magpie never renews it, and there is no token
+//     the vendor spends once in it (#7624).
 
 import (
 	"bytes"
@@ -155,7 +158,9 @@ func credTime(auth json.RawMessage, renewed time.Time) time.Time {
 // in a way that doesn't carry) are left out both: neither is put over the
 // other, nor anything here. A plugin whose provider says its refresh
 // token rotates (Rotating, the auth hook's rotating) is left out too:
-// its sign-in is one computer's alone (#5583).
+// its sign-in is one computer's alone (#5583) — a manual API key of the
+// same provider is carried still, there is no token to spend twice in it
+// (#7624, carriedPlugin).
 func (s *SignIns) records() map[string]signInRec {
 	out := map[string]signInRec{}
 	if s == nil {
@@ -180,8 +185,8 @@ func (s *SignIns) records() map[string]signInRec {
 	if len(s.Plugins) > 0 {
 		rotating := rotatingPlugins()
 		for k, raw := range s.Plugins {
-			if rotating[plugin.ProviderOf(k)] {
-				continue // a refresh token the vendor spends once (#5583)
+			if !carriedPlugin(k, raw, rotating) {
+				continue // a refresh token the vendor spends once (#5583), unless the entry is a manual API key (#7624)
 			}
 			var at time.Time
 			if ms := plugin.AuthExpires(raw); ms > 0 {
@@ -210,10 +215,11 @@ var rotatesKnown = []string{
 // rotatingPlugins are the ids of the plugins whose auth hook says their
 // refresh tokens rotate (Rotating): a sign-in of theirs is never carried,
 // so no computer holds a copy of a token the vendor lets be spent once
-// (#5583). Besides what a plugin says of its own, the community plugins
-// known to rotate (rotatesKnown) are never carried either: their auth
-// hooks said nothing of it when this landed, and the plugin host's list
-// may not be read yet when a sync runs at start.
+// (#5583), a manual API key of theirs apart (#7624, carriedPlugin).
+// Besides what a plugin says of its own, the community plugins known to
+// rotate (rotatesKnown) are never carried either: their auth hooks said
+// nothing of it when this landed, and the plugin host's list may not be
+// read yet when a sync runs at start.
 func rotatingPlugins() map[string]bool {
 	out := map[string]bool{}
 	for _, id := range rotatesKnown {
@@ -225,6 +231,18 @@ func rotatingPlugins() map[string]bool {
 		}
 	}
 	return out
+}
+
+// carriedPlugin is whether a plugin's sign-in entry goes with the
+// sign-ins. A rotating provider's is left out (#5583): the copy on a
+// second computer would race this one to renew the refresh token the
+// vendor lets be spent once — unless the entry is a manual API key
+// (type "api", AuthIsAPI): a static key the user signed in to by hand,
+// which magpie never renews (RenewAt renews an OAuth sign-in only), so
+// carrying it races nothing (#7624). An entry that doesn't say it is one
+// stays out: what isn't known to be safe isn't carried.
+func carriedPlugin(k string, raw json.RawMessage, rotating map[string]bool) bool {
+	return !rotating[plugin.ProviderOf(k)] || plugin.AuthIsAPI(raw)
 }
 
 // Hashes are s's sign-ins as their ids and the hashes of their
@@ -272,11 +290,13 @@ func CollectSignIns() (*SignIns, error) {
 	}
 	s := &SignIns{Plugins: pl}
 	// a plugin whose refresh token rotates is left out: its sign-in is one
-	// computer's alone, never a backup's or a sync's to copy (#5583)
+	// computer's alone, never a backup's or a sync's to copy (#5583) — a
+	// manual API key (type "api") of the same provider is carried still,
+	// magpie never renews one, so nothing races (#7624)
 	if len(s.Plugins) > 0 {
 		rotating := rotatingPlugins()
-		for k := range s.Plugins {
-			if rotating[plugin.ProviderOf(k)] {
+		for k, raw := range s.Plugins {
+			if !carriedPlugin(k, raw, rotating) {
 				delete(s.Plugins, k)
 			}
 		}

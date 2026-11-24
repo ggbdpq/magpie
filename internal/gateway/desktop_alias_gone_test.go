@@ -58,7 +58,7 @@ func TestDesktopAliasOfTierPickLeftOutOfCatalog(t *testing.T) {
 
 	// another session's turn, on another provider's model: the model
 	// Desktop's turns last ran on
-	if to, why := desktopMove("other/some-model", turn, true, false); to != "other/some-model" || why != "" {
+	if to, why := desktopMove("other/some-model", turn, true, false, nil); to != "other/some-model" || why != "" {
 		t.Fatalf("the other session's turn: %q by %q", to, why)
 	}
 	for _, id := range []string{alias, alias + "[1m]"} {
@@ -70,7 +70,7 @@ func TestDesktopAliasOfTierPickLeftOutOfCatalog(t *testing.T) {
 	if asked != opus {
 		t.Fatalf("unprefixed(%q) = %q, want %q", alias, asked, opus)
 	}
-	if to, why := desktopMove(asked, turn, true, false); to != opus || why != "" {
+	if to, why := desktopMove(asked, turn, true, false, nil); to != opus || why != "" {
 		t.Fatalf("the opus session's turn went to %q by %q, want %q as asked", to, why, opus)
 	}
 
@@ -131,7 +131,7 @@ func TestDesktopClaudeAliasGoneTakesItsTier(t *testing.T) {
 		t.Fatal(err)
 	}
 	turn := []byte(`{"max_tokens":32000,"tools":[{"name":"Bash"}],"messages":[{"role":"user","content":"hi"}]}`)
-	if to, why := desktopMove("other/some-model", turn, true, false); to != "other/some-model" || why != "" {
+	if to, why := desktopMove("other/some-model", turn, true, false, nil); to != "other/some-model" || why != "" {
 		t.Fatalf("the other session's turn: %q by %q", to, why)
 	}
 
@@ -140,7 +140,7 @@ func TestDesktopClaudeAliasGoneTakesItsTier(t *testing.T) {
 		t.Fatalf("unprefixed(%q) = %q: the test wants it unknown", gone, got)
 	}
 	for _, id := range []string{gone, gone + "[1m]"} {
-		if to, why := desktopMove(id, turn, true, false); to != "relay/claude-opus-5-5" || why != movedTier {
+		if to, why := desktopMove(id, turn, true, false, nil); to != "relay/claude-opus-5-5" || why != movedTier {
 			t.Errorf("%s: went to %q by %q, want the opus pick by %s", id, to, why, movedTier)
 		}
 	}
@@ -150,12 +150,12 @@ func TestDesktopClaudeAliasGoneTakesItsTier(t *testing.T) {
 
 	// no haiku pick: as before, the model the last turn ran on
 	haiku := desktopClaudeAlias("removed/claude-haiku-4-5", "claude-haiku-4-5")
-	if to, why := desktopMove(haiku, turn, true, false); to != "other/some-model" || why != movedGone {
+	if to, why := desktopMove(haiku, turn, true, false, nil); to != "other/some-model" || why != movedGone {
 		t.Errorf("an alias of a tier with no pick went to %q by %q", to, why)
 	}
 	// an id that names no Claude model: as before
 	other := desktopEffortAlias + aliasNumber("removed/some-model")
-	if to, why := desktopMove(other, turn, true, false); to != "other/some-model" || why != movedGone {
+	if to, why := desktopMove(other, turn, true, false, nil); to != "other/some-model" || why != movedGone {
 		t.Errorf("an alias of a model that is no Claude model went to %q by %q", to, why)
 	}
 }

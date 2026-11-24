@@ -670,7 +670,7 @@ func loadPicked() {
 // sent with max_tokens 64000); one for a model magpie doesn't serve still
 // goes there whoever sent it.
 func desktopTurn(asked string, body []byte, byClaudeCode, bySubagent bool) string {
-	m, _ := desktopMove(asked, body, byClaudeCode, bySubagent)
+	m, _ := desktopMove(asked, body, byClaudeCode, bySubagent, nil)
 	return m
 }
 
@@ -692,16 +692,19 @@ const (
 )
 
 // desktopMove is desktopTurn and why the model it gives isn't asked, ""
-// when it is.
-func desktopMove(asked string, body []byte, byClaudeCode, bySubagent bool) (string, string) {
-	to, why := desktopMoveTo(asked, body, byClaudeCode, bySubagent)
+// when it is. holds, for a request a gateway key held to some models
+// sends, says whether the key may use the model or group a ref names, and
+// nil when none holds it: the check and a moved small call stand on a
+// model the key may use, that they are answered (#4175).
+func desktopMove(asked string, body []byte, byClaudeCode, bySubagent bool, holds func(string) bool) (string, string) {
+	to, why := desktopMoveTo(asked, body, byClaudeCode, bySubagent, holds)
 	if to == asked {
 		return to, ""
 	}
 	return to, why
 }
 
-func desktopMoveTo(asked string, body []byte, byClaudeCode, bySubagent bool) (string, string) {
+func desktopMoveTo(asked string, body []byte, byClaudeCode, bySubagent bool, holds func(string) bool) (string, string) {
 	if asked == "" {
 		return asked, ""
 	}
@@ -718,11 +721,20 @@ func desktopMoveTo(asked string, body []byte, byClaudeCode, bySubagent bool) (st
 		// Test connection: on the model the user chose in Desktop's own
 		// menu (desktopChosen), else its default model; never the model
 		// of whichever session last ran (desktopPicked) on its own,
-		// which may be days old and on another provider
-		if m := desktopChosen(); m != "" {
+		// which may be days old and on another provider. A key held to
+		// some models stands it on a model the key may use instead, that
+		// the check is answered (#4175): the one the probe named, else
+		// the first listed model the key may use — the first of the list
+		// whole 403'd the check, and Desktop read that as "Couldn't sign
+		// in to Gateway" on every launch while the key's sessions went on
+		if holds != nil {
+			if holds(asked) {
+				return asked, ""
+			}
+		} else if m := desktopChosen(); m != "" {
 			return m, movedCheck
 		}
-		if m := desktopDefault(asked); m != "" {
+		if m := desktopDefault(asked, holds); m != "" {
 			return m, movedCheckFirst
 		}
 		return asked, ""
@@ -778,7 +790,7 @@ func desktopMoveTo(asked string, body []byte, byClaudeCode, bySubagent bool) (st
 		if picked != "" {
 			return picked, why
 		}
-		if m := desktopDefault(asked); m != "" {
+		if m := desktopDefault(asked, holds); m != "" {
 			return m, first
 		}
 		return asked, ""
@@ -913,18 +925,36 @@ func servedBeside(asked, picked string, byClaudeCode bool) string {
 // the model a new Desktop session starts on — the first row of /v1/models
 // (resolveDefaultSessionModel in its app.asar takes the first model it
 // doesn't restrict), which is magpie's first model shown to it. "" when
-// that is asked itself or magpie shows Desktop no model.
-func desktopDefault(asked string) string {
+// that is asked itself or magpie shows Desktop no model. holds, for a key
+// held to some models, holds it to those alone, as its list does: its
+// first row is one the key may use, where its check was refused on the
+// first of the list whole (#4175).
+func desktopDefault(asked string, holds func(string) bool) string {
 	if StandIn != nil {
 		if m := StandIn("claude-desktop", asked); m != "" && m != asked {
 			return m
 		}
 	}
 	shown, _ := provider.CatalogFor("claude-desktop")
-	if len(shown) == 0 || shown[0].ID == asked {
+	held := shown
+	if holds != nil {
+		kept := make([]provider.Entry, 0, len(shown))
+		for _, e := range shown {
+			if holds(e.ID) {
+				kept = append(kept, e)
+			}
+		}
+		// a key none of the list's models belongs to is defaulted to the
+		// first of the list whole, as it was: nowhere better to stand,
+		// and the refusal, if it comes, names what was checked (#4175)
+		if len(kept) > 0 {
+			held = kept
+		}
+	}
+	if len(held) == 0 || held[0].ID == asked {
 		return ""
 	}
-	return shown[0].ID
+	return held[0].ID
 }
 
 // desktopSelectorRoots are the Claude-3p folders Desktop keeps its model

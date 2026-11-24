@@ -65,6 +65,18 @@ func keyAllows(r *http.Request, p provider.Provider) func(model string) bool {
 	return func(model string) bool { return modelAllowed(who, p, model) }
 }
 
+// keyHeldOf is, for a request a gateway key held to some models (#882)
+// sends, whether the key may use the model or group a ref names
+// (keyRefHolds); nil when no key holds the request, so a landing magpie
+// picks for it stays where it was (#4175).
+func keyHeldOf(r *http.Request) func(string) bool {
+	who, held := keyHolds(r)
+	if !held {
+		return nil
+	}
+	return func(ref string) bool { return keyRefHolds(who, ref) }
+}
+
 // keyListHolds is keyHolds for a list of models shown to the key: a
 // spent limit leaves its models listed, as a spent limit of the whole key
 // does, and a request for one is told why it is refused.
@@ -283,6 +295,30 @@ func groupAllowed(who access.Identity, g provider.Group, ms []provider.Member) b
 	}
 	who.Spent = nil
 	return groupNamed(who, g) || (foundGroup(g) || who.AccountModels) && membersAllowed(who, ms)
+}
+
+// keyRefHolds says a key held to some models may use the model or routing
+// group a ref names: the judgment the model lists make of an entry
+// (entryAllowed) and the key check makes of a request, by the ref — asked
+// for a landing magpie picks for the request itself (Desktop's check on a
+// model the key may use, #4175). A ref nothing serves is none of the
+// key's: a default the key may not use is not stood on.
+func keyRefHolds(who access.Identity, ref string) bool {
+	if g, ms, ok := provider.FindGroup(ref); ok {
+		if !groupAllowed(who, g, ms) {
+			return false
+		}
+		for _, m := range ms {
+			if accountServes(who, m.Provider, m.Model) {
+				return true
+			}
+		}
+		return false
+	}
+	if p, model, served := provider.Resolve(ref); served {
+		return modelAllowed(who, p, model) && accountServes(who, p, model)
+	}
+	return false
 }
 
 // groupBarred says the routing group g is bound to some gateway keys

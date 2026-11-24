@@ -2898,7 +2898,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		probe := desktopProbe(body)
 		desktopCheck = probe
 		var why string
-		asked, why = desktopMove(asked, body, claudeCodeAsks(r), sub != "")
+		asked, why = desktopMove(asked, body, claudeCodeAsks(r), sub != "", keyHeldOf(r))
 		move(asked, why)
 		if probe {
 			// tagged on the Routing page and in the ledger as the check it

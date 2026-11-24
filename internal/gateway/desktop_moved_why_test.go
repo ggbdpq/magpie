@@ -96,22 +96,22 @@ func TestDesktopMoveReasons(t *testing.T) {
 	title := []byte(`{"max_tokens":200,"system":"You write short session titles.","messages":[{"role":"user","content":"hi"}]}`)
 
 	// no turn yet: a title goes to the first model listed
-	if to, why := desktopMove("chatflowsai/claude-opus-5-5", title, false, false); why != movedTitleFirst && (why != "" || to != "chatflowsai/claude-opus-5-5") {
+	if to, why := desktopMove("chatflowsai/claude-opus-5-5", title, false, false, nil); why != movedTitleFirst && (why != "" || to != "chatflowsai/claude-opus-5-5") {
 		t.Errorf("first title: %q by %q", to, why)
 	}
-	if to, why := desktopMove("agentrouter/gpt-6.1-sol", turn, false, false); to != "agentrouter/gpt-6.1-sol" || why != "" {
+	if to, why := desktopMove("agentrouter/gpt-6.1-sol", turn, false, false, nil); to != "agentrouter/gpt-6.1-sol" || why != "" {
 		t.Fatalf("turn: %q by %q", to, why)
 	}
-	if to, why := desktopMove("chatflowsai/claude-opus-5-5", title, false, false); to != "agentrouter/gpt-6.1-sol" || why != movedTitle {
+	if to, why := desktopMove("chatflowsai/claude-opus-5-5", title, false, false, nil); to != "agentrouter/gpt-6.1-sol" || why != movedTitle {
 		t.Errorf("title: %q by %q", to, why)
 	}
-	if to, why := desktopMove("claude-haiku-4-5-20251001", turn, false, false); to != "agentrouter/gpt-6.1-sol" || why != movedGone {
+	if to, why := desktopMove("claude-haiku-4-5-20251001", turn, false, false, nil); to != "agentrouter/gpt-6.1-sol" || why != movedGone {
 		t.Errorf("unserved: %q by %q", to, why)
 	}
-	if to, why := desktopMove("claude-haiku-5-5", title, true, false); to != "agentrouter/gpt-6.1-sol" || why == "" {
+	if to, why := desktopMove("claude-haiku-5-5", title, true, false, nil); to != "agentrouter/gpt-6.1-sol" || why == "" {
 		t.Errorf("Claude Code's haiku: %q by %q", to, why)
 	}
-	if to, why := desktopMove("chatflowsai/claude-opus-5-5", turn, false, false); to != "chatflowsai/claude-opus-5-5" || why != "" {
+	if to, why := desktopMove("chatflowsai/claude-opus-5-5", turn, false, false, nil); to != "chatflowsai/claude-opus-5-5" || why != "" {
 		t.Errorf("opus turn: %q by %q", to, why)
 	}
 }

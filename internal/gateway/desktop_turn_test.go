@@ -128,10 +128,10 @@ func TestClaudeDesktopDefault(t *testing.T) {
 	}
 	title := []byte(`{"max_tokens":200,"messages":[{"role":"user","content":"hi"}]}`)
 	turn := []byte(`{"max_tokens":32000,"tools":[{"name":"Bash"}],"messages":[{"role":"user","content":"hi"}]}`)
-	if got := desktopDefault("claude-sonnet-5"); got != "fake/m1" {
+	if got := desktopDefault("claude-sonnet-5", nil); got != "fake/m1" {
 		t.Fatalf("default = %q", got)
 	}
-	if got := desktopDefault("fake/m1"); got != "" {
+	if got := desktopDefault("fake/m1", nil); got != "" {
 		t.Fatalf("default for the first model itself = %q", got)
 	}
 	if got := desktopTurn("claude-haiku-4-5", title, false, false); got != "fake/m1" {
@@ -347,7 +347,7 @@ func TestDesktopWebSearchHaiku(t *testing.T) {
 				t.Fatal(err)
 			}
 			desktopTurn("fake/m1", []byte(`{"tools":[{"name":"Bash"}]}`), true, false)
-			if to, why := desktopMove("fake/m1", []byte(desktopWebSearchBody), true, sub); to != "fake/m2" || why != "desktop-search" {
+			if to, why := desktopMove("fake/m1", []byte(desktopWebSearchBody), true, sub, nil); to != "fake/m2" || why != "desktop-search" {
 				t.Fatalf("WebSearch: %q by %q, want fake/m2 by desktop-search", to, why)
 			}
 		})
@@ -370,7 +370,7 @@ func TestDesktopWebSearchScope(t *testing.T) {
 				t.Fatal(err)
 			}
 			desktopTurn("fake/m1", []byte(`{"tools":[{"name":"Bash"}]}`), true, false)
-			if to, why := desktopMove("fake/m1", []byte(desktopWebSearchBody), tc.code, false); to != "fake/m1" || why != "" {
+			if to, why := desktopMove("fake/m1", []byte(desktopWebSearchBody), tc.code, false, nil); to != "fake/m1" || why != "" {
 				t.Fatalf("WebSearch: %q by %q, want fake/m1 unchanged", to, why)
 			}
 		})
@@ -389,7 +389,7 @@ func TestDesktopWebSearchLeavesToolTurns(t *testing.T) {
 				t.Fatal(err)
 			}
 			desktopTurn("fake/m1", []byte(`{"tools":[{"name":"Bash"}]}`), true, false)
-			if to, why := desktopMove("fake/m3", []byte(tc.body), true, false); to != "fake/m3" || why != "" {
+			if to, why := desktopMove("fake/m3", []byte(tc.body), true, false, nil); to != "fake/m3" || why != "" {
 				t.Fatalf("tool turn: %q by %q, want fake/m3 unchanged", to, why)
 			}
 			if b, err := os.ReadFile(desktopPickedPath()); err != nil || strings.TrimSpace(string(b)) != "fake/m3" {
@@ -409,7 +409,7 @@ func TestDesktopWebSearchKeepsSessionPick(t *testing.T) {
 	picked, at := desktopPicked.model, desktopPicked.at
 	desktopPicked.Unlock()
 	for _, asked := range []string{"fake/m1", "fake/m3"} {
-		if to, why := desktopMove(asked, []byte(desktopWebSearchBody), true, false); to != "fake/m2" || why != "desktop-search" {
+		if to, why := desktopMove(asked, []byte(desktopWebSearchBody), true, false, nil); to != "fake/m2" || why != "desktop-search" {
 			t.Fatalf("WebSearch on %s: %q by %q", asked, to, why)
 		}
 		desktopPicked.Lock()

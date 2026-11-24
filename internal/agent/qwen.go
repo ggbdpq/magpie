@@ -11,16 +11,20 @@ package agent
 // /auth prompt on start.
 //
 // 1.x (v1.0.0-preview.1 on) reads them from a top-level providers object
-// instead, each member {baseUrl, apiKey, models}: apiKey is a ${VAR}
-// reference the CLI resolves from the environment (~/.qwen/.env among
-// it; 1.x's schema has no env object of its own), models[].model is the
-// id its /model picker shows beside the provider's, and a model anywhere
-// is keyed <provider-id>/<model-id> — model.name among it, which 1.x
-// looks up in the providers' catalog as that key (0.x matched a bare
-// entry id, so a bare wire id there found nothing, and /model showed
-// none of magpie's, the report). security.auth.selectedType "openai" is
-// still its provider-backed auth type, endpoints and keys from
-// settings.providers.
+// instead, each member {baseUrl, apiKey, model, models}: apiKey is the
+// key itself (a ${VAR} reference the CLI resolves from the environment
+// is also taken — ~/.qwen/.env among it — but 1.0.0-preview.2 is only
+// seen to consume the key written straight, and then the settings file
+// stays the only thing a wired session needs), models[] is the catalog
+// whose entries' .model is the id its /model picker shows beside the
+// provider's, and model is the provider's default model — the pick, else
+// the catalog's first (a preview.2 that reads no models[] still finds
+// the picked model there). A model anywhere is keyed
+// <provider-id>/<model-id> — model.name among it, which 1.x looks up in
+// the providers' catalog as that key (0.x matched a bare entry id, so a
+// bare wire id there found nothing, and /model showed none of magpie's,
+// the report). security.auth.selectedType "openai" is still its
+// provider-backed auth type, endpoints and keys from settings.providers.
 //
 // Which form to write is the CLI's version: a 1.x one
 // (qwenOneX) gets providers.magpie, a 0.x one modelProviders.openai as
@@ -36,14 +40,14 @@ package agent
 // one on the same env key of its own, which is how an entry of magpie's
 // is told from the user's, and points settings.model and
 // security.auth.selectedType at a pick. The key itself lives in the
-// settings' env object (0.x) or ~/.qwen/.env (1.x) — a shell-exported or
-// ~/.qwen/.env variable of the same name would win over it, which the
-// qwen-specific name makes unlikely. The user's entries stay as they
-// were and in front, so their own ids don't move, and the default, auth
-// type and any key of theirs they had are stashed and put back when
-// magpie steps out. A wiring of magpie's older self — 0.x's entries,
-// key and model.baseUrl in a file a 1.x qwen now reads — goes whenever
-// magpie next wires the file, either way.
+// settings' env object (0.x); 1.x's member carries it straight. A
+// shell-exported or ~/.qwen/.env variable of the same name would win
+// over the env object's, which the qwen-specific name makes unlikely.
+// The user's entries stay as they were and in front, so their own ids
+// don't move, and the default, auth type and any key of theirs they had
+// are stashed and put back when magpie steps out. A wiring of magpie's
+// older self — 0.x's entries, key and model.baseUrl in a file a 1.x qwen
+// now reads — goes whenever magpie next wires the file, either way.
 
 import (
 	"encoding/json"
@@ -144,19 +148,25 @@ type qwen1xModel struct {
 	ContextWindow int    `json:"contextWindow,omitempty"`
 }
 
-// qwen1xProvider is the providers.magpie member magpie writes. apiKey is
-// a ${} reference, which 1.x resolves from the environment (~/.qwen/.env
-// among it, which setEnvKey1x writes): 1.x refuses a provider whose key
-// is still an unexpanded reference, so the .env write goes with it.
+// qwen1xProvider is the providers.magpie member magpie writes: baseUrl
+// the gateway, apiKey the gateway's key itself (1.x also resolves a
+// ${VAR} reference from the environment, but the key written straight is
+// what 1.0.0-preview.2 is seen to consume, and keeps the settings file
+// the only thing a wired session needs), model the pick (the provider's
+// default model, which 1.x reads beside the models[] catalog), and
+// models the catalog.
 type qwen1xProvider struct {
 	BaseURL string        `json:"baseUrl"`
 	APIKey  string        `json:"apiKey"`
+	Model   string        `json:"model,omitempty"`
 	Models  []qwen1xModel `json:"models"`
 }
 
 // qwen1xEntriesAt is magpie's providers.magpie for a qwen reaching the
-// gateway at v1, 1.x's shape of qwenEntriesAt.
-func qwen1xEntriesAt(v1 string) qwen1xProvider {
+// gateway at v1 with the key at key, 1.x's shape of qwenEntriesAt; pick
+// is the wired model's wire id, the member's model ("" for none: the
+// catalog's first).
+func qwen1xEntriesAt(v1, key, pick string) qwen1xProvider {
 	var ms []qwen1xModel
 	for _, m := range sharedModels("qwen") {
 		// displayName is what /model shows, as 0.x's name was
@@ -166,7 +176,11 @@ func qwen1xEntriesAt(v1 string) qwen1xProvider {
 		}
 		ms = append(ms, e)
 	}
-	return qwen1xProvider{BaseURL: v1, APIKey: "${" + qwenEnvKey + "}", Models: ms}
+	model := pick
+	if model == "" && len(ms) > 0 {
+		model = ms[0].Model
+	}
+	return qwen1xProvider{BaseURL: v1, APIKey: key, Model: model, Models: ms}
 }
 
 // qwenCustom is one modelProviders.openai member as it is in the file:
@@ -215,8 +229,9 @@ type qwen1xCustom struct {
 	ours     bool
 }
 
-// qwen1xCustoms reads providers of a settings.json.
-func qwen1xCustoms(path string) []qwen1xCustom {
+// qwen1xCustoms reads providers of a settings.json; key is the gateway's
+// key, which magpie's own member carries.
+func qwen1xCustoms(path, key string) []qwen1xCustom {
 	raw, err := edit.Read(path)
 	if err != nil || len(raw) == 0 {
 		return nil
@@ -235,9 +250,9 @@ func qwen1xCustoms(path string) []qwen1xCustom {
 			base:   v.Get("baseUrl").String(),
 			apiKey: v.Get("apiKey").String(),
 		}
-		// ours: the member named magpie whose key names magpie's env
-		// variable, which the user's own would not
-		c.ours = c.id == magpieID && c.apiKey == "${"+qwenEnvKey+"}"
+		// ours: the member named magpie carrying the gateway's key, which
+		// the user's own would not
+		c.ours = c.id == magpieID && c.apiKey == key
 		out = append(out, c)
 		return true
 	})
@@ -246,8 +261,8 @@ func qwen1xCustoms(path string) []qwen1xCustom {
 
 // qwen1xOurs is magpie's providers.magpie when the file has it, nil when
 // it hasn't or it isn't magpie's.
-func qwen1xOurs(path string) *qwen1xCustom {
-	cs := qwen1xCustoms(path)
+func qwen1xOurs(path, key string) *qwen1xCustom {
+	cs := qwen1xCustoms(path, key)
 	for i := range cs {
 		if cs[i].ours {
 			return &cs[i]
@@ -296,11 +311,8 @@ func qwenIn(at place) *Agent {
 		dir = d
 	}
 	path := filepath.Join(dir, "settings.json")
-	// envPath is ~/.qwen/.env, which 1.x reads its ${} references from;
-	// 0.x's key went in the settings' env object instead
-	envPath := filepath.Join(dir, ".env")
 	entries := func() []qwenEntry { return qwenEntriesAt(at.v1()) }
-	entries1x := func() qwen1xProvider { return qwen1xEntriesAt(at.v1()) }
+	entries1x := func(pick string) qwen1xProvider { return qwen1xEntriesAt(at.v1(), at.gwKey(), pick) }
 	keyName := "qwen:" + path + ":" + qwenModel
 	keyBase := "qwen:" + path + ":" + qwenModelAt
 	keyAuth := "qwen:" + path + ":" + qwenAuth
@@ -309,7 +321,6 @@ func qwenIn(at place) *Agent {
 	// for it
 	keyAuthSeen := keyAuth + ".seen"
 	keyEnv := "qwen:" + path + ":" + qwenEnv
-	keyEnv1x := "qwen:" + envPath + ":" + qwenEnvKey
 
 	// get spells an entry of magpie's as the catalog does
 	get := func() string {
@@ -342,27 +353,6 @@ func qwenIn(at place) *Agent {
 				return err
 			}
 			return qwenPrune(path, "env")
-		}
-		return nil
-	}
-
-	// setEnvKey1x writes the gateway's key to ~/.qwen/.env, which 1.x
-	// reads its ${} references from (0.x's went in the settings' env
-	// object, which 1.x's schema refuses). A variable of the user's own
-	// under that name is stashed before it is replaced and never removed:
-	// magpie only removes what it wrote.
-	setEnvKey1x := func(with bool) error {
-		if with {
-			if v, ok := edit.GetEnvFile(envPath, qwenEnvKey); ok && v != at.gwKey() {
-				stash(map[string]string{keyEnv1x: v})
-			}
-			return edit.SetEnvFile(envPath, edit.KV{Path: qwenEnvKey, Value: at.gwKey()})
-		}
-		if was := unstash(keyEnv1x); was != "" {
-			return edit.SetEnvFile(envPath, edit.KV{Path: qwenEnvKey, Value: was})
-		}
-		if v, ok := edit.GetEnvFile(envPath, qwenEnvKey); ok && v == at.gwKey() {
-			return edit.DelEnvFile(envPath, qwenEnvKey)
 		}
 		return nil
 	}
@@ -449,12 +439,13 @@ func qwenIn(at place) *Agent {
 	}
 
 	// setProviders1x writes providers with the user's own and, when with,
-	// magpie's member among them; none left takes the object out. A
+	// magpie's member among them — the member carrying the gateway's key
+	// itself and the pick as its model; none left takes the object out. A
 	// with=false when none were magpie's changes nothing.
-	setProviders1x := func(with bool) error {
+	setProviders1x := func(with bool, pick string) error {
 		keep := map[string]json.RawMessage{}
 		var had bool
-		for _, c := range qwen1xCustoms(path) {
+		for _, c := range qwen1xCustoms(path, at.gwKey()) {
 			if c.ours {
 				had = true
 				continue
@@ -462,23 +453,16 @@ func qwenIn(at place) *Agent {
 			keep[c.id] = c.raw
 		}
 		if with {
-			if err := setEnvKey1x(true); err != nil {
-				return err
-			}
 			if err := setAuth(true); err != nil {
 				return err
 			}
-			e, err := json.Marshal(entries1x())
+			e, err := json.Marshal(entries1x(pick))
 			if err != nil {
 				return err
 			}
 			keep[magpieID] = e
 		} else if !had {
-			// nothing of magpie's left: a key it left behind, and the
-			// auth type it set, still go
-			if err := setEnvKey1x(false); err != nil {
-				return err
-			}
+			// nothing of magpie's left: the auth type it set still goes
 			return setAuth(false)
 		}
 		if len(keep) > 0 {
@@ -489,9 +473,6 @@ func qwenIn(at place) *Agent {
 			return err
 		}
 		if !with {
-			if err := setEnvKey1x(false); err != nil {
-				return err
-			}
 			if err := setAuth(false); err != nil {
 				return err
 			}
@@ -598,11 +579,11 @@ func qwenIn(at place) *Agent {
 	}
 
 	// set1x is a 1.x qwen's wiring: magpie's member among the top-level
-	// providers, the key in ~/.qwen/.env, the auth type openai, and
-	// model.name "magpie/<wire id>"; anything else of magpie's — the 0.x
-	// wiring its older self left — goes either way. A pick of the user's
-	// own, or a reset, takes magpie's wiring out and puts what they had
-	// back.
+	// providers, carrying the gateway's key itself and the pick as its
+	// model, the auth type openai, and model.name "magpie/<wire id>";
+	// anything else of magpie's — the 0.x wiring its older self left —
+	// goes either way. A pick of the user's own, or a reset, takes
+	// magpie's wiring out and puts what they had back.
 	set1x := func(v string) error {
 		if ref, ok := strings.CutPrefix(v, magpieID+"/"); ok && isMagpie(ref) {
 			// what the user had goes to the stash unless it was magpie's
@@ -617,7 +598,7 @@ func qwenIn(at place) *Agent {
 				}
 				stash(kv)
 			}
-			if err := setProviders1x(true); err != nil {
+			if err := setProviders1x(true, ref); err != nil {
 				return err
 			}
 			if err := dropLegacy(); err != nil {
@@ -627,7 +608,7 @@ func qwenIn(at place) *Agent {
 		}
 		name, _ := qwenModelOf(path)
 		_, onMagpie := strings.CutPrefix(name, magpieID+"/")
-		if onMagpie && qwen1xOurs(path) != nil {
+		if onMagpie && qwen1xOurs(path, at.gwKey()) != nil {
 			// back to what the user had, or nothing
 			if v == "" {
 				v = unstash(keyName)
@@ -641,7 +622,7 @@ func qwenIn(at place) *Agent {
 		if err := dropLegacy(); err != nil {
 			return err
 		}
-		return setProviders1x(false)
+		return setProviders1x(false, "")
 	}
 
 	return atomic(&Agent{
@@ -653,8 +634,16 @@ func qwenIn(at place) *Agent {
 		ListOnly:  true,
 		Telemetry: usageStatsTelemetry(at, path, "qwen"),
 		Sync: func() error {
-			if qwen1xOurs(path) != nil {
-				if err := setProviders1x(true); err != nil {
+			if qwen1xOurs(path, at.gwKey()) != nil {
+				// the pick's wire id stays the member's model through the
+				// refresh; none, the catalog's first
+				pick := ""
+				if name, _ := qwenModelOf(path); name != "" {
+					if ref, ok := strings.CutPrefix(name, magpieID+"/"); ok && isMagpie(ref) {
+						pick = ref
+					}
+				}
+				if err := setProviders1x(true, pick); err != nil {
 					return err
 				}
 				return dropLegacy()
@@ -681,17 +670,15 @@ func qwenIn(at place) *Agent {
 				return ""
 			}
 			// a 1.x wiring: model.name keyed provider/model, magpie's
-			// member among providers, its key in ~/.qwen/.env
+			// member among providers, carrying the gateway's key itself
 			if _, onMagpie := strings.CutPrefix(name, magpieID+"/"); onMagpie {
-				if mp := qwen1xOurs(path); mp != nil {
+				if mp := qwen1xOurs(path, at.gwKey()); mp != nil {
 					if d := wiringOff("Qwen Code", path, func(k string) (string, bool) {
+						if k == "apiKey" {
+							return mp.apiKey, true
+						}
 						return mp.base, true
-					}, "baseUrl", at.v1()); d != "" {
-						return d
-					}
-					if d := wiringOff("Qwen Code", envPath, func(k string) (string, bool) {
-						return edit.GetEnvFile(envPath, qwenEnvKey)
-					}, qwenEnvKey, at.gwKey()); d != "" {
+					}, "baseUrl", at.v1(), "apiKey", at.gwKey()); d != "" {
 						return d
 					}
 					if v, ok := edit.GetJSON(path, qwenAuth); !ok || v != "openai" {
@@ -768,20 +755,21 @@ func qwenIn(at place) *Agent {
 				return setProviders(false)
 			},
 			Options: func(cur map[string]string) []Option {
-				return withVia(qwenOwnOptions(path, cur["model"]), "qwen", magpieID+"/")
+				return withVia(qwenOwnOptions(path, at.gwKey(), cur["model"]), "qwen", magpieID+"/")
 			},
 		}},
-	}, path, envPath)
+	}, path)
 }
 
 // qwenOwnOptions are the models of the user's own the settings file has:
 // 1.x's providers (each member's models[].model, keyed provider/model as
 // 1.x keys a model of its own) and 0.x's modelProviders.openai entries
-// that aren't magpie's, and the current pick.
-func qwenOwnOptions(path, cur string) []Option {
+// that aren't magpie's, and the current pick; key is the gateway's, by
+// which magpie's own member is told from theirs.
+func qwenOwnOptions(path, key, cur string) []Option {
 	seen := map[string]bool{}
 	var out []Option
-	for _, c := range qwen1xCustoms(path) {
+	for _, c := range qwen1xCustoms(path, key) {
 		if c.ours {
 			continue
 		}

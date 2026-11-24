@@ -627,7 +627,7 @@ var wslKinds = []wslKind{
 				return nil
 			}
 			return func(cur map[string]string) []Option {
-				return withVia(qwenOwnOptions("", cur["model"]), "qwen", magpieID+"/")
+				return withVia(qwenOwnOptions("", "", cur["model"]), "qwen", magpieID+"/")
 			}
 		}},
 	{id: "omp", name: "omp", dir: ".omp", bin: "omp", in: ompIn, version: true,

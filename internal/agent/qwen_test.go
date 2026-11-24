@@ -440,11 +440,10 @@ func qwen1xFile(t *testing.T, path string) (magpie map[string]any, rest map[stri
 // and keys a model provider/model, while magpie wrote 0.x's
 // modelProviders.openai and a bare wire id as model.name, so /model
 // showed none of magpie's models. A 1.x qwen gets providers.magpie (the
-// catalog as models[].model, the key a ${} reference the CLI resolves
-// from ~/.qwen/.env, 1.x's schema having no env object of its own),
-// model.name "magpie/<wire id>", and the auth type openai (1.x's
-// provider-backed one); stepping out takes only magpie's back, and the
-// user's own providers stay as they were.
+// catalog as models[].model, the pick as the member's model, the key
+// itself as its apiKey), model.name "magpie/<wire id>", and the auth
+// type openai (1.x's provider-backed one); stepping out takes only
+// magpie's back, and the user's own providers stay as they were.
 func TestQwen1x(t *testing.T) {
 	home, path := qwenHome(t)
 	qwenPinVersion(t, "1.0.0-preview.1")
@@ -477,8 +476,11 @@ func TestQwen1x(t *testing.T) {
 	if mp == nil {
 		t.Fatalf("no providers.magpie:\n%s", readFile(path))
 	}
-	if mp["baseUrl"] != gatewayV1() || mp["apiKey"] != "${MAGPIE_QWEN_API_KEY}" {
+	if mp["baseUrl"] != gatewayV1() || mp["apiKey"] != gateway.Token {
 		t.Fatalf("magpie provider: %v", mp)
+	}
+	if mp["model"] != "deepseek/pro" {
+		t.Fatalf("magpie provider's model (the pick): %v", mp)
 	}
 	ms, _ := mp["models"].([]any)
 	got := map[string]bool{}
@@ -512,8 +514,10 @@ func TestQwen1x(t *testing.T) {
 	if auth := f["security"].(map[string]any)["auth"].(map[string]any)["selectedType"]; auth != "openai" {
 		t.Fatalf("selectedType: %v", auth)
 	}
-	if k, _ := edit.GetEnvFile(filepath.Join(home, ".qwen", ".env"), "MAGPIE_QWEN_API_KEY"); k != gateway.Token {
-		t.Fatalf(".env key: %q", k)
+	// the key lives in the member, not in ~/.qwen/.env: magpie writes
+	// nothing there for a 1.x qwen
+	if k, _ := edit.GetEnvFile(filepath.Join(home, ".qwen", ".env"), "MAGPIE_QWEN_API_KEY"); k != "" {
+		t.Fatalf("key written to .env: %q", k)
 	}
 	if got := a.Values()["model"]; got != "magpie/deepseek/pro" {
 		t.Fatalf("model read back: %q", got)
@@ -680,7 +684,7 @@ func TestQwen1xUnknownVersion(t *testing.T) {
   "providers": {
     "magpie": {
       "baseUrl": "%s",
-      "apiKey": "${MAGPIE_QWEN_API_KEY}",
+      "apiKey": "%s",
       "models": [
         { "model": "deepseek/pro", "displayName": "stale" }
       ]
@@ -690,7 +694,7 @@ func TestQwen1xUnknownVersion(t *testing.T) {
     "name": "magpie/deepseek/pro"
   }
 }
-`, gatewayV1())), 0o644)
+`, gatewayV1(), gateway.Token)), 0o644)
 	a := qwen(home)
 	if got := a.Values()["model"]; got != "magpie/deepseek/pro" {
 		t.Fatalf("model: %q", got)
@@ -702,6 +706,9 @@ func TestQwen1xUnknownVersion(t *testing.T) {
 	mp, _, f := qwen1xFile(t, path)
 	if mp == nil || mp["baseUrl"] != gatewayV1() {
 		t.Fatalf("magpie provider after sync: %v\n%s", mp, readFile(path))
+	}
+	if mp["model"] != "deepseek/pro" {
+		t.Fatalf("magpie provider's model after sync (the pick): %v", mp)
 	}
 	ms, _ := mp["models"].([]any)
 	var later bool
@@ -715,5 +722,133 @@ func TestQwen1xUnknownVersion(t *testing.T) {
 	}
 	if _, ok := f["modelProviders"]; ok {
 		t.Fatalf("0.x modelProviders written over a 1.x wiring:\n%s", readFile(path))
+	}
+}
+
+// The reporter's follow-up on 1.0.0-preview.2 (macOS): the settings
+// magpie writes are still all 0.x's schema, and a providers.magpie with
+// the gateway key itself and the pick as the member's model works —
+// --list-models lists the model and -p gets through, with model.name
+// keyed magpie/<wire id>; only prefixing model.name is not enough. So
+// the member magpie writes carries the key itself and the pick as its
+// model, beside the models[] catalog (preview.1's source takes model as
+// the provider's default model beside it), and nothing goes to
+// ~/.qwen/.env. Wiring the 0.x file a pre-1.x magpie left migrates it in
+// one wire: magpie's entries, key and model.baseUrl go, providers.magpie
+// comes.
+func TestQwen1xPreview2(t *testing.T) {
+	home, path := qwenHome(t)
+	qwenPinVersion(t, "1.0.0-preview.2")
+	os.WriteFile(path, []byte(fmt.Sprintf(`{
+  "env": {
+    "IDEALAB_API_KEY": "team-key",
+    "MAGPIE_QWEN_API_KEY": "%s"
+  },
+  "modelProviders": {
+    "openai": [
+      {
+        "id": "glm-5",
+        "name": "[IdeaLab] glm-5",
+        "baseUrl": "https://idealab.example.com/api/openai/v1",
+        "envKey": "IDEALAB_API_KEY"
+      },
+      {
+        "id": "deepseek/pro",
+        "name": "pro · DeepSeek",
+        "baseUrl": "%s",
+        "envKey": "MAGPIE_QWEN_API_KEY",
+        "generationConfig": { "contextWindowSize": 262144 }
+      }
+    ]
+  },
+  "model": {
+    "name": "deepseek/pro",
+    "baseUrl": "%s"
+  },
+  "security": { "auth": { "selectedType": "openai" } }
+}
+`, gateway.Token, gatewayV1(), gatewayV1())), 0o644)
+	a := qwen(os.Getenv("HOME"))
+	if err := a.Apply("model", "magpie/deepseek/pro"); err != nil {
+		t.Fatal(err)
+	}
+	mp, rest, f := qwen1xFile(t, path)
+	if mp == nil {
+		t.Fatalf("no providers.magpie:\n%s", readFile(path))
+	}
+	if mp["apiKey"] != gateway.Token {
+		t.Fatalf("apiKey is not the gateway key itself: %v", mp)
+	}
+	if mp["model"] != "deepseek/pro" {
+		t.Fatalf("the member's model is not the pick: %v", mp)
+	}
+	if mp["baseUrl"] != gatewayV1() {
+		t.Fatalf("magpie provider: %v", mp)
+	}
+	ms, _ := mp["models"].([]any)
+	got := map[string]bool{}
+	for _, m := range ms {
+		got[m.(map[string]any)["model"].(string)] = true
+	}
+	for _, id := range []string{"deepseek/pro", "deepseek/flash", "anth/claude-sonnet-5"} {
+		if !got[id] {
+			t.Errorf("%s missing from models: %v", id, ms)
+		}
+	}
+	// the user's own 0.x entry stays, magpie's goes
+	mp0, _ := f["modelProviders"].(map[string]any)
+	os0, _ := mp0["openai"].([]any)
+	if len(os0) != 1 || os0[0].(map[string]any)["id"] != "glm-5" {
+		t.Fatalf("0.x entries: %v", os0)
+	}
+	env := f["env"].(map[string]any)
+	if env["MAGPIE_QWEN_API_KEY"] != nil || env["IDEALAB_API_KEY"] != "team-key" {
+		t.Fatalf("env: %v", env)
+	}
+	m := f["model"].(map[string]any)
+	if m["name"] != "magpie/deepseek/pro" {
+		t.Fatalf("model: %v", m)
+	}
+	if _, ok := m["baseUrl"]; ok {
+		t.Fatalf("0.x baseUrl left: %v", m)
+	}
+	// the key lives in the member: magpie writes nothing to ~/.qwen/.env
+	if k, _ := edit.GetEnvFile(filepath.Join(home, ".qwen", ".env"), "MAGPIE_QWEN_API_KEY"); k != "" {
+		t.Fatalf("key written to .env: %q", k)
+	}
+	if got := a.Values()["model"]; got != "magpie/deepseek/pro" {
+		t.Fatalf("model read back: %q", got)
+	}
+	if d := a.Check(); d != "" {
+		t.Fatalf("check: %s", d)
+	}
+
+	// reset: the member and magpie's 0.x wiring stay out, the user's own
+	// entry and the model they had are back
+	if err := a.Apply("model", ""); err != nil {
+		t.Fatal(err)
+	}
+	mp, rest, f = qwen1xFile(t, path)
+	if mp != nil {
+		t.Fatalf("magpie provider left: %v", mp)
+	}
+	if len(rest) != 0 {
+		t.Fatalf("unexpected members of providers after reset: %v", rest)
+	}
+	mp0, _ = f["modelProviders"].(map[string]any)
+	os0, _ = mp0["openai"].([]any)
+	if len(os0) != 1 || os0[0].(map[string]any)["id"] != "glm-5" {
+		t.Fatalf("0.x entries after reset: %v", os0)
+	}
+	env = f["env"].(map[string]any)
+	if env["MAGPIE_QWEN_API_KEY"] != nil || env["IDEALAB_API_KEY"] != "team-key" {
+		t.Fatalf("env after reset: %v", env)
+	}
+	m = f["model"].(map[string]any)
+	if m["name"] != "deepseek/pro" {
+		t.Fatalf("model after reset: %v", m)
+	}
+	if k, _ := edit.GetEnvFile(filepath.Join(home, ".qwen", ".env"), "MAGPIE_QWEN_API_KEY"); k != "" {
+		t.Fatalf("key left in .env: %q", k)
 	}
 }

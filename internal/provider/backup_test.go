@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -84,8 +85,9 @@ func TestBackupBalanceToken(t *testing.T) {
 // computer it comes to installs the ones it hasn't: the providers they
 // serve come with them (yapechan on Discord: after a WebDAV sync, no
 // providers showed until each was added again by hand). A plugin from a
-// folder stays on its own computer, one already here is left as the user
-// has it, and a key in an option goes only with the keys.
+// folder stays on its own computer, and one already here is not
+// installed again but takes the options and the off the entry carries
+// (#7577); a key in an option goes only with the keys.
 func TestPluginsCarried(t *testing.T) {
 	isolate(t)
 	h := t.TempDir()
@@ -124,8 +126,10 @@ func TestPluginsCarried(t *testing.T) {
 		t.Fatalf("carried with keys: %+v, want the option's key too", withKeys[1])
 	}
 
-	// the other computer: the model-map middleware is here already, as the
-	// user set it; the cursor plugin is not
+	// the other computer: the model-map middleware is here already, as
+	// this computer had set it; the cursor plugin is not. The options
+	// and the off the entry carries go in all the same (#7577): they
+	// shaped the providers the backup brings.
 	write(`{"plugins":[{"spec":"@magpie-community/middleware-model-map@1.0.0","options":{"map":{"x":"y"}}}]}`)
 	oldAdd, oldHand := addPluginExact, handOver
 	t.Cleanup(func() { addPluginExact, handOver = oldAdd, oldHand })
@@ -150,8 +154,9 @@ func TestPluginsCarried(t *testing.T) {
 		t.Fatalf("handed over %d times, want once: the plugin serves a built-in", handed)
 	}
 	got := plugin.Load().Plugins
-	if len(got) != 2 || got[0].Options["map"].(map[string]any)["x"] != "y" {
-		t.Fatalf("plugins here: %+v, want the middleware as the user set it", got)
+	if len(got) != 2 || !got[0].Off || got[0].Options["map"].(map[string]any)["a"] != "b" ||
+		got[0].Options["apiKey"] != "sk-option" {
+		t.Fatalf("plugins here: %+v, want the middleware with the carried options and off", got)
 	}
 
 	// one turned off there comes off, with its options
@@ -169,6 +174,85 @@ func TestPluginsCarried(t *testing.T) {
 	AddPlugins(context.Background(), keyless[1:])
 	if len(asked) != 0 || handed != 0 {
 		t.Fatalf("asked %v, handed over %d times, for plugins already here", asked, handed)
+	}
+}
+
+// A restore or a sync brings an installed plugin's options and on/off in
+// too (#7577): the providers a backup carries were shaped by them, so
+// "Restored from the server: providers" is to mean it. One already here
+// is not installed again and not taken away, and a key-like option it
+// came without (a backup without keys strips those) keeps the value it
+// has here, as a provider's keys are kept.
+func TestAddPluginsAppliesToInstalled(t *testing.T) {
+	isolate(t)
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
+	t.Setenv("PATH", h)
+	list := filepath.Join(filepath.Dir(plugin.Dir()), "plugins.json")
+	write := func(body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(list), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(list, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spec := "github:jingyi0605/magpie-newapi"
+	oldAdd, oldHand := addPluginExact, handOver
+	t.Cleanup(func() { addPluginExact, handOver = oldAdd, oldHand })
+	asked := 0
+	addPluginExact = func(context.Context, string) (plugin.Entry, error) {
+		asked++
+		return plugin.Entry{}, errors.New("installed again")
+	}
+	handOver = func(context.Context, bool) map[string]error { return nil }
+
+	// here: the plugin on, one site, and a key-like option; the backup
+	// (without keys) carries two sites and it off, the key-like option
+	// stripped from it
+	write(`{"plugins":[{"spec":"github:jingyi0605/magpie-newapi",
+		"options":{"sites":[{"id":"relay-a"}],"apiKey":"sk-here"}}]}`)
+	carried := []plugin.Entry{{Spec: spec, Off: true, Options: map[string]any{
+		"sites": []any{map[string]any{"id": "relay-a"}, map[string]any{"id": "relay-b"}}}}}
+	added, failed := AddPlugins(context.Background(), carried)
+	if len(added) != 0 || len(failed) != 0 || asked != 0 {
+		t.Fatalf("added %v, failed %v, asked %d times: an installed plugin is not installed again", added, failed, asked)
+	}
+	got := plugin.Load().Plugins
+	if len(got) != 1 || !got[0].Off {
+		t.Fatalf("plugins here: %+v, want the carried off applied", got)
+	}
+	sites, _ := got[0].Options["sites"].([]any)
+	if len(sites) != 2 {
+		t.Fatalf("options: %+v, want the carried sites applied", got[0].Options)
+	}
+	if got[0].Options["apiKey"] != "sk-here" {
+		t.Fatalf("options: %+v, want the key-like option it came without kept", got[0].Options)
+	}
+
+	// on there comes on here too
+	write(`{"plugins":[{"spec":"github:jingyi0605/magpie-newapi","off":true,
+		"options":{"sites":[{"id":"relay-a"}]}}]}`)
+	if _, failed := AddPlugins(context.Background(), []plugin.Entry{{Spec: spec}}); len(failed) > 0 {
+		t.Fatal(failed)
+	}
+	if got := plugin.Load().Plugins; len(got) != 1 || got[0].Off {
+		t.Fatalf("plugins here: %+v, want the plugin on as it is there", got)
+	}
+
+	// an entry without options leaves the ones here alone
+	write(`{"plugins":[{"spec":"github:jingyi0605/magpie-newapi",
+		"options":{"sites":[{"id":"relay-a"}]}}]}`)
+	if _, failed := AddPlugins(context.Background(), []plugin.Entry{{Spec: spec, Off: true}}); len(failed) > 0 {
+		t.Fatal(failed)
+	}
+	got = plugin.Load().Plugins
+	if len(got) != 1 || !got[0].Off || got[0].Options["sites"] == nil {
+		t.Fatalf("plugins here: %+v, want it off with its options kept", got)
 	}
 }
 

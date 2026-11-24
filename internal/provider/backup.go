@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"reflect"
 	"slices"
 
 	"github.com/yetone/magpie/internal/plugin"
@@ -198,18 +199,32 @@ func withoutSecretOptions(opts map[string]any) map[string]any {
 // AddPlugins installs the plugins another computer has (Carried) that
 // aren't here, the way the Plugins page adds one, and hands each a
 // deprecated built-in it serves (HandOver). It never takes a plugin away
-// or changes one already here; a removal is davsync's, which tracks the
-// plugins both sides had at the last sync. It returns the specs added and why the others couldn't be.
+// or installs one again; a removal is davsync's, which tracks the
+// plugins both sides had at the last sync. One already here still takes
+// the options and the on/off the entry carries (#7577): they are what
+// shaped the providers the backup or the server's part brought, so "the
+// providers" restored without them is not the providers it meant. It
+// returns the specs added and why the others couldn't be.
 func AddPlugins(ctx context.Context, es []plugin.Entry) (added []string, failed map[string]error) {
-	here := map[string]bool{}
+	here := map[string]plugin.Entry{}
 	for _, e := range plugin.Load().Plugins {
-		here[plugin.Name(e.Spec)] = true
+		here[plugin.Name(e.Spec)] = e
 	}
 	for _, e := range es {
-		if e.Spec == "" || plugin.IsPath(e.Spec) || here[plugin.Name(e.Spec)] {
+		if e.Spec == "" || plugin.IsPath(e.Spec) {
 			continue
 		}
-		here[plugin.Name(e.Spec)] = true
+		name := plugin.Name(e.Spec)
+		if h, ok := here[name]; ok {
+			if err := applyCarried(name, e, h); err != nil {
+				if failed == nil {
+					failed = map[string]error{}
+				}
+				failed[e.Spec] = err
+			}
+			continue
+		}
+		here[name] = e
 		// the package that computer installed, as it has it: never
 		// taken for a community plugin's name, or held while the
 		// community's list can't be read
@@ -233,6 +248,49 @@ func AddPlugins(ctx context.Context, es []plugin.Entry) (added []string, failed 
 		handOver(ctx, false)
 	}
 	return added, failed
+}
+
+// applyCarried puts an entry's options and on/off into the plugin already
+// here, as a restore or a sync brings them in (#7577). A plugin whose
+// state already is the entry's is left alone, so a sync bringing the
+// providers part again restarts nothing, and options are written only
+// when the entry has them: an entry without any is not one that took
+// them away. A key-like option the entry came without is kept as it is
+// here, as a provider's keys are (KeepSecrets): a backup without keys
+// strips those.
+func applyCarried(name string, e, h plugin.Entry) error {
+	if e.Off != h.Off {
+		if err := plugin.SetOff(name, e.Off); err != nil {
+			return err
+		}
+	}
+	if len(e.Options) == 0 || reflect.DeepEqual(e.Options, h.Options) {
+		return nil
+	}
+	return plugin.SetOptions(name, withHereSecrets(e.Options, h.Options))
+}
+
+// withHereSecrets is opts with the secret-looking values here has put
+// back where it came without them, at any depth: the keys a backup
+// without keys strips are not choices to restore over.
+func withHereSecrets(opts, here map[string]any) map[string]any {
+	out := make(map[string]any, len(opts)+2)
+	for k, v := range opts {
+		if m, ok := v.(map[string]any); ok {
+			hm, _ := here[k].(map[string]any)
+			out[k] = withHereSecrets(m, hm)
+			continue
+		}
+		out[k] = v
+	}
+	for k, v := range here {
+		if SecretHeader(k) {
+			if _, ok := opts[k]; !ok {
+				out[k] = v
+			}
+		}
+	}
+	return out
 }
 
 // NotSignedIn is the subscriptions among ps (as a backup or a sync brings

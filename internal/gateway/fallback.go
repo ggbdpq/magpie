@@ -4726,6 +4726,10 @@ func policyRefusal(raw []byte) (string, bool) {
 		return note("sensitive")
 	case c == "invalid_prompt" && flaggedWords.MatchString(msg):
 		return note(c)
+	case cyberPolicyRefusal.MatchString(msg):
+		return note("cyber_policy")
+	case contentPolicyRefusal.MatchString(msg):
+		return note("content_policy")
 	case strings.TrimSpace(msg) == highRiskRefusal:
 		return note("high risk")
 	}
@@ -4739,6 +4743,23 @@ func policyRefusal(raw []byte) (string, bool) {
 // error's own message is matched, and only whole: an answer quoting it is
 // an answer.
 const highRiskRefusal = "The request was rejected because it was considered high risk"
+
+// cyberPolicyRefusal and contentPolicyRefusal are how an Anthropic policy
+// refusal says itself in an error's message alone, with no code beside it
+// to know it by (#7707, devin-auth): a plugin forwards the vendor's
+// refusal body as it came — a 400 invalid_request_error, a 502
+// devin_error whose code is a number, an api_error in a stream's error
+// event — none of which carries a filterReasons code, so none of the
+// cases above knew it: the 400 failed the group as other with the next
+// member never asked, and the 502 rested the account as an upstream's
+// failure. The words are the vendor naming its own policy, which any
+// other 400's words are not, so only an error carrying them is a refusal:
+// the request was turned away, not the account, and the next provider or
+// model may answer it (#248).
+var (
+	cyberPolicyRefusal   = lazyre.New(`(?i)flagged by anthropic's cyber verification policy`)
+	contentPolicyRefusal = lazyre.New(`(?i)refused by anthropic's content policy`)
+)
 
 // filterRefused is a stream's error event (its data) as an Event carries
 // it when it is the vendor's safety filter refusing the request: its code

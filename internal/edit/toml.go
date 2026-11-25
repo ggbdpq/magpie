@@ -907,8 +907,18 @@ func tomlString(s string) string {
 	return b.String()
 }
 
-// Table is one TOML table: its header name and its keys, in order.
+// Table is one TOML table: its header name and its keys, in order. Subs
+// are array-of-tables blocks under it, each written after its keys as
+// [[table.sub]] with its own key/value lines, in order.
 type Table struct {
+	Name string
+	KVs  []KV
+	Subs []Sub
+}
+
+// Sub is one block of an array of tables under a Table: the sub's name
+// after the table's, and its keys, in order.
+type Sub struct {
 	Name string
 	KVs  []KV
 }
@@ -976,6 +986,12 @@ func SetTOMLTablesMatching(path string, names, prefixes []string, tables []Table
 		out = append(out, "["+t.Name+"]")
 		for _, kv := range t.KVs {
 			out = append(out, kv.Path+" = "+tomlLiteral(kv.Value))
+		}
+		for _, sub := range t.Subs {
+			out = append(out, "", "[["+t.Name+"."+sub.Name+"]]")
+			for _, kv := range sub.KVs {
+				out = append(out, kv.Path+" = "+tomlLiteral(kv.Value))
+			}
 		}
 	}
 	if len(out) > 0 {

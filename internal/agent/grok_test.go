@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	toml "github.com/pelletier/go-toml/v2"
+
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/plugin"
@@ -673,4 +675,134 @@ func TestGrokCompactsAtItsOwnPercentByDefault(t *testing.T) {
 	if big, mid := percents(); big != 90 || mid != -1 {
 		t.Fatalf("big set by hand to 90: big %d%%, mid %d%%", big, mid)
 	}
+}
+
+// magpie's writes keep reasoning_efforts in the form Grok Build itself
+// writes: an array of tables under each model, each entry a value and a
+// label, with default = true on the one [models] default_reasoning_effort
+// names. An inline array has no default, so Grok Build starts on the first
+// level instead of the one picked, and every model-table write re-flattened
+// the file (a135309, #2811).
+func TestGrokWritesEffortsAsGrokBuildDoes(t *testing.T) {
+	home, path := grokSandbox(t)
+	if err := catalog.SaveLive("deepseek", "http://127.0.0.1:1/v1", []catalog.Model{
+		{ID: "pro", Efforts: []string{"high", "xhigh"}},
+		{ID: "flash", Efforts: []string{"low", "high"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	before := "# mine\n[ui]\ntheme = \"dark\"\n\n" +
+		"[models]\ndefault = \"magpie/deepseek/pro\"\ndefault_reasoning_effort = \"xhigh\"\n\n" +
+		"[model.\"magpie/deepseek/pro\"]\nmodel = \"deepseek/pro\"\nbase_url = \"http://127.0.0.1:3425/v1\"\napi_key = \"magpie\"\napi_backend = \"chat_completions\"\ncontext_window = 200000\n\n" +
+		"[[model.\"magpie/deepseek/pro\".reasoning_efforts]]\nvalue = \"high\"\nlabel = \"High\"\n\n" +
+		"[[model.\"magpie/deepseek/pro\".reasoning_efforts]]\nvalue = \"xhigh\"\nlabel = \"X-High\"\ndefault = true\n\n" +
+		"[model.my-own]\nmodel = \"x\"\nbase_url = \"https://x/v1\"\n\n" +
+		"[[model.my-own.reasoning_efforts]]\nvalue = \"high\"\nlabel = \"High\"\ndefault = true\n"
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// entries are a model's levels as the file holds them
+	type entry struct {
+		Value   string `toml:"value"`
+		Label   string `toml:"label"`
+		Default bool   `toml:"default"`
+	}
+	entries := func(model string) []entry {
+		t.Helper()
+		var doc struct {
+			Model map[string]struct {
+				ReasoningEfforts []entry `toml:"reasoning_efforts"`
+			} `toml:"model"`
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := toml.Unmarshal(b, &doc); err != nil {
+			t.Fatalf("config does not parse: %v\n%s", err, b)
+		}
+		m, ok := doc.Model["magpie/"+model]
+		if !ok {
+			t.Fatalf("no table for magpie/%s:\n%s", model, b)
+		}
+		return m.ReasoningEfforts
+	}
+	raw := func() string {
+		t.Helper()
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	own := func() bool {
+		t.Helper()
+		var doc struct {
+			Model map[string]struct {
+				ReasoningEfforts []entry `toml:"reasoning_efforts"`
+			} `toml:"model"`
+		}
+		if err := toml.Unmarshal([]byte(raw()), &doc); err != nil {
+			t.Fatal(err)
+		}
+		m, ok := doc.Model["my-own"]
+		if !ok || len(m.ReasoningEfforts) != 1 || !m.ReasoningEfforts[0].Default {
+			t.Fatalf("the user's own entries were touched:\n%s", raw())
+		}
+		return ok
+	}
+	a := grok(home)
+	// a sync keeps the entries Grok Build wrote, on the level picked
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if got := entries("deepseek/pro"); len(got) != 2 || got[0].Value != "high" || got[0].Label != "High" ||
+		got[1].Value != "xhigh" || got[1].Label != "X-High" || !got[1].Default {
+		t.Fatalf("after a sync, pro's entries: %+v\n%s", got, raw())
+	}
+	if r := raw(); strings.Contains(r, "reasoning_efforts = [") || !strings.Contains(r, "# mine") || !own() {
+		t.Fatalf("the sync flattened the entries or touched the user's own:\n%s", r)
+	}
+	// a model magpie's catalog gives levels, written as entries too, with
+	// no default while the effort picked is not one of theirs
+	if got := entries("deepseek/flash"); len(got) != 2 || got[0].Value != "low" || got[0].Label != "Low" ||
+		got[1].Value != "high" || got[1].Label != "High" || got[1].Default {
+		t.Fatalf("flash's entries: %+v\n%s", got, raw())
+	}
+	// picked for a model without the effort set, the nearest one is set
+	// and its entry gets the default: xhigh out of low/high keeps high
+	if err := a.Field("model").Set("magpie/deepseek/flash"); err != nil {
+		t.Fatal(err)
+	}
+	if got := entries("deepseek/flash"); len(got) != 2 || got[0].Default || !got[1].Default {
+		t.Fatalf("after the pick, flash's entries: %+v\n%s", got, raw())
+	}
+	if got := entries("deepseek/pro"); len(got) != 2 || !got[0].Default || got[1].Default {
+		t.Fatalf("after the pick, pro's entries: %+v\n%s", got, raw())
+	}
+	if f := a.Field("effort"); f.Get() != "high" {
+		t.Fatalf("the effort picked is now %q, want high", f.Get())
+	}
+	// an effort picked moves the default with it
+	if err := a.Field("model").Set("magpie/deepseek/pro"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Field("effort").Set("xhigh"); err != nil {
+		t.Fatal(err)
+	}
+	if got := entries("deepseek/pro"); len(got) != 2 || got[0].Default || !got[1].Default {
+		t.Fatalf("after the effort, pro's entries: %+v\n%s", got, raw())
+	}
+	if got := entries("deepseek/flash"); len(got) != 2 || got[0].Default || got[1].Default {
+		t.Fatalf("after the effort, flash's entries: %+v\n%s", got, raw())
+	}
+	// an effort the model does not take marks none of its entries
+	if err := a.Field("effort").Set("low"); err != nil {
+		t.Fatal(err)
+	}
+	if got := entries("deepseek/pro"); len(got) != 2 || got[0].Default || got[1].Default {
+		t.Fatalf("after an effort the model lacks, pro's entries: %+v\n%s", got, raw())
+	}
+	own()
 }

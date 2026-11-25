@@ -40,6 +40,19 @@ import (
 // grokEfforts are the reasoning efforts Grok knows.
 var grokEfforts = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
+// grokEffortLabels are the reasoning efforts' display names, as Grok Build
+// writes them into its reasoning_efforts entries (a135309, #2811: value =
+// "xhigh", label = "X-High").
+var grokEffortLabels = map[string]string{"none": "None", "minimal": "Minimal", "low": "Low", "medium": "Medium", "high": "High", "xhigh": "X-High", "max": "Max"}
+
+// grokEffortLabel is the label of an effort as Grok Build shows it.
+func grokEffortLabel(e string) string {
+	if l, ok := grokEffortLabels[e]; ok {
+		return l
+	}
+	return e
+}
+
 // grokModelTable is the header prefix of every table magpie writes.
 var grokModelTable = `model."` + magpieID + "/"
 
@@ -49,8 +62,13 @@ var grokModelTable = `model."` + magpieID + "/"
 // auto_compact_threshold_percent magpie gives each model (by its catalog
 // id), which the caller stashes. A value the user set in a table themselves
 // (grokOwnWindow, grokOwnPercent: had is what the tables hold now, wrote and
-// wrotePct what magpie last gave them) stays as they set it.
-func grokModelTables(agent, v1 string, had grokHad, wrote, wrotePct map[string]int) ([]edit.Table, map[string]int, map[string]int) {
+// wrotePct what magpie last gave them) stays as they set it. A model's
+// reasoning levels go in the array-of-tables form Grok Build itself writes,
+// one entry a value and a label, with default = true on the one mark (the
+// agent's default_reasoning_effort) names — an inline array has no default,
+// so Grok Build starts on the first level instead of the one picked
+// (a135309, #2811).
+func grokModelTables(agent, v1, mark string, had grokHad, wrote, wrotePct map[string]int) ([]edit.Table, map[string]int, map[string]int) {
 	var out []edit.Table
 	st, gave, gavePct := settings.Load().ForAgent(agent), map[string]int{}, map[string]int{}
 	for _, m := range sharedModels(agent) {
@@ -75,16 +93,20 @@ func grokModelTables(agent, v1 string, had grokHad, wrote, wrotePct map[string]i
 			gavePct[m.ID] = p
 			kvs = append(kvs, edit.KV{Path: "auto_compact_threshold_percent", Value: p})
 		}
-		var efforts []string
+		var subs []edit.Sub
 		for _, e := range grokEfforts { // in Grok's order
 			if contains(m.Efforts, e) {
-				efforts = append(efforts, strconv.Quote(e))
+				kvs := []edit.KV{
+					{Path: "value", Value: e},
+					{Path: "label", Value: grokEffortLabel(e)},
+				}
+				if e == mark {
+					kvs = append(kvs, edit.KV{Path: "default", Value: true})
+				}
+				subs = append(subs, edit.Sub{Name: "reasoning_efforts", KVs: kvs})
 			}
 		}
-		if len(efforts) > 0 {
-			kvs = append(kvs, edit.KV{Path: "reasoning_efforts", Value: edit.Raw("[" + strings.Join(efforts, ", ") + "]")})
-		}
-		out = append(out, edit.Table{Name: "model." + strconv.Quote(magpieID+"/"+m.ID), KVs: kvs})
+		out = append(out, edit.Table{Name: "model." + strconv.Quote(magpieID+"/"+m.ID), KVs: kvs, Subs: subs})
 	}
 	return out, gave, gavePct
 }
@@ -301,7 +323,13 @@ func grokLikeIn(k grokKind, at place) *Agent {
 		if savedPct != "" {
 			json.Unmarshal([]byte(savedPct), &wrotePct)
 		}
-		tables, gave, gavePct := grokModelTables(k.id, at.v1(), had, wrote, wrotePct)
+		// the effort the entries mark as their default: the one in [models]
+		// now, which a model pick sets before the tables are written
+		mark, err := get("default_reasoning_effort")
+		if err != nil {
+			return err
+		}
+		tables, gave, gavePct := grokModelTables(k.id, at.v1(), mark, had, wrote, wrotePct)
 		if err := edit.SetTOMLTables(path, []string{grokModelTable}, tables); err != nil {
 			return err
 		}
@@ -325,6 +353,16 @@ func grokLikeIn(k grokKind, at place) *Agent {
 		}
 		forget(keyWindows, keyPercents)
 		return nil
+	}
+	// reMark rewrites magpie's tables after [models] default_reasoning_effort
+	// moved, so the entries' default = true marks the effort picked now.
+	// Nothing of magpie's in the config, nothing to re-mark.
+	reMark := func() error {
+		ok, err := wired()
+		if err != nil || !ok {
+			return err
+		}
+		return writeMagpie()
 	}
 	// the default model is the user's, not a campaign's
 	ownDefault := func(features map[string]string) error {
@@ -411,13 +449,6 @@ func grokLikeIn(k grokKind, at place) *Agent {
 						}
 						return dropMagpie()
 					}
-					if ref, ok := strings.CutPrefix(v, magpieID+"/"); ok && isMagpie(ref) {
-						if err := writeMagpie(); err != nil {
-							return err
-						}
-					} else if err := dropMagpie(); err != nil {
-						return err
-					}
 					if e != "" {
 						// a model without the chosen effort starts at its
 						// nearest one (a tie goes up), not at Grok's default:
@@ -432,6 +463,15 @@ func grokLikeIn(k grokKind, at place) *Agent {
 								return err
 							}
 						}
+					}
+					// the tables are written after the effort is set, so the
+					// entries' default = true marks the one in [models] now
+					if ref, ok := strings.CutPrefix(v, magpieID+"/"); ok && isMagpie(ref) {
+						if err := writeMagpie(); err != nil {
+							return err
+						}
+					} else if err := dropMagpie(); err != nil {
+						return err
 					}
 					if err := ownDefault(features); err != nil {
 						return err
@@ -448,16 +488,23 @@ func grokLikeIn(k grokKind, at place) *Agent {
 				Key: "effort", Label: "effort",
 				Get: func() string { v, _ := get("default_reasoning_effort"); return v },
 				Set: func(v string) error {
+					var err error
 					if v == "" {
-						return edit.DelTOMLKey(path, "models", "default_reasoning_effort")
+						err = edit.DelTOMLKey(path, "models", "default_reasoning_effort")
+					} else {
+						// any other word stops the agent at start-up ("invalid
+						// reasoning effort", kigi 0.1.22 on `magpie kigi effort
+						// ultra`), so it is refused here instead
+						if !slices.Contains(grokEfforts, v) {
+							return fmt.Errorf("%s takes no effort %q: %s", k.name, v, strings.Join(grokEfforts, ", "))
+						}
+						err = edit.SetTOMLKey(path, "models", "default_reasoning_effort", v)
 					}
-					// any other word stops the agent at start-up ("invalid
-					// reasoning effort", kigi 0.1.22 on `magpie kigi effort
-					// ultra`), so it is refused here instead
-					if !slices.Contains(grokEfforts, v) {
-						return fmt.Errorf("%s takes no effort %q: %s", k.name, v, strings.Join(grokEfforts, ", "))
+					if err != nil {
+						return err
 					}
-					return edit.SetTOMLKey(path, "models", "default_reasoning_effort", v)
+					// the entries' default = true follows the effort picked
+					return reMark()
 				},
 				Options: func(cur map[string]string) []Option {
 					if es := efforts(cur["model"]); es != nil {

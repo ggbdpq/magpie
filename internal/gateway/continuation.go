@@ -556,12 +556,19 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				errNamed = ev.Status
 				return
 			}
-			failed, failedCode, failedStatus = ev.Text, ev.Code, ev.Status
-			if ev.Code == "" {
-				// a refusal's status is magpie's, told by its code
-				errNamed = ev.Status
-			}
-			errSent = true
+		failed, failedCode, failedStatus = ev.Text, ev.Code, ev.Status
+		if ev.Code == "" {
+			// a refusal's status is magpie's, told by its code
+			errNamed = ev.Status
+		}
+		errSent = true
+		// the error is told as an event of the reply's stream, as it was
+		// before the continuation came (#853): the reply ends with what
+		// cut it, said in the client's own shape — a stream that merely
+		// stops is read by the agent only as a server error mid-response
+		// (#7726) — and the read ends at once, not waiting on a vendor
+		// that keeps the connection open after it (errStreamCut)
+		cut = true
 		case KStart:
 			// the tries are each billed: the earlier ones' prompts as the
 			// reply's Deferred, their output with this one's (after); the

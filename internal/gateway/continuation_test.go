@@ -505,6 +505,53 @@ func TestStreamErrorMidReplyContinuesAtOnce(t *testing.T) {
 	}
 }
 
+// A stream's own error event mid-reply on an upstream that cannot go on
+// from a prefill ends the reply with that error, as an event of the
+// client's stream: the agent is told what cut it, and reads a retryable
+// error, not a stream that merely stops — Claude Code's "Server error
+// mid-response" (#7726). The read of a connection the vendor keeps open
+// after it ends at once.
+func TestStreamErrorOnPlainChatEndsInTheStream(t *testing.T) {
+	fresh(t)
+	var mu sync.Mutex
+	var calls int
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse("data: "+chatText("m", "hel"), `data: {"error":{"message":"boom"}}`))
+		w.(http.Flusher).Flush()
+		select { // said, and not hung up
+		case <-r.Context().Done():
+		case <-time.After(20 * time.Second):
+			t.Error("the error event's read wasn't ended at once")
+		}
+	}))
+	t.Cleanup(up.Close)
+	p := provider.Provider{ID: "up", Name: "UP", Key: "k", Models: []string{"m"}, Chat: up.URL + "/v1"}
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	body := continuationServerBody(t, "m")
+	mu.Lock()
+	n := calls
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("calls = %d, want 1", n)
+	}
+	if got := textOf(body); got != "hel" {
+		t.Fatalf("client's text = %q, want %q", got, "hel")
+	}
+	if _, _, errs := messageStops(body); errs != 1 {
+		t.Fatalf("no error event in the stream: %s", body)
+	}
+	if !strings.Contains(body, "boom") {
+		t.Fatalf("the error doesn't say what the upstream said: %s", body)
+	}
+}
+
 func continuationServerBody(t *testing.T, model string) string {
 	t.Helper()
 	code, body := post(t, "/v1/messages", `{"model":"up/`+model+`","max_tokens":32000,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)

@@ -195,6 +195,12 @@ type subscriptionRun struct {
 	exit   error
 	killed bool
 	tmp    string
+	// runID is the run's tag in its Claude Code's environment (RunIDEnv),
+	// its temp folder's name, the one the kill hook (KillHookEnv) is told
+	// of the run by
+	runID string
+	// hookOnce runs the kill hook once, however the run ended
+	hookOnce sync.Once
 	// room frees the process's place in claudeRoom once it has exited,
 	// roomLeft telling it magpie ended it (abort)
 	room     func(left bool)
@@ -1379,6 +1385,11 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	if tui {
 		cmd.Env = binary.tuiEnv(cmd.Env, configDir)
 	}
+	// the run's tag in its Claude Code's environment (RunIDEnv): a `claude`
+	// that is a wrapper carrying the real one across an exec boundary takes
+	// it there, and the kill hook (KillHookEnv) ends the run with it where
+	// the process-group kill cannot reach (#7747)
+	cmd.Env = append(cmd.Env, RunIDEnv+"="+filepath.Base(tmp))
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cleanup()
@@ -1401,7 +1412,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	}
 	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
 
-	run := &subscriptionRun{bridge: b, token: token, model: model, cmd: cmd, tmp: tmp, schema: len(req.Format.schema()) > 0, pending: map[string]chan mcpToolResult{}, stdin: stdin, effort: req.Effort, sessions: sessions, started: time.Now()}
+	run := &subscriptionRun{bridge: b, token: token, model: model, cmd: cmd, tmp: tmp, runID: filepath.Base(tmp), schema: len(req.Format.schema()) > 0, pending: map[string]chan mcpToolResult{}, stdin: stdin, effort: req.Effort, sessions: sessions, started: time.Now()}
 	run.owner.Store(&owner)
 	run.names = bridgeNames(req.Tools)
 	run.safeguardBeta = req.SafeguardBeta
@@ -6904,6 +6915,12 @@ func (r *subscriptionRun) finish() {
 	if r.bridge != nil { // a run made in a test may have none
 		r.bridge.removeRun(r)
 	}
+	// the kill hook (KillHookEnv), once, however the run ended: a wrapper's
+	// exec'd Claude Code lives where the group kill cannot reach, and only
+	// the command it names ends it (#7747). It runs beside the teardown, so
+	// a hung one holds no run and no gateway stop, only its own bound
+	// (killHookFor); a gateway quit ends what it left to it
+	r.hookOnce.Do(func() { go runKillHook(r.runID) })
 }
 
 // launch starts the run's agent, to end with all it starts.

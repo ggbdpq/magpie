@@ -11,14 +11,19 @@ package library
 // without opening a file: each entry's place, size and time. While those
 // are the same, the answer is too. A folder that couldn't be walked or
 // read whole is unknown: it is read again next time, never taken as
-// unchanged.
+// unchanged. What was found is also kept in a file beside the library's
+// own, and a sync that starts takes it up: the walks still agreeing with
+// it, an unchanged library is not opened again run after run (#7740).
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	stdhash "hash"
 	"io/fs"
+	"log"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -64,6 +69,7 @@ var memo = struct {
 	sync.Mutex
 	hashes map[string]hashMemo    // dir and what is left aside: the folder's hash
 	trees  map[[2]string]treeMemo // two folders: whether they hold the same
+	dirty  bool                   // what was found or dropped since it was last kept
 }{hashes: map[string]hashMemo{}, trees: map[[2]string]treeMemo{}}
 
 // rememberedHash is the hash of dir leaving lv aside: the hash found
@@ -80,6 +86,7 @@ func rememberedHash(dir string, lv leave) string {
 		}
 		memo.Lock()
 		delete(memo.hashes, key)
+		memo.dirty = true
 		memo.Unlock()
 	}
 	h, stamp, settled, ok := hashWalk(dir, lv, true)
@@ -89,6 +96,7 @@ func rememberedHash(dir string, lv leave) string {
 	if settled {
 		memo.Lock()
 		memo.hashes[key] = hashMemo{stamp: stamp, hash: h}
+		memo.dirty = true
 		memo.Unlock()
 	}
 	return h
@@ -112,6 +120,95 @@ func rememberedSame(a, b string, ta, tb tree, compare func() (same, sure bool)) 
 	} else {
 		delete(memo.trees, key)
 	}
+	memo.dirty = true
 	memo.Unlock()
 	return same
+}
+
+// ---- what a run found, for the next one ------------------------------------
+
+// memoPath is where what a sync found is kept: beside the library's own
+// files, on this computer alone, the answers being about this computer's
+// folders. A sync keeps it as it ends, and takes it up as it starts.
+func memoPath() string { return filepath.Join(Dir(), "treememo.json") }
+
+// memoKeptHash is a folder's hash, kept for the walk to agree with.
+type memoKeptHash struct{ Key, Stamp, Hash string }
+
+// memoKeptTree is whether two folders held the same, as found while both
+// had the stamps kept with the answer.
+type memoKeptTree struct {
+	A, B           string
+	StampA, StampB string
+	Same           bool
+}
+
+// memoKept is the shape of the file: lists, so a file of another shape
+// names none of it and is started over from.
+type memoKept struct {
+	Hashes []memoKeptHash `json:"hashes,omitempty"`
+	Trees  []memoKeptTree `json:"trees,omitempty"`
+}
+
+// loadMemo takes up what a sync before kept. What memory holds is kept
+// over it, what this run found being newer than what is in the file. A
+// file that isn't there, or isn't in this shape, keeps nothing: what
+// follows is read again, never taken as unchanged.
+func loadMemo() {
+	b, err := os.ReadFile(memoPath())
+	if err != nil {
+		return
+	}
+	var kept memoKept
+	if err := json.Unmarshal(b, &kept); err != nil {
+		return
+	}
+	memo.Lock()
+	for _, e := range kept.Hashes {
+		if _, ok := memo.hashes[e.Key]; e.Key != "" && !ok {
+			memo.hashes[e.Key] = hashMemo{stamp: e.Stamp, hash: e.Hash}
+		}
+	}
+	for _, t := range kept.Trees {
+		key := [2]string{t.A, t.B}
+		if t.A != "" && t.B != "" {
+			if _, ok := memo.trees[key]; !ok {
+				memo.trees[key] = treeMemo{a: t.StampA, b: t.StampB, same: t.Same}
+			}
+		}
+	}
+	memo.Unlock()
+}
+
+// saveMemo writes what is kept now, for the next sync to start from.
+// Best effort: what couldn't be written is read again next time, and
+// tried again when a sync ends.
+func saveMemo() {
+	memo.Lock()
+	if !memo.dirty {
+		memo.Unlock()
+		return
+	}
+	kept := memoKept{}
+	for k, m := range memo.hashes {
+		kept.Hashes = append(kept.Hashes, memoKeptHash{Key: k, Stamp: m.stamp, Hash: m.hash})
+	}
+	for k, m := range memo.trees {
+		kept.Trees = append(kept.Trees, memoKeptTree{A: k[0], B: k[1], StampA: m.a, StampB: m.b, Same: m.same})
+	}
+	memo.Unlock()
+	b, err := json.Marshal(&kept)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(Dir(), 0o755); err != nil {
+		return
+	}
+	if err := os.WriteFile(memoPath(), b, 0o644); err != nil {
+		log.Printf("library: keeping what the sync found for the next one: %v", err)
+		return
+	}
+	memo.Lock()
+	memo.dirty = false
+	memo.Unlock()
 }

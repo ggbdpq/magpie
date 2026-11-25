@@ -88,6 +88,7 @@ func (r *Result) fail(agent, what string, err error) {
 
 // sync writes the library into every agent on this machine.
 func (l *Library) sync() *Result {
+	loadMemo()
 	res := &Result{Changed: []string{}, Problems: []Problem{}}
 	b := l.kept
 	if b == nil {
@@ -102,6 +103,7 @@ func (l *Library) sync() *Result {
 		pruneBackups()
 	}
 	runGiven(res.run)
+	saveMemo()
 	return res
 }
 
@@ -183,6 +185,9 @@ func Sync() (*Result, error) {
 	}
 	res := &Result{Changed: []string{}, Problems: []Problem{}}
 	b := newBackups()
+	// what a sync before kept of the skills, for this one not to read
+	// what its walks still agree with (#7740)
+	loadMemo()
 	var all, gone []*Target
 	// what the step before learnt of the skills (hashes, copies found
 	// untouched), kept while nothing else held the lock between
@@ -226,6 +231,7 @@ func Sync() (*Result, error) {
 	}
 	npxPrune(npxDirs)
 	runGiven(res.run)
+	saveMemo()
 	return res, nil
 }
 

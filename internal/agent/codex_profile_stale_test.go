@@ -33,8 +33,12 @@ func TestCodexProfileListDropsADeletedProvider(t *testing.T) {
 	}
 	SyncCatalog()
 	got := readFile(list)
-	if strings.Contains(got, "added/") {
-		t.Errorf("the deleted provider's models are still listed:\n%s", got)
+	// the deleted provider's models are offered by no picker; one an
+	// existing thread still names is kept hidden (#4864)
+	for _, m := range catalogSlugs(t, list) {
+		if strings.HasPrefix(m.Slug, "added/") && m.Visibility != "hide" {
+			t.Errorf("the deleted provider's models are still offered: %s %q", m.Slug, m.Visibility)
+		}
 	}
 	if !strings.Contains(got, "kept/k1") {
 		t.Errorf("the list was not written again:\n%s", got)

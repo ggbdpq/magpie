@@ -114,10 +114,13 @@ func TestCodexAppRouteKeepsThroughListFlaps(t *testing.T) {
 		t.Fatalf("catalog:\n%s", full)
 	}
 	before := route()
-	// the list fetched while the vendor failed: one model left
+	// the list fetched while the vendor failed: one model left, the
+	// dropped one kept only hidden, for the threads still on it (#4864)
 	save("glm-4.6")
-	if strings.Contains(readFile(codexCat), "glm-4.5") {
-		t.Fatalf("catalog still lists the dropped model:\n%s", readFile(codexCat))
+	for _, m := range catalogSlugs(t, codexCat) {
+		if m.Slug == "relay/glm-4.5" && m.Visibility != "hide" {
+			t.Fatalf("catalog still offers the dropped model: %q", m.Visibility)
+		}
 	}
 	if r := route(); r != before {
 		t.Errorf("a model dropped from the list changed the route:\n%s\nto\n%s", before, r)

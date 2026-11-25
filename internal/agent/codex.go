@@ -310,7 +310,13 @@ func codexIn(at place) *Agent {
 	// ownList is magpie's model list for Codex as written to catalogPath:
 	// what the user added by hand to the list there (a key magpie doesn't
 	// write, supports_reasoning_summaries on a model magpie gave none) is
-	// kept, not written over by the next model switch or sync (#1450).
+	// kept, not written over by the next model switch or sync (#1450), and
+	// so is an entry of a model magpie no longer serves, hidden: a Codex
+	// thread keeps the model id it started on and checks it against this
+	// catalog before it sends, so with the entry gone every send in the
+	// thread is refused client-side, the request never reaching magpie
+	// (#4864). No picker offers a hidden one; the gateway routes a request
+	// naming it to the provider as any unlisted model's (#2642).
 	// Each model's default effort is the one this config starts new
 	// sessions at, or the model's nearest (codexcat.ModelDefault), which
 	// Codex takes on a switch to it. The models Codex used are among the
@@ -320,7 +326,7 @@ func codexIn(at place) *Agent {
 	}
 	ownList := func() []byte {
 		cur, _ := edit.Read(catalogPath)
-		return codexcat.Keep(cur, list())
+		return codexcat.KeepKnown(cur, list())
 	}
 	// listGone: magpie's list is known not to be there; one that can't be
 	// looked at is not taken for gone

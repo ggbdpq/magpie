@@ -673,6 +673,69 @@ func Keep(cur, b []byte) []byte {
 	return out
 }
 
+// KeepKnown is Keep with the entries of models magpie no longer serves
+// carried over from cur, hidden: Codex stores a thread's model id in the
+// thread and checks it against the catalog it reads (model_catalog_json)
+// before any request goes out, so an id that vanishes from the catalog
+// makes every existing thread on it refuse to send — "The '<provider>/
+// <model>' model is not supported", codex_error_info model_not_found
+// (#4864) — and the request never reaches magpie for it to say anything
+// about it. A carried entry says visibility "hide", which no picker
+// shows, and ranks after every model served now: the list stays the
+// provider's picks, while a thread still on a gone id goes on sending,
+// and the gateway routes that to the provider as any unlisted model's
+// request (#2642). b as it is when cur is not a catalog or holds nothing
+// to carry.
+func KeepKnown(cur, b []byte) []byte {
+	b = Keep(cur, b)
+	type list struct {
+		Models []map[string]any `json:"models"`
+	}
+	read := func(raw []byte, l *list) error {
+		d := json.NewDecoder(bytes.NewReader(raw))
+		d.UseNumber()
+		return d.Decode(l)
+	}
+	var was list
+	if len(cur) == 0 || read(cur, &was) != nil {
+		return b
+	}
+	var now list
+	if read(b, &now) != nil {
+		return b
+	}
+	here := map[string]bool{}
+	for _, e := range now.Models {
+		slug, _ := e["slug"].(string)
+		if slug != "" {
+			here[slug] = true
+		}
+	}
+	priority := len(now.Models)
+	var gone []map[string]any
+	for _, e := range was.Models {
+		slug, _ := e["slug"].(string)
+		if slug == "" || here[slug] {
+			continue
+		}
+		kept := make(map[string]any, len(e)+2)
+		maps.Copy(kept, e)
+		priority++
+		kept["priority"] = priority
+		kept["visibility"] = "hide"
+		gone = append(gone, kept)
+	}
+	if len(gone) == 0 {
+		return b
+	}
+	now.Models = append(now.Models, gone...)
+	out, err := json.MarshalIndent(now, "", " ")
+	if err != nil {
+		return b
+	}
+	return out
+}
+
 // datedSuffix is a snapshot's date after a model's id (-2026-09-14,
 // -20260914).
 var datedSuffix = lazyre.New(`-(\d{4}-\d{2}-\d{2}|\d{8})$`)

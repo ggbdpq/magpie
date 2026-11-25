@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -63,10 +64,33 @@ func TestRenameGroupMovesTheAgentsOnIt(t *testing.T) {
 	if strings.Contains(claude, "group/smart") || !strings.Contains(claude, `"model": "group/clever"`) && !strings.Contains(claude, `"model":"group/clever"`) {
 		t.Errorf("claude settings still on the old id:\n%s", claude)
 	}
-	for _, f := range []string{codexCat, piModels, oc} {
+	for _, f := range []string{piModels, oc} {
 		if s := readFile(f); strings.Contains(s, "group/smart") || !strings.Contains(s, "group/clever") {
 			t.Errorf("%s lists the old id:\n%s", f, s)
 		}
+	}
+	// Codex's list carries the old id only hidden, for the threads still
+	// on it (#4864): no picker offers it, and the configs above were moved
+	var cat struct {
+		Models []struct {
+			Slug       string `json:"slug"`
+			Visibility string `json:"visibility"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal([]byte(readFile(codexCat)), &cat); err != nil {
+		t.Fatal(err)
+	}
+	clever := false
+	for _, m := range cat.Models {
+		if m.Slug == "group/smart" && m.Visibility != "hide" {
+			t.Errorf("the old group id is still offered:\n%s", readFile(codexCat))
+		}
+		if m.Slug == "group/clever" {
+			clever = true
+		}
+	}
+	if !clever {
+		t.Errorf("the new group id is not offered:\n%s", readFile(codexCat))
 	}
 }
 

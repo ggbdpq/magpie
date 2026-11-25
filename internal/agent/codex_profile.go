@@ -109,7 +109,9 @@ func codexProfileIn(at place) *Agent {
 	list := func() []byte { return codexcat.CatalogAt(magpieModels("codex"), get("model_reasoning_effort")) }
 	ownList := func() []byte {
 		cur, _ := edit.Read(catalogPath)
-		return codexcat.Keep(cur, list())
+		// KeepKnown, not Keep: a model magpie no longer serves stays in
+		// the list hidden, for the threads still on it (#4864)
+		return codexcat.KeepKnown(cur, list())
 	}
 	// the list goes with the profile, unless the user added to it
 	dropList := func() {

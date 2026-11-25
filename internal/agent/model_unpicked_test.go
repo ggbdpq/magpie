@@ -1,8 +1,8 @@
 package agent
 
 import (
+	"encoding/json"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/yetone/magpie/internal/edit"
@@ -62,8 +62,29 @@ func TestCodexLeavesAModelUncheckedInItsProvider(t *testing.T) {
 			if got := model(); got != "sub/new" {
 				t.Fatalf("model = %q after sub/old was unchecked, want the provider's first pick sub/new:\n%s", got, readFile(path))
 			}
-			if l := readFile(filepath.Join(home, ".codex", "magpie-models.json")); c.auth == "" && (!strings.Contains(l, `"sub/new"`) || strings.Contains(l, `"sub/old"`)) {
-				t.Errorf("Codex's list is not the provider's picks:\n%s", l)
+			// the list is the provider's picks; the one taken out is
+			// offered by no picker, kept only hidden for the threads
+			// still on it (#4864)
+			if c.auth == "" {
+				var cat struct {
+					Models []struct {
+						Slug       string `json:"slug"`
+						Visibility string `json:"visibility"`
+					} `json:"models"`
+				}
+				if err := json.Unmarshal([]byte(readFile(filepath.Join(home, ".codex", "magpie-models.json"))), &cat); err != nil {
+					t.Fatal(err)
+				}
+				seen := map[string]string{}
+				for _, m := range cat.Models {
+					seen[m.Slug] = m.Visibility
+				}
+				if seen["sub/new"] != "list" {
+					t.Errorf("the provider's pick is not offered:\n%s", readFile(filepath.Join(home, ".codex", "magpie-models.json")))
+				}
+				if v, ok := seen["sub/old"]; ok && v != "hide" {
+					t.Errorf("a model unchecked in its provider is still offered: %q", v)
+				}
 			}
 		})
 	}

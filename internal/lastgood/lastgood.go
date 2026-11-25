@@ -10,6 +10,21 @@
 // copied aside as <file>.bad-<time> when it isn't, and a read of a file
 // that isn't valid gives the .bak's contents instead, noted for the GUI and
 // the log.
+//
+// What each way a read can fail becomes:
+//
+//   - a file not there is fs.ErrNotExist, its .bak not looked at: a
+//     crash leaves a file renamed over as it was or as it became, never
+//     gone, so one gone was removed on purpose;
+//   - a read stopped by another error stops the reader;
+//   - a file there whose contents are valid is read as they are;
+//   - a file there whose contents aren't may be one being rewritten in
+//     place (a truncate, then a write), read in the gap between the two:
+//     written again moments before, it is waited on and re-read, and the
+//     rewrite's own bytes come back (#5762);
+//   - a file still not valid once the wait is over is damaged: read from
+//     its .bak, noted for the GUI and the log, or copied aside before a
+//     write over it (KeepBad).
 package lastgood
 
 import (
@@ -61,11 +76,12 @@ func (e *UnreadableError) Error() string {
 func (e *UnreadableError) Unwrap() []error { return []error{ErrUnreadable, e.Err} }
 
 // Read gives path's contents when they are valid. A file there that isn't
-// gives its .bak's contents, when that is valid, and the recovery is noted
-// (Recovered). A file not there is fs.ErrNotExist, its .bak not looked at:
-// a crash leaves a file renamed over as it was or as it became, never
-// gone, so one gone was removed on purpose. Anything else is an
-// *UnreadableError, or the error that stopped the read.
+// may be one being rewritten in place, waited out (Fallback); one still
+// not valid gives its .bak's contents, when that is valid, and the
+// recovery is noted (Recovered). A file not there is fs.ErrNotExist, its
+// .bak not looked at: a crash leaves a file renamed over as it was or as
+// it became, never gone, so one gone was removed on purpose. Anything
+// else is an *UnreadableError, or the error that stopped the read.
 func Read(path string, valid Valid) ([]byte, error) {
 	b, err := steady.ReadFile(path)
 	if err != nil {
@@ -77,10 +93,69 @@ func Read(path string, valid Valid) ([]byte, error) {
 	return Fallback(path, b, valid)
 }
 
+// grace is how long a file read bad is waited on, re-read, before it is
+// taken for damaged: a rewrite in place reads empty or half written in
+// the gap between its truncate and its write, and is good again
+// milliseconds later (#5762). A test stands in for it.
+var grace = []time.Duration{
+	50 * time.Millisecond,
+	100 * time.Millisecond,
+	200 * time.Millisecond,
+	400 * time.Millisecond,
+}
+
+// young is how recently a file read bad may have been written, its mtime
+// saying so, for a rewrite still going on to be taken as the reason:
+// within it the read is waited on. Older than it, the file was last
+// written before magpie read it and no rewrite can still be running, so
+// it is damaged at once, and the all-zero file a crash left (#1505) is
+// recovered without the wait.
+const young = 2 * time.Second
+
+// rewrittenInPlace is whether path, read bad, may be being rewritten in
+// place: it was written again within young of now, so its bad contents
+// may be the gap of a truncate-then-write still going on.
+func rewrittenInPlace(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && now().Sub(fi.ModTime()) < young
+}
+
+// settled re-reads path after it was read bad, waiting out a rewrite in
+// place (the gap of a truncate-then-write). It gives the contents the
+// file settled on and whether they are valid: the rewrite's own bytes
+// when it finished within the wait, what was read first when it didn't,
+// and, gone (nil, fs.ErrNotExist) when the file was removed under the
+// wait, which is a removal on purpose, not damage.
+func settled(path string, bad []byte, valid Valid) ([]byte, bool, error) {
+	if !rewrittenInPlace(path) {
+		return bad, false, nil
+	}
+	for _, pause := range grace {
+		time.Sleep(pause)
+		b, err := steady.ReadFile(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, false, err
+		}
+		if err == nil && valid(b) {
+			return b, true, nil
+		}
+	}
+	return bad, false, nil
+}
+
 // Fallback is Read for a caller that read path itself and found bad (its
-// contents, or nil when only its parse said so): the .bak's contents when
-// they are valid, noted, else an *UnreadableError.
+// contents, or nil when only its parse said so): first the wait of
+// settled, for a rewrite in place; then a file still bad — damaged, or
+// left bad by a rewrite long over — is read from its .bak, when that is
+// valid, noted, or an *UnreadableError given.
 func Fallback(path string, bad []byte, valid Valid) ([]byte, error) {
+	b, ok, err := settled(path, bad, valid)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		return b, nil
+	}
 	why := describe(bad)
 	if b, err := steady.ReadFile(Bak(path)); err == nil && valid(b) {
 		note(path, why)
@@ -104,11 +179,13 @@ func describe(b []byte) string {
 
 // Keep is called before path is replaced, under the lock its writer
 // holds: the file there now, when valid, becomes the last good generation,
-// path.bak, written to the disk before path is; one that isn't valid is
-// copied aside (path.bad-<time>) and the .bak left as it is, so a file
-// that can't be read is never written over before a copy of it is kept.
-// A file not there needs neither. An error stops the write: the file there
-// couldn't be read, or a bad one couldn't be kept.
+// path.bak, written to the disk before path is. One that isn't valid is
+// waited on (settled), and still bad once the wait is over is copied
+// aside (path.bad-<time>), the .bak left as it is, so a file that can't
+// be read is never written over before a copy of it is kept, and a
+// rewrite in place is not mistaken for it. A file not there needs
+// neither. An error stops the write: the file there couldn't be read, or
+// a bad one couldn't be kept.
 func Keep(path string, valid Valid, perm fs.FileMode) error {
 	b, err := steady.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -116,6 +193,21 @@ func Keep(path string, valid Valid, perm fs.FileMode) error {
 	}
 	if err != nil {
 		return err
+	}
+	if !valid(b) {
+		var ok bool
+		var serr error
+		b, ok, serr = settled(path, b, valid)
+		if errors.Is(serr, fs.ErrNotExist) {
+			return nil // gone under the wait: a file not there needs neither
+		}
+		if serr != nil {
+			return serr
+		}
+		if !ok {
+			_, err = KeepBad(path, b)
+			return err
+		}
 	}
 	if valid(b) {
 		if old, err := os.ReadFile(Bak(path)); err == nil && bytes.Equal(old, b) {
@@ -137,10 +229,11 @@ func Into[T any](b []byte) bool {
 
 // KeepUnparsed is called before path is written over, by a writer whose
 // reader takes a file that doesn't parse (parses false) as empty: such a
-// file is copied aside (KeepBad) first, so the write of what was read as
-// empty doesn't lose what it held. A file not there, or empty, needs
-// nothing. An error stops the write: the file there couldn't be read, or
-// couldn't be kept.
+// file is waited on (settled), and still bad once the wait is over is
+// copied aside (KeepBad) first, so the write of what was read as empty
+// doesn't lose what it held. A file not there, or empty, needs nothing.
+// An error stops the write: the file there couldn't be read, or couldn't
+// be kept.
 func KeepUnparsed(path string, parses Valid) error {
 	b, err := steady.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -152,7 +245,16 @@ func KeepUnparsed(path string, parses Valid) error {
 	if len(bytes.TrimSpace(b)) == 0 || parses(b) {
 		return nil
 	}
-	_, err = KeepBad(path, b)
+	b, ok, serr := settled(path, b, parses)
+	if errors.Is(serr, fs.ErrNotExist) {
+		return nil // gone under the wait: a file not there needs nothing
+	}
+	if serr != nil {
+		return serr
+	}
+	if !ok {
+		_, err = KeepBad(path, b)
+	}
 	return err
 }
 

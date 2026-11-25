@@ -23,6 +23,17 @@ func setup(t *testing.T) string {
 	return filepath.Join(t.TempDir(), "logins.json")
 }
 
+// oldEnough marks p as of #1505's crash, long before any wait could
+// bridge: the bad files of these tests are damaged, not being rewritten,
+// and are taken for it without the wait of settled.
+func oldEnough(t *testing.T, p string) {
+	t.Helper()
+	past := time.Date(2020, 1, 1, 0, 0, 0, 0, time.Local)
+	if err := os.Chtimes(p, past, past); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestZeroedFileReadFromItsBackup(t *testing.T) {
 	p := setup(t)
 	good := []byte(`[{"agent":"codex","user":"a@x.com"}]` + "\n")
@@ -39,6 +50,7 @@ func TestZeroedFileReadFromItsBackup(t *testing.T) {
 	if err := os.WriteFile(p, zeros(10783), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	oldEnough(t, p)
 	b, err := Read(p, JSON)
 	if err != nil || !bytes.Equal(b, good) {
 		t.Fatalf("a zeroed file read as %q, %v; want its backup", b, err)
@@ -62,6 +74,7 @@ func TestZeroedFileWithoutBackupIsUnknown(t *testing.T) {
 		t.Fatalf("a missing file read as %v", err)
 	}
 	os.WriteFile(p, zeros(29926), 0o600)
+	oldEnough(t, p)
 	if b, err := Read(p, JSON); !errors.Is(err, ErrUnreadable) || b != nil {
 		t.Fatalf("a zeroed file without a backup read as %q, %v", b, err)
 	}
@@ -80,6 +93,7 @@ func TestKeepCopiesABadFileAside(t *testing.T) {
 	p := setup(t)
 	os.WriteFile(Bak(p), []byte(`["good"]`), 0o600)
 	os.WriteFile(p, zeros(10783), 0o600)
+	oldEnough(t, p)
 	if err := Keep(p, JSON, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +179,7 @@ func TestKeepFailsWhenTheBadFileCantBeKept(t *testing.T) {
 	}
 	p := setup(t)
 	os.WriteFile(p, zeros(64), 0o600)
+	oldEnough(t, p)
 	dir := filepath.Dir(p)
 	os.Chmod(dir, 0o500)
 	defer os.Chmod(dir, 0o700)
@@ -211,6 +226,7 @@ func TestKeepUnparsed(t *testing.T) {
 	}
 	for i, bad := range []string{`[]`, `{"a":"b"`, `{"a":1}`} {
 		os.WriteFile(p, []byte(bad), 0o600)
+		oldEnough(t, p)
 		for range 2 {
 			if err := KeepUnparsed(p, parses); err != nil {
 				t.Fatalf("%q: %v", bad, err)
@@ -229,6 +245,7 @@ func TestKeepUnparsedFailsWhenItCantBeKept(t *testing.T) {
 	}
 	p := setup(t)
 	os.WriteFile(p, []byte(`[]`), 0o600)
+	oldEnough(t, p)
 	dir := filepath.Dir(p)
 	os.Chmod(dir, 0o500)
 	defer os.Chmod(dir, 0o700)
@@ -238,5 +255,81 @@ func TestKeepUnparsedFailsWhenItCantBeKept(t *testing.T) {
 	}
 	if err := KeepUnparsed(p, Into[map[string]string]); err == nil {
 		t.Fatal("a bad file not kept, and the write let go on")
+	}
+}
+
+// A file read while a writer is rewriting it in place — truncate, then a
+// write, as Python's open(p, "w") and a shell's > do — is waited out, not
+// taken for damaged: the rewrite's own bytes are read and no recovery is
+// noted (#5762).
+func TestRewriteReadInTheGapIsNotDamage(t *testing.T) {
+	p := setup(t)
+	good := []byte(`{"providers":true}` + "\n")
+	if err := os.WriteFile(p, good, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(Bak(p), []byte(`{"stale":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_TRUNC, 0o600) // the truncate of a rewrite in place
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	written := make(chan []byte, 1)
+	go func() { // the write, a few milliseconds behind the truncate
+		time.Sleep(30 * time.Millisecond)
+		w, err := os.OpenFile(p, os.O_WRONLY, 0o600)
+		if err != nil {
+			written <- nil
+			return
+		}
+		w.Write(good)
+		w.Close()
+		written <- good
+	}()
+	b, err := Read(p, JSON)
+	if err != nil {
+		t.Fatalf("a file being rewritten read as %v", err)
+	}
+	if w := <-written; !bytes.Equal(b, w) {
+		t.Fatalf("a file being rewritten read %q, not the rewrite's own %q", b, w)
+	}
+	if n := Recovered(); len(n) != 0 {
+		t.Fatalf("a rewrite in place noted as damage: %+v", n)
+	}
+}
+
+// A write over a file being rewritten in place waits the rewrite out: the
+// rewrite's own bytes become the backup, and no empty file is kept aside
+// in the gap's place (#5762).
+func TestKeepWaitsOutARewrite(t *testing.T) {
+	p := setup(t)
+	good := []byte(`{"providers":true}` + "\n")
+	if err := os.WriteFile(p, good, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_TRUNC, 0o600) // the truncate of a rewrite in place
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	go func() { // the write, a few milliseconds behind the truncate
+		time.Sleep(30 * time.Millisecond)
+		w, err := os.OpenFile(p, os.O_WRONLY, 0o600)
+		if err != nil {
+			return
+		}
+		w.Write(good)
+		w.Close()
+	}()
+	if err := Keep(p, JSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(Bak(p)); !bytes.Equal(b, good) {
+		t.Fatalf("the backup is %q, not the rewrite's own %q", b, good)
+	}
+	if kept, _ := filepath.Glob(p + ".bad-*"); len(kept) != 0 {
+		t.Fatalf("the gap's empty file kept aside: %v", kept)
 	}
 }

@@ -55,6 +55,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/jsonc"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/fasttools"
 	"github.com/yetone/magpie/internal/gateway"
@@ -71,11 +72,94 @@ const agyModels = "customModelsConfig.customModels"
 // (x-goog-api-key) alone. A command copied before, with the plain token,
 // still reaches magpie.
 func AgyLaunch(model string) string {
-	return agyLaunchAt(gateway.URL(), agentKey("agy"), agySettingsFile(), model, runtime.GOOS == "windows")
+	return agyLaunchAt(agyBase(gateway.URL(), false), agentKey("agy"), agySettingsFile(), model, runtime.GOOS == "windows")
 }
 
 // agyOverride is the name of magpie's settings file in agy's folder.
 const agyOverride = "magpie-settings.json"
+
+// agyThroughFile is where the prefix of the local proxy magpie's launch of
+// agy goes behind is kept (AgyThrough), in magpie's config folder: agy has
+// no file of its own that carries the address.
+func agyThroughFile() string { return filepath.Join(appdir.Config(), "agy-through.json") }
+
+// agyThroughPrefix is that prefix, "" without one. A file that doesn't
+// parse or doesn't name one is none: the launch goes to the gateway, and
+// switching the lane on again writes it whole.
+var agyThroughPrefix = func() string {
+	b, err := os.ReadFile(agyThroughFile())
+	if err != nil {
+		return ""
+	}
+	var m struct {
+		Prefix string `json:"prefix"`
+	}
+	if json.Unmarshal(b, &m) != nil || m.Prefix == "" {
+		return ""
+	}
+	return m.Prefix
+}
+
+// agyThroughSet keeps prefix there, or takes the file away for "".
+func agyThroughSet(prefix string) error {
+	p := agyThroughFile()
+	if prefix == "" {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	b, err := json.MarshalIndent(map[string]string{"prefix": prefix}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return edit.WriteAtomic(p, append(b, '\n'))
+}
+
+// agyBase is the GOOGLE_GEMINI_BASE_URL a launch at gw carries: behind a
+// local proxy's prefix when one is set (AgyThrough) and the launch is this
+// machine's — a distro's 127.0.0.1 under NAT doesn't reach this machine's
+// proxy, and the Library offers the lane to this machine's agy alone.
+func agyBase(gw string, distro bool) string {
+	if !distro {
+		if p := agyThroughPrefix(); p != "" {
+			return p + gw
+		}
+	}
+	return gw
+}
+
+// AgyThrough points magpie's launch of agy (a, agy on this machine) at the
+// gateway behind prefix, an address a local proxy takes the gateway's
+// after (billion-context's http://127.0.0.1:8787/bili/), "" for the
+// gateway itself. agy takes its endpoint and key from its environment
+// alone (no file of its own carries them), so the prefix rides the launch
+// — AgyLaunch, Start, the shell functions' `magpie agy run` — and is kept
+// in magpie's config folder, not in agy's. agy must be on magpie already.
+func AgyThrough(a *Agent, prefix string) error {
+	if a == nil || a.ID != "agy" || a.through == nil {
+		return fmt.Errorf("not Antigravity CLI")
+	}
+	return a.through(prefix)
+}
+
+// AgyURL is the GOOGLE_GEMINI_BASE_URL magpie's launch of agy carries (a,
+// agy on this machine), "" while agy isn't on magpie's models. The Library
+// reads it to say whether the launch goes behind its local proxy's prefix.
+func AgyURL(a *Agent) string {
+	if a == nil || a.ID != "agy" || a.WSL != "" {
+		return ""
+	}
+	over := filepath.Join(filepath.Dir(a.Path), agyOverride)
+	m := jsonGet(over, "model")()
+	if !usesMagpie(m) {
+		m = jsonGet(a.Path, "model")()
+	}
+	if !usesMagpie(m) {
+		return ""
+	}
+	return agyBase(gateway.URL(), false)
+}
 
 // agySettingsFile is magpie's settings file for agy on this machine.
 func agySettingsFile() string {
@@ -358,7 +442,16 @@ func agyIn(at place) *Agent {
 		}
 		return agyLaunchAt(gw(), key(), strings.TrimRight(filepath.ToSlash(home), "/")+"/.gemini/antigravity-cli/"+agyOverride, model, false)
 	}
-	return &Agent{
+	// through puts the launch behind a local proxy's prefix (AgyThrough),
+	// kept in magpie's config folder; only this machine's agy. A distro's
+	// 127.0.0.1 under NAT doesn't reach this machine's proxy.
+	through := func(prefix string) error {
+		if prefix != "" && !usesMagpie(get()) {
+			return errors.New("connect Antigravity CLI to magpie first: pick one of magpie's models for it on the Agents page")
+		}
+		return agyThroughSet(prefix)
+	}
+	ag := &Agent{
 		ID: "agy", Name: "Antigravity CLI", Icon: "antigravity-color", Aliases: []string{"antigravity-cli"}, Spelled: prefixed, NoNames: true,
 		Bin: "agy", Dir: dir, Path: path,
 		Launch: func() string {
@@ -376,7 +469,7 @@ func agyIn(at place) *Agent {
 		Start: func() Starting {
 			s := Starting{Bin: "agy", Flag: "--model", Plain: agyPlain}
 			if v := overModel(); usesMagpie(v) {
-				s.Env, s.Model = []string{"GEMINI_API_KEY=" + key(), "GOOGLE_GEMINI_BASE_URL=" + gw()}, v
+				s.Env, s.Model = []string{"GEMINI_API_KEY=" + key(), "GOOGLE_GEMINI_BASE_URL=" + agyBase(gw(), distro)}, v
 				s.Args = []string{"--settings", at.native(over)}
 			}
 			return s
@@ -487,6 +580,10 @@ func agyIn(at place) *Agent {
 			},
 		}, agyEffortField(func() bool { return !at.cold && usesMagpie(get()) })}, agyFastTools(at)...),
 	}
+	if !distro {
+		ag.through = through
+	}
+	return ag
 }
 
 // agyFastToolsExe is the magpie the fast-tools plugin starts; a var for

@@ -158,6 +158,13 @@ func biliOnFor(t *testing.T) map[string]bool {
 	return m
 }
 
+// agyThroughMark is the file of magpie's that keeps the prefix agy's
+// launch goes behind (AgyThrough): agy has no file of its own for it.
+func agyThroughMark(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(appdir.Config(), "agy-through.json")
+}
+
 // TestBiliOnOffExact: switched on then off, an agent's files are as they
 // were byte for byte — bili's remove leaves Pi "packages": [] and its
 // .bili-bak and .bili-last beside each file — and Claude Code's command
@@ -665,6 +672,104 @@ func TestBiliDshThroughPrefix(t *testing.T) {
 	}
 	if len(filter(f.runs, "plugin install", "plugin remove")) != 0 {
 		t.Fatalf("ran %v", f.runs)
+	}
+}
+
+// TestBiliAgyThroughPrefix: agy has no plugin of bili's and no file of its
+// own that carries magpie's address, which it takes from its environment
+// alone, so its lane is magpie's launch itself: switched on, bili start
+// answers and the launch and the row's command carry the /bili/ prefix
+// before the gateway (a gateway port change moves the address behind it,
+// not the prefix in front of it twice); off, they are on the gateway again
+// and magpie's bili start ends. bili's plugin installer never runs for it,
+// and agy's own settings.json and magpie's settings file beside it are
+// untouched either way.
+func TestBiliAgyThroughPrefix(t *testing.T) {
+	h := sandbox(t)
+	f := newFakeBili(t, h)
+	holdCLI(t, h, "agy")
+	path := filepath.Join(h, ".gemini", "antigravity-cli", "settings.json")
+	write(t, path, "{\n  \"model\": \"mine\",\n  \"customModelsConfig\": {\"customModels\": {\"mine\": {\"apiProvider\": \"API_PROVIDER_GOOGLE_GEMINI\", \"modelName\": \"gemini-3-pro\"}}}\n}\n")
+	over := filepath.Join(filepath.Dir(path), "magpie-settings.json")
+	gw := gateway.URL()
+	write(t, over, `{"modelProvider":"gemini","model":"magpie/deepseek/pro","customModelsConfig":{"customModels":{"magpie/deepseek/pro":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI","modelName":"pro"}}}}`)
+
+	serving, served, stopped := false, 0, 0
+	was := []any{biliServe, biliStop, biliServing}
+	biliServe = func(string) error { served++; serving = true; return nil }
+	biliStop = func() { stopped++; serving = false }
+	biliServing = func() bool { return serving }
+	t.Cleanup(func() {
+		biliServe = was[0].(func(string) error)
+		biliStop = was[1].(func())
+		biliServing = was[2].(func() bool)
+	})
+
+	if on, ok := biliOnFor(t)["agy"]; !ok || on {
+		t.Fatalf("agy offered %v, on %v", ok, on)
+	}
+	settings, overWas := read(t, path), read(t, over)
+	v, err := SetBili("agy", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(v.Restart, []string{"agy"}) || v.Backup == "" {
+		t.Fatalf("restart %v, backup %q", v.Restart, v.Backup)
+	}
+	if !strings.Contains(read(t, agyThroughMark(t)), biliPrefix) || served != 1 {
+		t.Fatalf("served %d, mark:\n%s", served, read(t, agyThroughMark(t)))
+	}
+	a, err := agent.Find("agy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := a.Launch(); !strings.Contains(l, biliPrefix+gw) || strings.Count(l, "/bili/") != 1 {
+		t.Fatalf("launch: %q", l)
+	}
+	if s := a.Start(); !slices.Contains(s.Env, "GOOGLE_GEMINI_BASE_URL="+biliPrefix+gw) {
+		t.Fatalf("agy run env: %v", s.Env)
+	}
+	if !biliOnFor(t)["agy"] {
+		t.Fatal("agy isn't shown on")
+	}
+	// magpie restarted, bili start isn't answering: it's started again
+	serving = false
+	keepBiliServe(context.Background())
+	if served != 2 {
+		t.Fatalf("bili start run %d times, want 2", served)
+	}
+	// a gateway port change moves the address behind the prefix, and puts
+	// the prefix there once
+	t.Setenv("MAGPIE_ADDR", "127.0.0.1:4321")
+	if l := a.Launch(); !strings.Contains(l, biliPrefix+"http://127.0.0.1:4321") || strings.Count(l, "/bili/") != 1 {
+		t.Fatalf("launch at the new port: %q", l)
+	}
+	if s := a.Start(); !slices.Contains(s.Env, "GOOGLE_GEMINI_BASE_URL="+biliPrefix+"http://127.0.0.1:4321") {
+		t.Fatalf("agy run env at the new port: %v", s.Env)
+	}
+	t.Setenv("MAGPIE_ADDR", "")
+	if _, err := SetBili("agy", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(agyThroughMark(t)); !os.IsNotExist(err) {
+		t.Fatalf("mark left: %v", err)
+	}
+	if l := a.Launch(); !strings.Contains(l, gw) || strings.Contains(l, biliPrefix) {
+		t.Fatalf("launch off: %q", l)
+	}
+	if s := a.Start(); !slices.Contains(s.Env, "GOOGLE_GEMINI_BASE_URL="+gw) {
+		t.Fatalf("agy run env off: %v", s.Env)
+	}
+	if stopped != 1 || biliOnFor(t)["agy"] {
+		t.Fatalf("stopped %d", stopped)
+	}
+	if read(t, path) != settings || read(t, over) != overWas {
+		t.Fatal("agy's settings changed")
+	}
+	// off, nothing starts it
+	keepBiliServe(context.Background())
+	if served != 2 || len(filter(f.runs, "plugin install", "plugin remove")) != 0 {
+		t.Fatalf("served %d, ran %v", served, f.runs)
 	}
 }
 

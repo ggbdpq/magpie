@@ -2077,7 +2077,7 @@ magpie.plugin("library", (ctx) => {
       row.append(sw);
       list.append(row);
     }
-    if (!rows.length) list.append(el("div", "lib-none", t("None of your agents can use billion-context with magpie: Pi, omp, OpenCode, Claude Code, Hermes, DeepSeek Harness or Zed.")));
+    if (!rows.length) list.append(el("div", "lib-none", t("None of your agents can use billion-context with magpie: Pi, omp, OpenCode, Claude Code, Hermes, DeepSeek Harness, Zed or Antigravity CLI.")));
     body.append(list);
     if (bili.path && biliSet?.path) biliSettings(body);
   }

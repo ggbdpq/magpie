@@ -74,6 +74,16 @@ var biliURLLanes = map[string]biliURLLane{
 		on:  func(a *agent.Agent) bool { return strings.HasPrefix(agent.DshURL(a), biliPrefix) },
 		set: agent.DshThrough,
 	},
+	// agy has no plugin of bili's either, and its lane is not a file: it
+	// takes its endpoint and key from its environment alone, which magpie's
+	// launch hands it, so the prefix rides the launch itself (AgyURL is what
+	// the launch and the row's command carry, AgyThrough puts it there).
+	// bili's own Antigravity launcher (bili antigravity) rides CLOUD_CODE_URL
+	// and never sees magpie's traffic.
+	"agy": {
+		on:  func(a *agent.Agent) bool { return strings.HasPrefix(agent.AgyURL(a), biliPrefix) },
+		set: agent.AgyThrough,
+	},
 }
 
 // biliServing says bili start answers at biliOrigin: its health is

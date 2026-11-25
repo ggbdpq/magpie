@@ -42,7 +42,9 @@ import (
 // Zed has no plugin of bili's, and Hermes' and dsh's ride proxy settings of
 // the agent's process, which magpie's http://127.0.0.1 provider never takes:
 // their magpie provider goes through bili's /bili/ prefix with bili start answering there
-// (biliURLLanes, bili_url.go).
+// (biliURLLanes, bili_url.go). agy has no file that carries the address,
+// which it takes from its environment alone: its lane is magpie's launch
+// itself, behind the same prefix (there too).
 //
 // bili's remove doesn't put a file back as it was: it leaves "packages": []
 // in Pi's settings.json and "extensions:" in omp's config.yml, and after

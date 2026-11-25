@@ -47,6 +47,12 @@ type version struct {
 	// a GET sent with If-None-Match 500 (#4993) — so no read asks it with
 	// one again; the ETag stays, for the write to go over
 	NoCondRead bool `json:"noCondRead,omitempty"`
+	// PropETag: the server's GET ETag is not the one its PUT If-Match checks
+	// (OpenList proxying an upstream WebDAV passes the upstream's ETag on GET
+	// while checking its own PROPFIND getetag on PUT, #7651). Reads ask
+	// PROPFIND Depth 0 before GET so If-Match uses the server's own tag without
+	// racing a concurrent write.
+	PropETag bool `json:"propETag,omitempty"`
 }
 
 // conditions are the headers that ask for the file only when it isn't v.
@@ -153,6 +159,14 @@ type dav struct {
 	// on it (#4993), so no read of it is sent with one again, this run —
 	// and the version says so, for the runs after
 	noCondRead bool
+	// propETag: this server's PUT If-Match checks PROPFIND's getetag rather
+	// than GET's ETag (#7651); rides on every version returned so later syncs
+	// ask PROPFIND Depth 0 before GET.
+	propETag bool
+	// readSum is the SHA-256 of the bytes this dav last read in get, and
+	// readFromProp is whether that read's ETag already came from PROPFIND.
+	readSum      string
+	readFromProp bool
 }
 
 func newDAV(c Config) (*dav, error) {
@@ -286,10 +300,29 @@ func (d *dav) there(ctx context.Context, u string) bool {
 // W/"…"; either never matches the file in an If-Match, so every write after
 // such a read was refused as changed meanwhile (#1362).
 func (d *dav) get(ctx context.Context, have version) (data []byte, v version, err error) {
+	d.readSum, d.readFromProp = "", false
 	if have.NoCondRead {
 		d.noCondRead = true
 	}
-	cond := have.conditions()
+	if have.PropETag {
+		d.propETag = true
+	}
+	var pe string
+	if d.propETag {
+		if pe, err = d.propfindETag(ctx, d.url(folder, file)); err != nil {
+			return nil, version{}, err
+		}
+		// A strong PROPFIND getetag matching have.ETag tells us the file is
+		// unchanged without downloading it (GET If-None-Match would compare
+		// against the upstream's ETag instead of PROPFIND's).
+		if pe != "" && !strings.HasPrefix(pe, "W/") && have.ETag != "" && pe == have.ETag {
+			return nil, have, errNotModified
+		}
+	}
+	var cond map[string]string
+	if !d.propETag {
+		cond = have.conditions()
+	}
 	h := map[string]string{"Accept-Encoding": "identity"}
 	for k, v := range cond {
 		h[k] = v
@@ -353,7 +386,13 @@ func (d *dav) get(ctx context.Context, have version) (data []byte, v version, er
 	// the marking rides on every version read here, so the next sync
 	// doesn't ask this server with a condition again
 	v = versionOf(res.Header)
+	if pe != "" {
+		v.ETag, v.Modified = pe, ""
+	}
 	v.NoCondRead = d.noCondRead
+	v.PropETag = d.propETag
+	d.readSum = sum(data)
+	d.readFromProp = pe != ""
 	return data, v, nil
 }
 
@@ -367,6 +406,7 @@ func (d *dav) put(ctx context.Context, data []byte, etag string) (version, error
 	if etag != "" {
 		h["If-Match"] = etag
 	}
+	probed, usedProp := false, false
 	for try, writes := 0, 0; ; try++ {
 		res, err := d.send(ctx, http.MethodPut, d.url(folder, file), data, h)
 		if err != nil {
@@ -375,16 +415,25 @@ func (d *dav) put(ctx context.Context, data []byte, etag string) (version, error
 		res.Body.Close()
 		switch {
 		case res.StatusCode >= 200 && res.StatusCode < 300:
+			if usedProp {
+				d.propETag = true
+			}
 			writes++
 			he, cerr := d.check(ctx, d.url(folder, file), file, len(data))
 			if cerr != nil {
 				if writes < 3 {
 					// the half file is a new version: the retry matches
-					// it — the ETag the PUT answered, else the one the
-					// check read; with neither, the old one goes, for it
-					// can't hold any more
+					// it — the ETag the PUT answered, else PROPFIND's when
+					// this server checks that, else the one the check read;
+					// with none, the old one goes, for it can't hold any more
 					if e := res.Header.Get("ETag"); e != "" {
 						h["If-Match"] = e
+					} else if d.propETag {
+						if pe, _ := d.propfindETag(ctx, d.url(folder, file)); pe != "" {
+							h["If-Match"] = pe
+						} else {
+							delete(h, "If-Match")
+						}
 					} else if he != "" {
 						h["If-Match"] = he
 					} else {
@@ -395,11 +444,23 @@ func (d *dav) put(ctx context.Context, data []byte, etag string) (version, error
 				return version{}, cerr
 			}
 			// an ETag said here is the version written; with none, the
-			// next sync reads the file in full, as before. noCondRead
-			// rides along: it is the server's, not the version's, and the
-			// write's version is the one the next sync reads with
-			return version{ETag: res.Header.Get("ETag"), NoCondRead: d.noCondRead}, nil
+			// next sync reads the file in full, as before. noCondRead and
+			// propETag ride along: they are the server's, not the version's,
+			// and the write's version is the one the next sync reads with
+			return version{ETag: res.Header.Get("ETag"), NoCondRead: d.noCondRead, PropETag: d.propETag}, nil
 		case res.StatusCode == http.StatusPreconditionFailed:
+			if !probed && !d.readFromProp && etag != "" && d.readSum != "" {
+				probed = true
+				pe, ok, err := d.mismatchETag(ctx, etag)
+				if err != nil {
+					return version{}, err
+				}
+				if ok {
+					h["If-Match"] = pe
+					usedProp = true
+					continue
+				}
+			}
 			return version{}, errChanged
 		case res.StatusCode == http.StatusForbidden && (try > 0 || d.there(ctx, d.url(folder)+"/")):
 			return version{}, d.forbidden(ctx)
@@ -479,6 +540,87 @@ func (d *dav) length(ctx context.Context, u string) (int64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// propfindETag is the file at u's getetag from PROPFIND (Depth 0); "" when
+// the server doesn't answer 207 or gives no valid getetag. Transport errors
+// other than auth, rate-limit or context cancellation are treated as unknown
+// so a server that rejects PROPFIND falls back cleanly.
+func (d *dav) propfindETag(ctx context.Context, u string) (string, error) {
+	res, err := d.send(ctx, "PROPFIND", u, nil, map[string]string{"Depth": "0"})
+	if err != nil {
+		var rl *rateLimited
+		if errors.Is(err, errLogin) || errors.As(err, &rl) || ctx.Err() != nil {
+			return "", err
+		}
+		return "", nil
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusMultiStatus {
+		return "", nil
+	}
+	return parsePropETag(res.Body), nil
+}
+
+// parsePropETag extracts the first non-empty getetag from a 200 OK propstat
+// in a WebDAV 207 Multi-Status response; "" on malformed XML or missing tag.
+func parsePropETag(r io.Reader) string {
+	var ms struct {
+		Responses []struct {
+			Propstats []struct {
+				ETag   string `xml:"prop>getetag"`
+				Status string `xml:"status"`
+			} `xml:"propstat"`
+		} `xml:"response"`
+	}
+	if xml.NewDecoder(io.LimitReader(r, 1<<20)).Decode(&ms) != nil {
+		return ""
+	}
+	for _, resp := range ms.Responses {
+		for _, ps := range resp.Propstats {
+			if fields := strings.Fields(ps.Status); len(fields) >= 2 && fields[1] != "200" {
+				continue
+			}
+			if e := strings.TrimSpace(ps.ETag); e != "" {
+				return e
+			}
+		}
+	}
+	return ""
+}
+
+// mismatchETag checks after a 412 whether the server returned a different
+// ETag on GET than the PROPFIND getetag it enforces on PUT (OpenList
+// proxying an upstream WebDAV, #7651). PROPFIND runs before the verifying
+// GET so that any concurrent write before, during or after the check still
+// mismatches either the content hash or the retry's If-Match.
+func (d *dav) mismatchETag(ctx context.Context, etag string) (string, bool, error) {
+	u := d.url(folder, file)
+	pe, err := d.propfindETag(ctx, u)
+	if err != nil || pe == "" || pe == etag {
+		return "", false, err
+	}
+	res, err := d.send(ctx, http.MethodGet, u, nil, map[string]string{"Accept-Encoding": "identity"})
+	if err != nil {
+		var rl *rateLimited
+		if errors.Is(err, errLogin) || errors.As(err, &rl) || ctx.Err() != nil {
+			return "", false, err
+		}
+		return "", false, nil
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK || res.Header.Get("ETag") != etag {
+		return "", false, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(res.Body, 64<<20))
+	if err != nil {
+		return "", false, nil
+	}
+	data, err = unpacked("WebDAV", data, res.Header.Get("Content-Encoding"))
+	if err != nil || sum(data) != d.readSum {
+		return "", false, nil
+	}
+	return pe, true, nil
 }
 
 func (d *dav) mkcol(ctx context.Context) error {

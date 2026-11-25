@@ -820,6 +820,7 @@ func syncNow(ctx context.Context, force bool, expect string) error {
 	}
 	err = syncOnce(ctx, c, &st, nil)
 	if errors.Is(err, errChanged) { // another computer got in between: again, over its version
+		st.Server.ETag, st.Server.Modified = "", ""
 		err = syncOnce(ctx, c, &st, nil)
 	}
 	st.Error, st.File = "", nil

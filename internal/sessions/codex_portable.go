@@ -78,6 +78,12 @@ import (
 // One that does is left for a later pass. A Codex home without
 // thread-writer-locks (a Codex from before them) is left alone, as there
 // is no telling whether a Codex is writing there.
+//
+// Lines the first port (4896fc3ba, before 67b12956a) rewrote are put
+// back at the length they had (unportLengths, once): it wrote a line
+// short or long by the item it stood for, and every byte place Codex
+// keeps past it — a fork's or a revert's history_base, the state
+// database's turns — names the layout the line had.
 
 // codexPortState is what PortCodexRollouts keeps between passes, per
 // Codex home: when its last whole pass began, and the rollouts it had to
@@ -97,6 +103,11 @@ type codexPortHome struct {
 	// out of replacement_history, which earlier passes left as they were
 	// and never looked at again
 	Refit bool `json:"refit,omitempty"`
+	// Unport: a whole pass was made since lines the first port
+	// (4896fc3ba, before 67b12956a) wrote at a wrong length are put back
+	// at the length they had (unportLengths), which earlier passes left
+	// as they were and never looked at again
+	Unport bool `json:"unport,omitempty"`
 }
 
 // codexPortFirst is the first day magpie wrote a compaction item of its
@@ -122,6 +133,7 @@ func codexPortPath() string { return filepath.Join(settings.Dir(), "codex-portab
 type CodexPort struct {
 	Rewritten []string // rollouts written portable
 	Held      []string // rollouts with magpie's item a Codex holds, left for a later pass
+	Restored  []string // rollouts with a line the first port wrote at a wrong length put back (unportLengths)
 	Repaired  []string // forks whose place in their parent was set again (repairLineages)
 	Done      bool     // every rollout due was looked at
 }
@@ -227,11 +239,45 @@ func portCodexRollouts(ctx context.Context, home string, left bool) (CodexPort, 
 			break
 		}
 	}
-	now := codexPortHome{Since: was.Since, Pending: pending, Lineage: was.Lineage, Refit: was.Refit}
-	if res.Done && !was.Lineage {
+	// lines the first port wrote at a wrong length go back at the length
+	// they had, before the forks are set again, so they are set to where
+	// the parent's lines end at their length
+	unportRan, unportWhole, lineageWhole := false, false, false
+	var restored []string
+	if res.Done && !was.Unport {
+		fixed, whole := unportLengths(ctx, home)
+		res.Restored, restored, unportRan, unportWhole = fixed, fixed, true, whole
+	}
+	if res.Done && (!was.Lineage || len(restored) > 0) {
 		fixed, whole := repairLineages(ctx, home)
-		res.Repaired = fixed
-		now.Lineage = whole
+		res.Repaired, lineageWhole = fixed, whole
+	}
+	// a line put back as the item it was holds magpie1: again, so it is
+	// ported once more, now at the line's length (fitLine); one a Codex
+	// holds, or one that went wrong, is due again the next pass
+	for i, p := range restored {
+		if ctx.Err() != nil {
+			pending = append(pending, restored[i:]...)
+			break
+		}
+		changed, err := portRollout(ctx, home, p, left)
+		switch {
+		case errors.Is(err, errRolloutHeld):
+			res.Held = append(res.Held, p)
+			pending = append(pending, p)
+		case err != nil:
+			log.Printf("codex rollout %s: %v", p, err)
+			pending = append(pending, p)
+		case changed:
+			res.Rewritten = append(res.Rewritten, p)
+		}
+	}
+	now := codexPortHome{Since: was.Since, Pending: pending, Lineage: was.Lineage, Refit: was.Refit, Unport: was.Unport}
+	if unportRan {
+		now.Unport = unportWhole
+	}
+	if res.Done && (!was.Lineage || len(restored) > 0) {
+		now.Lineage = lineageWhole
 	}
 	if res.Done {
 		now.Since, now.Refit = start, true
@@ -599,6 +645,259 @@ func repairLineages(ctx context.Context, home string) (fixed []string, whole boo
 		}
 	}
 	return fixed, whole
+}
+
+// unportLengths puts every line the first port (4896fc3ba, before
+// 67b12956a) wrote at a wrong length back at the length the line had.
+// That port rewrote a compacted line whole, with magpie's item in its
+// replacement_history written as the summary message the gateway sends
+// for it, and kept no count of the bytes: a line whose summary was long
+// came out shorter than Codex wrote it, one whose summary was short came
+// out longer, and every byte place Codex keeps past it — a fork's or a
+// revert's history_base, the state database's turns — names the layout
+// the line had. What the port changed in a line is known from the line
+// itself, though: the summary is the message's, and the item's id is
+// cmp_ and the line's compaction_response_id without resp_ (the
+// gateway's codexCompact writes it so), so the item that was there is
+// known whole and the line's length with it. A line the message left
+// shorter is padded with spaces up to that length, which Codex's reader
+// skips (fitLine); a line it left longer, where the message is longer
+// than the item was, has the item written back in its place, as the port
+// now leaves such a line — a history whose latest compaction it is goes
+// through magpie again, and the line is ported once more at its length.
+// The forks are set again after (repairLineages).
+//
+// A rollout with a line that can't be measured — a ported item alone in
+// its line, whose id is nowhere in it, a reasoning item the first port
+// stripped its sealed content from, a compacted line naming two of
+// magpie's — is left as it is, and so is one Codex keeps no byte places
+// in (not paginated), where a line at any length reads the same.
+func unportLengths(ctx context.Context, home string) (fixed []string, whole bool) {
+	var all []string
+	for _, folder := range []string{"sessions", "archived_sessions"} {
+		filepath.WalkDir(filepath.Join(home, folder), func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !d.Type().IsRegular() {
+				return nil
+			}
+			if codexThreadOf(d.Name()) != "" {
+				all = append(all, p)
+			}
+			return nil
+		})
+	}
+	whole = true
+	for _, p := range all {
+		if ctx.Err() != nil {
+			return fixed, false
+		}
+		changed, err := unportRollout(ctx, home, p)
+		switch {
+		case errors.Is(err, errRolloutHeld):
+			whole = false // a Codex had it: looked at again the next pass
+		case err != nil:
+			whole = false
+			log.Printf("codex rollout %s: %v", p, err)
+		case changed:
+			fixed = append(fixed, p)
+		}
+	}
+	return fixed, whole
+}
+
+// unportRollout puts the lines of the rollout at path the first port
+// wrote at a wrong length back at their length, if it can measure each
+// one and no line of it says the rollout can't be measured whole. It
+// reads the rollout once to decide, and only then writes it
+// (editRollout): a line's fix is found by the line's number, which both
+// reads count the same, and a rollout written since it was read is not
+// published at all.
+func unportRollout(ctx context.Context, home, path string) (bool, error) {
+	bad := false
+	fixes := map[int][]byte{} // a line's number → the line at the length it had
+	n := 0
+	scan := func(line []byte, paged bool) ([]byte, bool) {
+		i := n
+		n++
+		if bad || !paged {
+			return line, false
+		}
+		fix, isBad := unportLine(line)
+		if isBad {
+			bad = true // a line that can't be measured: the rollout is left as it is
+		} else if fix != nil {
+			fixes[i] = fix
+		}
+		return line, false
+	}
+	if _, err := eachEditedLine(ctx, path, scan, nil); err != nil {
+		return false, err
+	}
+	if bad || len(fixes) == 0 {
+		return false, nil
+	}
+	return editRollout(ctx, home, path, func() func(line []byte, paged bool) ([]byte, bool) {
+		m := 0
+		return func(line []byte, paged bool) ([]byte, bool) {
+			i := m
+			m++
+			fix, ok := fixes[i]
+			if !ok {
+				return line, false
+			}
+			return fix, true
+		}
+	})
+}
+
+// magpieItemMark and claudeItemMark begin the encrypted_content of an
+// item the port has still to write (magpie's compaction item, a
+// reasoning item carrying Claude's block): a line holding one is the
+// port's to write, at the line's length now. A line's text may speak of
+// magpie1: and keep its bytes, so the marks are taken where an item's
+// encrypted_content begins, not anywhere in the line.
+var magpieItemMark = []byte(`"encrypted_content":"` + codexsummary.Mark)
+var claudeItemMark = []byte(`"encrypted_content":"` + claudeseal.Mark)
+
+// goEscaped is a byte sequence Go's encoder escapes in a string
+// wherever it writes one and Codex's (serde_json) keeps raw: U+2028 and
+// U+2029, which encoding/json escapes as \u2028 even with HTML escaping
+// off. A rest of line holding one is not the length the arithmetic
+// below measures it at.
+var goEscaped = [][]byte{{0xE2, 0x80, 0xA8}, {0xE2, 0x80, 0xA9}}
+
+// codexForm says an item's raw bytes are as Codex wrote them: the
+// variant's name first (serde names it first), where the port's encoder
+// (Go's, which sorts an object's keys) puts type last but for keys no
+// item goes without. A line the port rewrote whole has every item in
+// its own key order.
+func codexForm(raw []byte) bool {
+	return bytes.HasPrefix(raw, []byte(`{"type":`))
+}
+
+// portedSummary is the summary in an item the first port wrote as
+// magpie's summary message: a user message in Go's own key order, with
+// no id, one input_text holding Codex's summary prefix, a newline and
+// the summary (codexsummary.UserMessage). ok is false for any other
+// item, Codex's own summary message among them: one it wrote itself has
+// its type first.
+func portedSummary(v gjson.Result) (summary string, ok bool) {
+	if !v.IsObject() || codexForm([]byte(v.Raw)) {
+		return "", false
+	}
+	if v.Get("type").String() != "message" || v.Get("role").String() != "user" || v.Get("id").Exists() {
+		return "", false
+	}
+	content := v.Get("content").Array()
+	if len(content) != 1 || content[0].Get("type").String() != "input_text" {
+		return "", false
+	}
+	text := content[0].Get("text").String()
+	if !strings.HasPrefix(text, codexsummary.Prefix+"\n") {
+		return "", false
+	}
+	return text[len(codexsummary.Prefix)+1:], true
+}
+
+// unportLine is a line of a paginated rollout put back at the length it
+// had when Codex wrote it, if what the first port changed in it can be
+// measured from the line: the item its message was written for, last in
+// replacement_history, whose id the line's compaction_response_id names.
+// bad is true for a line that can't be measured: the rollout it is in is
+// left as it is. A line with nothing of the first port's measuring in it,
+// and a line the port wrote itself at the length it had, are left as they
+// are (fix nil, bad false).
+func unportLine(line []byte) (fix []byte, bad bool) {
+	if bytes.Contains(line, magpieItemMark) || bytes.Contains(line, claudeItemMark) {
+		return nil, false // the port's to write, at the line's length (fitLine)
+	}
+	body := bytes.TrimRight(line, "\r\n")
+	if p := bytes.TrimRight(body, " "); len(p) != len(body) {
+		return nil, false // the port's own, written at the length it had
+	}
+	end := line[len(body):]
+	switch gjson.GetBytes(body, "type").String() {
+	case "response_item":
+		p := gjson.GetBytes(body, "payload")
+		if _, ok := portedSummary(p); ok {
+			return nil, true // an item alone in its line: its id is nowhere in it
+		}
+		if !codexForm([]byte(p.Raw)) && p.Get("type").String() == "reasoning" && !p.Get("encrypted_content").Exists() {
+			return nil, true // sealed content the first port took out: it is nowhere now
+		}
+		return nil, false
+	case "compacted":
+		h := gjson.GetBytes(body, "payload.replacement_history")
+		if !h.IsArray() || h.Index <= 0 {
+			return nil, false
+		}
+		if meta := gjson.GetBytes(body, "payload.replacement_history_metadata"); meta.IsArray() &&
+			len(meta.Array()) != len(h.Array()) {
+			return nil, true // an item left out of the list: what is left doesn't measure it
+		}
+		resp := gjson.GetBytes(body, "payload.compaction_response_id")
+		items, keyless, last := 0, false, -1
+		var start, stop int
+		var sum string
+		n, from := 0, 0
+		h.ForEach(func(_, v gjson.Result) bool {
+			i := strings.Index(h.Raw[from:], v.Raw)
+			if i < 0 {
+				return false
+			}
+			v.Index = h.Index + from + i
+			from += i + len(v.Raw)
+			n++
+			if !v.IsObject() || codexForm([]byte(v.Raw)) {
+				return true
+			}
+			if s, ok := portedSummary(v); ok {
+				items, last, start, stop, sum = items+1, n-1, v.Index, v.Index+len(v.Raw), s
+				return true
+			}
+			if v.Get("type").String() == "reasoning" && !v.Get("encrypted_content").Exists() {
+				keyless = true
+			}
+			return true
+		})
+		if keyless {
+			return nil, true // sealed content the first port took out of a reasoning item
+		}
+		if items == 0 {
+			return nil, false
+		}
+		if items > 1 {
+			return nil, true // two of magpie's in one line: the line's id names one of them, and not which
+		}
+		if last != n-1 {
+			return nil, true // not the line's own compaction item, going by where Codex puts it
+		}
+		if resp.Type != gjson.String || resp.String() == "" {
+			return nil, true // no id to measure the item by
+		}
+		item, err := json.Marshal(map[string]any{"type": "compaction",
+			"id":                "cmp_" + strings.TrimPrefix(resp.String(), "resp_"),
+			"encrypted_content": codexsummary.Encrypted(sum)})
+		if err != nil {
+			return nil, true
+		}
+		for _, esc := range goEscaped {
+			if bytes.Contains(body[:start], esc) || bytes.Contains(body[stop:], esc) {
+				return nil, true // the rest of the line is not at the length it is measured at
+			}
+		}
+		switch delta := len(item) - (stop - start); {
+		case delta == 0:
+			return nil, false // the message is as long as the item was: the line is at its length
+		case delta > 0:
+			return append(append(append([]byte{}, body...), bytes.Repeat([]byte{' '}, delta)...), end...), false
+		default:
+			out := append([]byte{}, body[:start]...)
+			out = append(out, item...)
+			out = append(out, body[stop:]...)
+			return append(out, end...), false
+		}
+	}
+	return nil, false
 }
 
 // codexRolloutID is the id a rollout's file name gives it: a later

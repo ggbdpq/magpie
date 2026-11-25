@@ -42,6 +42,9 @@ func portCodexHome(dir string, d time.Duration, left bool) {
 	if len(res.Rewritten) > 0 || len(res.Held) > 0 {
 		log.Printf("codex rollouts: %d written portable, %d left while a Codex has them open", len(res.Rewritten), len(res.Held))
 	}
+	if len(res.Restored) > 0 || len(res.Repaired) > 0 {
+		log.Printf("codex rollouts: %d put back at the length the first port left them off, %d forks set where their parent ends now", len(res.Restored), len(res.Repaired))
+	}
 }
 
 // PortCodexRollouts makes this machine's Codex rollouts portable, for up

@@ -696,3 +696,227 @@ func TestPortCodexRolloutsLeftKeepsItsOwnState(t *testing.T) {
 		t.Fatalf("not written: %s", got[0])
 	}
 }
+
+// mustPort is the port's rewrite of a line, which the fixtures here are
+// built from: what the first port wrote is what it still writes, unpadded.
+func mustPort(line string) string {
+	out, ok := portLine([]byte(line))
+	if !ok {
+		panic("fixture: the port doesn't take the line")
+	}
+	return string(out)
+}
+
+// unportOriginal is a Codex 0.164 rollout of a thread magpie compacted,
+// as Codex writes it: a paginated session_meta, a user message and the
+// compacted checkpoint holding magpie's item last in its
+// replacement_history, an ordinal on every line.
+func unportOriginal(summary string) []string {
+	enc := codexsummary.Encrypted(summary)
+	return []string{
+		`{"timestamp":"2026-10-20T07:05:20.118Z","type":"session_meta","ordinal":1,"payload":{"id":"` + portThread + `","timestamp":"2026-10-20T07:05:20.101Z","cwd":"/Users/me/w","originator":"codex_cli_rs","cli_version":"0.164.0","source":"cli","model_provider":"openai","history_mode":"paginated"}}`,
+		`{"timestamp":"2026-10-20T07:06:00.000Z","type":"response_item","ordinal":2,"payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the build"}]}}`,
+		`{"timestamp":"2026-10-20T07:40:02.553Z","type":"compacted","ordinal":3,"payload":{"message":"","replacement_history":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the build"}]},{"type":"compaction","id":"cmp_magpie_1761000002","encrypted_content":"` + enc + `"}],"replacement_history_metadata":[{"client_authored":true},{},{"compaction_model_hash":"h1"}],"window_number":2,"compaction_response_id":"resp_magpie_1761000002","latest_token_usage_record":{"input_tokens":182734,"output_tokens":1204}}}`,
+	}
+}
+
+// writeFork writes a fork's rollout of the thread, whose session_meta
+// names where the parent's history ends: at line 3's end, as Codex
+// recorded it when the parent was whole.
+func writeFork(t *testing.T, dir, parent string, at int) string {
+	t.Helper()
+	meta := `{"timestamp":"2026-10-20T16:00:00.000Z","type":"session_meta","payload":{"id":"0f0e0d0c-0b0a-0908-0700-665554433221","timestamp":"2026-10-20T16:00:00.000Z","cwd":"/Users/me/w","originator":"codex_cli_rs","cli_version":"0.164.0","source":"cli","model_provider":"openai","history_mode":"paginated","history_base":{"thread_id":"` + parent + `","end_byte_offset":` + strconv.Itoa(at) + `,"end_ordinal_exclusive":4}}}`
+	p := filepath.Join(dir, "rollout-2026-10-20T16-00-00-0f0e0d0c-0b0a-0908-0700-665554433221.jsonl")
+	if err := os.WriteFile(p, []byte(meta+"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// The lines the first port (4896fc3ba, before 67b12956a) wrote at a wrong
+// length go back at the length they had: the item the compacted line's
+// message was written for is measured from the line itself (the summary
+// in the message, the id from the line's compaction_response_id), so a
+// line the message left shorter is padded with spaces after its JSON and
+// one it left longer has the item written back, and every byte place
+// Codex keeps past it names a line end again — a fork's history_base,
+// which repairLineages set where the parent ended short, is set again to
+// where the parent ends at its length. A second pass has nothing to do.
+func TestUnportCodexRollouts(t *testing.T) {
+	summary := strings.Repeat("Progress on the build. ", 90) // the item's seal is base64, longer than the message
+	orig := unportOriginal(summary)
+	damaged, _ := portLine([]byte(orig[2]))
+	if bytes.Contains(damaged, []byte(codexsummary.Mark)) || !bytes.Contains(damaged, []byte(codexsummary.Prefix[:20])) {
+		t.Fatalf("the first port's line is %s", damaged)
+	}
+	whole := len(orig[0]) + len(orig[1]) + len(orig[2]) + 3
+	short := len(orig[0]) + len(orig[1]) + len(damaged) + 3
+	if short >= whole {
+		t.Fatalf("fixture: the ported line is not shorter: %d vs %d", short, whole)
+	}
+
+	for _, zst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "plain", true: "zst"}[zst], func(t *testing.T) {
+			home, path := portHome(t, []string{orig[0], orig[1], string(damaged)}, zst)
+			fork := writeFork(t, filepath.Dir(path), portThread, short)
+
+			res, err := PortCodexRollouts(context.Background(), home)
+			if err != nil || !res.Done || len(res.Repaired) != 1 {
+				t.Fatalf("pass: %+v, %v", res, err)
+			}
+			got := readRollout(t, path)
+			if len(got) != 3 || got[0] != orig[0] || got[1] != orig[1] {
+				t.Fatalf("lines: %d, first two kept: %v", len(got), len(got) == 3 && got[0] == orig[0] && got[1] == orig[1])
+			}
+			if len(got[2]) != len(orig[2]) {
+				t.Fatalf("line 3 is %d bytes, the length it had is %d", len(got[2]), len(orig[2]))
+			}
+			if !bytes.HasPrefix([]byte(got[2]), damaged) || !strings.HasSuffix(got[2], strings.Repeat(" ", len(orig[2])-len(damaged))) {
+				t.Errorf("line 3 is not the port's line padded: %.120s", got[2])
+			}
+			p := decode(t, got[2])["payload"].(map[string]any)
+			hist := p["replacement_history"].([]any)
+			want, _ := json.Marshal(codexsummary.UserMessage(codexsummary.Prefix + "\n" + summary))
+			var wantAny any
+			json.Unmarshal(want, &wantAny)
+			if len(hist) != 3 || !reflect.DeepEqual(hist[2], wantAny) || p["compaction_response_id"] != "resp_magpie_1761000002" {
+				t.Errorf("replacement_history %v", hist)
+			}
+			if b, _ := os.ReadFile(path); !zst && len(b) != whole {
+				t.Errorf("rollout is %d bytes, it was %d", len(b), whole)
+			}
+			if n := len(got[0]) + len(got[1]) + len(got[2]) + 3; n != whole {
+				t.Errorf("rollout's lines are %d bytes, they were %d", n, whole)
+			}
+			// the fork's place is where the parent's line 3 ends at its
+			// length again, which is what Codex recorded when it made it
+			fm := decode(t, readRollout(t, fork)[0])["payload"].(map[string]any)["history_base"].(map[string]any)
+			if fm["end_byte_offset"] != float64(whole) {
+				t.Errorf("fork's end_byte_offset is %v, want %d", fm["end_byte_offset"], whole)
+			}
+			// the pass is remembered, so the lines are not looked at again
+			var st struct {
+				Homes map[string]struct {
+					Unport bool `json:"unport"`
+				} `json:"homes"`
+			}
+			b, err := os.ReadFile(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "magpie", "codex-portable.json"))
+			if err != nil || json.Unmarshal(b, &st) != nil || !st.Homes[filepath.Clean(home)].Unport {
+				t.Errorf("the pass is not in the state: %s, %v", b, err)
+			}
+			// a second pass has nothing to do
+			before, _ := os.ReadFile(path)
+			if res, err := PortCodexRollouts(context.Background(), home); err != nil || len(res.Rewritten) != 0 || len(res.Repaired) != 0 {
+				t.Errorf("second pass: %+v, %v", res, err)
+			}
+			if after, _ := os.ReadFile(path); !bytes.Equal(after, before) {
+				t.Error("the second pass wrote the rollout")
+			}
+		})
+	}
+}
+
+// A line the first port left longer (a short summary: the message is
+// Codex's long prefix and the item's seal) has the item written back, and
+// that is ported again in the same pass, as the port now writes a line
+// too long for a paginated rollout: the summary under Codex's own short
+// heading, padded to the length the line had.
+func TestUnportCodexRolloutsPutsTheItemBack(t *testing.T) {
+	summary := strings.Repeat("ok. ", 25) // the item's seal is shorter than the message, and the summary fits under the short heading
+	orig := unportOriginal(summary)
+	damaged, _ := portLine([]byte(orig[2]))
+	if len(damaged) <= len(orig[2]) {
+		t.Fatalf("fixture: the ported line is not longer: %d vs %d", len(damaged), len(orig[2]))
+	}
+	home, path := portHome(t, []string{orig[0], orig[1], string(damaged)}, false)
+	res, err := PortCodexRollouts(context.Background(), home)
+	if err != nil || !res.Done || len(res.Rewritten) != 1 {
+		t.Fatalf("pass: %+v, %v", res, err)
+	}
+	got := readRollout(t, path)
+	if len(got[2]) != len(orig[2]) {
+		t.Fatalf("line 3 is %d bytes, the length it had is %d", len(got[2]), len(orig[2]))
+	}
+	if strings.Contains(got[2], codexsummary.Mark) {
+		t.Errorf("line 3 holds magpie's item: %s", got[2])
+	}
+	p := decode(t, got[2])["payload"].(map[string]any)
+	hist := p["replacement_history"].([]any)
+	want, _ := json.Marshal(codexsummary.UserMessage(shortHeading + "\n" + summary))
+	var wantAny any
+	json.Unmarshal(want, &wantAny)
+	if len(hist) != 3 || !reflect.DeepEqual(hist[2], wantAny) {
+		t.Errorf("replacement_history %v", hist)
+	}
+}
+
+// A rollout with a line that can't be measured is left as it is: a ported
+// item alone in its line (Codex 0.162 kept it there) has its id nowhere,
+// a reasoning item the first port stripped its sealed content from is not
+// kept anywhere either, two of magpie's in one compacted line name one id
+// between them, and a rollout Codex keeps no byte places in (not
+// paginated) reads the same at any length.
+func TestUnportCodexRolloutsLeavesWhatItCantMeasure(t *testing.T) {
+	summary := "Progress: done."
+	enc := codexsummary.Encrypted(summary)
+	alone := `{"timestamp":"2026-10-20T07:40:02.551Z","type":"response_item","ordinal":3,"payload":{"type":"compaction","id":"cmp_magpie_1761000002","encrypted_content":"` + enc + `"},"metadata":{"compaction_model_hash":"h1"}}`
+	sealed := claudeseal.Seal([]byte(`{"type":"thinking","thinking":"hm","signature":"sig"}`))
+	stripped := `{"timestamp":"2026-10-20T07:40:02.553Z","type":"compacted","ordinal":3,"payload":{"message":"","replacement_history":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>"}]},{"type":"reasoning","summary":[],"encrypted_content":"` + sealed + `"},{"type":"compaction","id":"cmp_magpie_1761000002","encrypted_content":"` + enc + `"}],"replacement_history_metadata":[{"client_authored":true},{},{"compaction_model_hash":"h1"}],"window_number":2,"compaction_response_id":"resp_magpie_1761000002"}}`
+	two := `{"timestamp":"2026-10-20T07:40:02.553Z","type":"compacted","ordinal":3,"payload":{"message":"","replacement_history":[{"type":"compaction","id":"cmp_magpie_1761000001","encrypted_content":"` + enc + `"},{"type":"compaction","id":"cmp_magpie_1761000002","encrypted_content":"` + enc + `"}],"replacement_history_metadata":[{},{}],"compaction_response_id":"resp_magpie_1761000002"}}`
+	for _, tc := range []struct {
+		name string
+		orig []string
+	}{
+		{"item alone in its line", []string{unportOriginal(summary)[0], unportOriginal(summary)[1], alone}},
+		{"Claude's block stripped", []string{unportOriginal(summary)[0], unportOriginal(summary)[1], stripped}},
+		{"two of magpie's in one line", []string{unportOriginal(summary)[0], unportOriginal(summary)[1], two}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var lines []string
+			for i, l := range tc.orig {
+				if i < 2 {
+					lines = append(lines, l)
+					continue
+				}
+				lines = append(lines, string(mustPort(l)))
+			}
+			home, path := portHome(t, lines, false)
+			before, _ := os.ReadFile(path)
+			if res, err := PortCodexRollouts(context.Background(), home); err != nil || len(res.Rewritten) != 0 {
+				t.Fatalf("pass: %+v, %v", res, err)
+			}
+			if after, _ := os.ReadFile(path); !bytes.Equal(after, before) {
+				t.Error("the rollout was written")
+			}
+		})
+	}
+	t.Run("not paginated", func(t *testing.T) {
+		orig := unportOriginal(summary)
+		legacy := strings.Replace(orig[0], `"history_mode":"paginated"`, `"history_mode":"legacy"`, 1)
+		home, path := portHome(t, []string{legacy, orig[1], mustPort(orig[2])}, false)
+		before, _ := os.ReadFile(path)
+		if res, err := PortCodexRollouts(context.Background(), home); err != nil || len(res.Rewritten) != 0 {
+			t.Fatalf("pass: %+v, %v", res, err)
+		}
+		if after, _ := os.ReadFile(path); !bytes.Equal(after, before) {
+			t.Error("the rollout was written")
+		}
+	})
+}
+
+// A line the port wrote at the length it had (fitLine pads it) is left as
+// it is, whether or not anything else in the rollout is due.
+func TestUnportCodexRolloutsLeavesThePortsOwn(t *testing.T) {
+	summary := strings.Repeat("Progress on the build. ", 90)
+	orig := unportOriginal(summary)
+	damaged, _ := portLine([]byte(orig[2]))
+	padded := string(damaged) + strings.Repeat(" ", len(orig[2])-len(damaged))
+	home, path := portHome(t, []string{orig[0], orig[1], padded}, false)
+	before, _ := os.ReadFile(path)
+	if res, err := PortCodexRollouts(context.Background(), home); err != nil || len(res.Rewritten) != 0 {
+		t.Fatalf("pass: %+v, %v", res, err)
+	}
+	if after, _ := os.ReadFile(path); !bytes.Equal(after, before) {
+		t.Error("the rollout was written")
+	}
+}

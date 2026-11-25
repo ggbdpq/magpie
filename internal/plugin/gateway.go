@@ -89,9 +89,12 @@ type GatewayContext struct {
 	Stream   bool   `json:"stream"`
 	Path     string `json:"path"`
 	Agent    string `json:"agent"`
-	Session  string `json:"session"`
-	Cwd      string `json:"cwd"`
-	Query    string `json:"query"`
+	// Session is the session the client declared: X-Magpie-Session, else
+	// one of the agent session headers (sessionOf), and "" when the
+	// request names none — magpie never invents one from the body.
+	Session string `json:"session"`
+	Cwd     string `json:"cwd"`
+	Query   string `json:"query"`
 	// Kind is "subagent" for a request an agent's subagent made, as the
 	// client says it (Claude Code's x-claude-code-agent-id, Codex's
 	// x-openai-subagent), and "" for any other: the main conversation,

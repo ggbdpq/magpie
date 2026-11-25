@@ -67,6 +67,20 @@ otherwise. It is read from each request's own headers and is the same in
 after a subagent in the same session is `""`. The prompt and tool history
 are never used to guess it.
 
+`session` is the session the client declared for itself: `X-Magpie-Session`
+when it names one, else one of the headers agents already send
+(`sessionOf` and `sessionHeaders` in `internal/gateway/gateway.go`;
+`TestSessionOfTheHookContext`), trimmed and capped at 128 bytes. It is
+`""` when the request names none — a generic OpenAI-compatible client that
+sends no session header — and magpie never invents one: body fields (`user`,
+`prompt_cache_key`, Anthropic's `metadata.user_id`) are not session ids, and
+the conversation id routing derives for affinity is not exposed here either.
+A hook that writes per-conversation state (capture) must treat `""` as the
+host having declared no session and degrade — recall without capture, or a
+notice asking the client to send `x-session-id` or `X-Magpie-Session` (#5192).
+It is read from each request's own headers and is the same in `onRequest`
+and that request's `onResponse`.
+
 `origin` is host-derived: `local` for a direct loopback request without
 forwarding headers or a named gateway key; `magpie-key` for the sharing key
 magpie made itself (`access.Identity.Default`: the key marked `lan`, the one

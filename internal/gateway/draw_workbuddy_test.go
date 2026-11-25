@@ -258,3 +258,32 @@ func TestWorkBuddyPluginDraws(t *testing.T) {
 		t.Fatalf("sent elsewhere: %v", err)
 	}
 }
+
+// Hunyuan's answer to a WorkBuddy plan in the mainland keeps its image at
+// Tencent COS's internal-only host, which resolves in the VPC alone: the
+// client can't get it, and magpie's own download can't either (#7725). The
+// URL's signature doesn't cover the host — the same path and query at the
+// public host serve the same bytes — so the answer's URL goes out at the
+// public host, bucket, path and query kept.
+func TestWorkBuddyCOSInternalURLIsAnsweredPublic(t *testing.T) {
+	const internal = "http://hunyuan-image-result-1258797970.cos-internal.ap-guangzhou.tencentcos.cn/text2image2/2026/11/25/a.png?sign=q-sign-algorithm%3Dsha1&x=y"
+	const public = "http://hunyuan-image-result-1258797970.cos.ap-guangzhou.myqcloud.com/text2image2/2026/11/25/a.png?sign=q-sign-algorithm%3Dsha1&x=y"
+	st := &wbStudio{models: wbHunyuanModels, answer: func(path string, body map[string]any) string {
+		return `{"code":0,"msg":"OK","requestId":"r1","data":{"created":1,"data":[{"url":"` + internal + `"}],"usage":{"input_tokens":10,"output_tokens":20}}}`
+	}}
+	p := wbSignedIn(t, "workbuddy", st)
+	if _, err := wbImageModelsOf(context.Background(), wbConfigClient, p, true); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	code, _, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"model":"workbuddy/hunyuan-image-v3.0-art","prompt":"a magpie","n":1}`)
+	if code != 200 {
+		t.Fatalf("%d %s", code, raw)
+	}
+	if strings.Contains(raw, "cos-internal") {
+		t.Fatalf("the answer carries the internal-only host: %s", raw)
+	}
+	if !strings.Contains(raw, `"url":"`+public+`"`) {
+		t.Fatalf("no %s in %s", public, raw)
+	}
+}

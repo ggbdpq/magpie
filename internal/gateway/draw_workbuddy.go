@@ -282,5 +282,43 @@ func (s *Server) drawWorkBuddy(ctx context.Context, p provider.Provider, model s
 			b = env.Data
 		}
 	}
-	return readImagesAnswer(p, url, b, code)
+	out, code, err := readImagesAnswer(p, url, b, code)
+	if err == nil {
+		for i, im := range out.Images {
+			if u := wbPublicImageURL(im.URL); u != im.URL {
+				out.Images[i].URL = u
+			}
+		}
+	}
+	return out, code, err
+}
+
+// wbPublicImageURL turns Tencent COS's internal-only host into the public
+// one, when the URL carries it: Hunyuan's answer to a WorkBuddy plan in
+// the mainland keeps its image at <bucket>.cos-internal.<region>.
+// tencentcos.cn, which resolves in the VPC alone, so the client can't get
+// it and magpie's own download can't either (#7725). The URL's signature
+// doesn't cover the host — the same path and query at the public host,
+// <bucket>.cos.<region>.myqcloud.com, serve the same bytes — so the host
+// is swapped and the rest kept. A URL without it goes as it is.
+func wbPublicImageURL(u string) string {
+	i := strings.Index(u, "://")
+	if i < 0 {
+		return u
+	}
+	rest := u[i+3:]
+	host := rest
+	if j := strings.IndexAny(rest, "/?#"); j >= 0 {
+		host = rest[:j]
+	}
+	const cosInternal, tencentcos = ".cos-internal.", ".tencentcos.cn"
+	k := strings.LastIndex(host, cosInternal)
+	if k < 0 || !strings.HasSuffix(host, tencentcos) {
+		return u
+	}
+	region := host[k+len(cosInternal) : len(host)-len(tencentcos)]
+	if region == "" || strings.Contains(region, ".") {
+		return u
+	}
+	return u[:i+3] + host[:k] + ".cos." + region + ".myqcloud.com" + rest[len(host):]
 }

@@ -1253,10 +1253,12 @@ func bring(b backup.Bundle, part string) error {
 		// the plugins the providers come from, added here; never taken
 		// away, and one that can't be added is said, not a failed sync
 		if b.Plugins != nil {
-			if _, failed := addPlugins(*b.Plugins); len(failed) > 0 {
-				for spec, err := range failed {
-					log.Printf("sync: plugin %s: %s", spec, err)
-				}
+			added, failed := addPlugins(*b.Plugins)
+			for spec, err := range failed {
+				log.Printf("sync: plugin %s: %s", spec, err)
+			}
+			for _, spec := range added {
+				log.Printf("sync: plugin %s added, as another computer has it", spec)
 			}
 		}
 		if b.Searches == nil { // from a magpie before them: the ones here stay
@@ -1461,8 +1463,9 @@ func syncOnce(ctx context.Context, c Config, st *state, pv *Plan) error {
 	rebuilt := false // a damaged server file replaced by this computer's merge
 	// push writes b over etag; were, as the parts on the server and here
 	// were before it, is kept when the write is blind
-	push := func(b backup.Bundle, etag string, were blind) error {
+	push := func(b backup.Bundle, etag string, were blind, stuck []string) error {
 		b.Created, b.App = time.Now().UTC(), "magpie"
+		pushPlugins(&b, stuck)
 		sealed, err := backup.Seal(b, c.Passphrase)
 		if err != nil {
 			return err
@@ -1491,7 +1494,7 @@ func syncOnce(ctx context.Context, c Config, st *state, pv *Plan) error {
 	}
 	if data == nil { // nothing there yet: this computer's setup is the first
 		// the parts not synced go as unset, never this computer's (only)
-		if err := push(c.only(local), "", blind{}); err != nil {
+		if err := push(c.only(local), "", blind{}, nil); err != nil {
 			return err
 		}
 		st.Own, st.Here = after, kept
@@ -1739,6 +1742,8 @@ func syncOnce(ctx context.Context, c Config, st *state, pv *Plan) error {
 		if err := removePlugin(name); err != nil {
 			log.Printf("sync: removing plugin %s, which another computer removed: %v", name, err)
 			stuck = append(stuck, name)
+		} else {
+			log.Printf("sync: plugin %s removed, as another computer removed it", name)
 		}
 	}
 	if gone := slices.Concat(goneHere, goneThere); len(gone) > 0 && merged.Plugins != nil {
@@ -1811,7 +1816,7 @@ func syncOnce(ctx context.Context, c Config, st *state, pv *Plan) error {
 	// A rebuild always writes back: the server's file is the damaged one,
 	// so even a merge that matches the cached copy must replace it.
 	if !c.FollowServer && (rebuilt || !maps.Equal(M, R)) {
-		if err := push(merged, etag, blind{Remote: R, Local: pending}); err != nil {
+		if err := push(merged, etag, blind{Remote: R, Local: pending}, stuck); err != nil {
 			return err
 		}
 	}
@@ -1853,6 +1858,39 @@ func pluginNames(es *[]plugin.Entry) []string {
 		out = append(out, plugin.Name(e.Spec))
 	}
 	return out
+}
+
+// pushPlugins reconciles the plugins a sync is about to push with what is
+// installed now, as plugins.json keeps them: the list in the bundle was
+// read when the sync started, and a plugin installed since (a reinstall
+// that was still running then) would go out missing, and the computers
+// applying it would take it away as one removed there (#6545). A list that
+// can't be read now is carried by no list, never as none installed: unknown
+// is not none. A removal this sync is spreading but couldn't do here yet
+// (stuck) isn't sent back in.
+func pushPlugins(b *backup.Bundle, stuck []string) {
+	if b.Plugins == nil {
+		return
+	}
+	keys := b.Keys || (b.ProvidersKeys != nil && *b.ProvidersKeys)
+	now, known := provider.CarriedKnown(keys)
+	if !known {
+		b.Plugins = nil
+		return
+	}
+	have := make(map[string]bool, len(*b.Plugins)+len(stuck))
+	for _, e := range *b.Plugins {
+		have[plugin.Name(e.Spec)] = true
+	}
+	for _, n := range stuck {
+		have[n] = true
+	}
+	for _, e := range now {
+		if n := plugin.Name(e.Spec); !have[n] {
+			have[n] = true
+			*b.Plugins = append(*b.Plugins, e)
+		}
+	}
 }
 
 // without is es less the plugins named.

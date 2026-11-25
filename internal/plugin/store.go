@@ -187,26 +187,33 @@ var pluginsList struct {
 	list List
 }
 
-// list is plugins.json, read now. What it gives is shared and must not be
-// changed; Load gives the mutable copy.
-func list() List {
+// listRead is plugins.json, read now, with whether it was read whole. What
+// it gives is shared and must not be changed; Load gives the mutable copy.
+func listRead() (List, bool) {
 	path := listPath()
 	// one a crash left all zero (#1505) is its last good generation: the
 	// plugins installed are unknown, never none
 	b, err := lastgood.Read(path, lastgood.JSON)
 	if err != nil {
 		// Do not cache read failures; a later call will read the file again.
-		return List{}
+		return List{}, false
 	}
 	pluginsList.Lock()
 	defer pluginsList.Unlock()
 	if pluginsList.path == path && bytes.Equal(pluginsList.raw, b) {
-		return pluginsList.list
+		return pluginsList.list, true
 	}
 	var l List
 	// Preserve partially decoded values on type errors, as Load has always done.
 	_ = json.Unmarshal(b, &l)
 	pluginsList.path, pluginsList.raw, pluginsList.list = path, b, l
+	return l, true
+}
+
+// list is plugins.json, read now: what is installed when it can't be read
+// is unknown, and Load has always carried none.
+func list() List {
+	l, _ := listRead()
 	return l
 }
 
@@ -216,6 +223,19 @@ func list() List {
 func Load() List {
 	l := list()
 	return List{Plugins: clonePlugins(l.Plugins), Config: cloneMap(l.Config), Prefer: maps.Clone(l.Prefer)}
+}
+
+// LoadKnown is Load with whether the plugins installed are known: plugins
+// json read whole. A file that can't be read leaves them unknown — never
+// none (#6545): a backup or a sync carrying a list it didn't read would
+// carry none installed, and the computers putting it back would take every
+// plugin away as one removed there.
+func LoadKnown() (List, bool) {
+	l, ok := listRead()
+	if !ok {
+		return List{}, false
+	}
+	return List{Plugins: clonePlugins(l.Plugins), Config: cloneMap(l.Config), Prefer: maps.Clone(l.Prefer)}, true
 }
 
 // clonePlugins copies the entries, their options with them.

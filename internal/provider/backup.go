@@ -152,8 +152,22 @@ func Mirror(ps []Provider, gs []Group) error {
 // this computer's alone, and a plugin's sign-ins (plugin-auth.json) stay
 // here, as a subscription's do.
 func Carried(keys bool) []plugin.Entry {
+	es, _ := CarriedKnown(keys)
+	return es
+}
+
+// CarriedKnown is Carried with whether the plugins installed are known:
+// plugins.json read whole. A file that couldn't be read leaves what is
+// installed unknown — never none (#6545): a backup or a sync carrying a
+// list it didn't read would carry none installed, and the computers
+// putting it back would take every plugin away as one removed there.
+func CarriedKnown(keys bool) ([]plugin.Entry, bool) {
+	l, known := plugin.LoadKnown()
+	if !known {
+		return nil, false
+	}
 	var out []plugin.Entry
-	for _, e := range plugin.Load().Plugins {
+	for _, e := range l.Plugins {
 		if plugin.IsPath(e.Spec) {
 			continue
 		}
@@ -162,7 +176,7 @@ func Carried(keys bool) []plugin.Entry {
 		}
 		out = append(out, e)
 	}
-	return out
+	return out, true
 }
 
 // withoutSecretOptions is opts without the values whose names look like a

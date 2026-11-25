@@ -36,6 +36,7 @@ type ProjectExport struct {
 	// gives the choices to the folder it's told
 	Dir           string              `json:"dir,omitempty"`
 	Copy          bool                `json:"copy,omitempty"`
+	MainOnly      bool                `json:"mainOnly,omitempty"`
 	Skills        map[string][]string `json:"skills,omitempty"`
 	Servers       map[string][]string `json:"servers,omitempty"`
 	Subagents     map[string][]string `json:"subagents,omitempty"`
@@ -97,7 +98,7 @@ func ExportProject(dir string) (*ProjectExport, error) {
 		return nil, fmt.Errorf("no project %s", dir)
 	}
 	e := &ProjectExport{
-		Kind: ProjectExportKind, Version: 1, Dir: p.Dir, Copy: p.Copy,
+		Kind: ProjectExportKind, Version: 1, Dir: p.Dir, Copy: p.Copy, MainOnly: p.MainOnly,
 		Skills: maps.Clone(p.Skills), Servers: maps.Clone(p.Servers),
 		Subagents: maps.Clone(p.Subagents), Hooks: maps.Clone(p.Hooks),
 		Plugins: maps.Clone(p.Plugins), ClaudePlugins: slices.Clone(p.ClaudePlugins),
@@ -197,6 +198,19 @@ func ApplyProject(dir string, e *ProjectExport) (*ProjectApplied, error) {
 	if err != nil {
 		return nil, err
 	}
+	p := l.project(dir)
+	if p == nil {
+		return nil, fmt.Errorf("no project %s", dir)
+	}
+	// keep the project to its own checkout before any resource write or
+	// library sync touches its linked worktrees (#7682)
+	if e.MainOnly && !p.MainOnly {
+		res, err := ProjectMainOnly(dir, true)
+		if err != nil {
+			return nil, err
+		}
+		out.Res = append(out.Res, res)
+	}
 	// the hooks and subagents the export defines and this library lacks
 	for _, h := range e.Need.Hooks {
 		if l.hook(h.Name) != nil || h.Bundle != "" || h.Command == "" {
@@ -221,7 +235,7 @@ func ApplyProject(dir string, e *ProjectExport) (*ProjectApplied, error) {
 	if l, err = loadLocked(); err != nil {
 		return nil, err
 	}
-	p := l.project(dir)
+	p = l.project(dir)
 	if p == nil {
 		return nil, fmt.Errorf("no project %s", dir)
 	}

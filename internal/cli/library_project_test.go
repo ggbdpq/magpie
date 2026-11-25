@@ -593,3 +593,83 @@ func TestLibraryProjectPluginCmd(t *testing.T) {
 		t.Errorf("the file magpie made stayed:\n%s", read())
 	}
 }
+
+// #7682 (Arobotmaster): CLI export and apply preserve main-only on a fresh
+// destination with a linked worktree, and malformed/unreadable exports fail
+// without registering or touching the destination.
+func TestLibraryProjectExportApplyMainOnlyCmd(t *testing.T) {
+	_ = projectSandbox(t)
+	put := func(p, s string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	makeRepoWithWT := func(root, name string) (repo, wt string) {
+		t.Helper()
+		repo = filepath.Join(root, name)
+		put(filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n")
+		wt = filepath.Join(root, name+"-wt")
+		own := filepath.Join(repo, ".git", "worktrees", name+"-wt")
+		put(filepath.Join(wt, ".git"), "gitdir: "+own+"\n")
+		put(filepath.Join(own, "gitdir"), filepath.Join(wt, ".git")+"\n")
+		put(filepath.Join(own, "commondir"), "../..\n")
+		return repo, wt
+	}
+	must := func(args ...string) string {
+		t.Helper()
+		out, err := projectOut(t, args...)
+		if err != nil {
+			t.Fatalf("library project %v: %v\n%s", args, err, out)
+		}
+		return out
+	}
+
+	root := t.TempDir()
+	if p, err := filepath.EvalSymlinks(root); err == nil {
+		root = p
+	}
+	src, _ := makeRepoWithWT(root, "source")
+	dst, dstWT := makeRepoWithWT(root, "destination")
+	exportFile := filepath.Join(root, "project.json")
+
+	must("add", src)
+	must("main-only", src, "on")
+	must("skill", "add", src, "pdf", "agents=codex")
+	must("export", src, exportFile)
+
+	must("apply", exportFile, dst)
+	if !linkTo(t, filepath.Join(dst, ".agents", "skills", "pdf"), "pdf") {
+		t.Error("destination didn't get pdf")
+	}
+	if _, err := os.Lstat(filepath.Join(dstWT, ".agents", "skills", "pdf")); !os.IsNotExist(err) {
+		t.Errorf("linked worktree received pdf: %v", err)
+	}
+	var pv library.ProjectView
+	if err := json.Unmarshal([]byte(must("skills", dst, "--json")), &pv); err != nil {
+		t.Fatal(err)
+	}
+	if !pv.MainOnly || len(pv.Trees) != 0 {
+		t.Errorf("destination view: mainOnly=%v trees=%v", pv.MainOnly, pv.Trees)
+	}
+
+	// malformed or missing export fails without registering a fresh destination
+	badDst, badWT := makeRepoWithWT(root, "bad-dest")
+	badFile := filepath.Join(root, "bad.json")
+	put(badFile, `{"kind":"magpie-project","version":1,"mainOnly":"yes"}`)
+	if _, err := projectOut(t, "apply", badFile, badDst); err == nil {
+		t.Error("malformed mainOnly export was applied")
+	}
+	if _, err := projectOut(t, "apply", filepath.Join(root, "missing.json"), badDst); err == nil {
+		t.Error("missing export file was applied")
+	}
+	if at, err := library.ProjectAt(badDst); err != nil || at != "" {
+		t.Errorf("failed apply registered destination: at=%q err=%v", at, err)
+	}
+	if _, err := os.Lstat(filepath.Join(badWT, ".agents")); !os.IsNotExist(err) {
+		t.Errorf("failed apply touched worktree: %v", err)
+	}
+}

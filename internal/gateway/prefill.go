@@ -86,6 +86,50 @@ func (r *Request) userLast() *Request {
 	return &q
 }
 
+// geminiModelLastBody is a Gemini request relayed as it is, with a user
+// turn after its last content when that is the model's, as the
+// translation of one asks it (buildCodeAssistSent): every upstream of
+// Gemini's own shape turns contents ending with the model's turn away,
+// and one relayed goes out as it came (#7702). False when the body isn't
+// readable or doesn't end so. The turn is the user's side whatever role
+// it came under when it holds a function's response (parseGemini, #650),
+// and the translation makes it a user turn, so none goes after it here.
+func geminiModelLastBody(body []byte) ([]byte, bool) {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(body, &m) != nil {
+		return body, false
+	}
+	var contents []json.RawMessage
+	if json.Unmarshal(m["contents"], &contents) != nil || len(contents) == 0 {
+		return body, false
+	}
+	var last struct {
+		Role  string `json:"role"`
+		Parts []struct {
+			FunctionResponse json.RawMessage `json:"functionResponse"`
+		} `json:"parts"`
+	}
+	if json.Unmarshal(contents[len(contents)-1], &last) != nil || last.Role != "model" {
+		return body, false
+	}
+	for _, p := range last.Parts {
+		if p.FunctionResponse != nil {
+			return body, false
+		}
+	}
+	ask := continueText
+	if req, err := parseGemini(body); err == nil && compacting(req) {
+		ask = compactLastText
+	}
+	turn, _ := json.Marshal(map[string]any{"role": "user", "parts": []map[string]string{{"text": ask}}})
+	m["contents"], _ = json.Marshal(append(contents, turn))
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body, false
+	}
+	return out, true
+}
+
 // userLastBody is a Chat or Responses request relayed as it is, with a
 // user turn after its last message when that is the assistant's; false
 // when it isn't.

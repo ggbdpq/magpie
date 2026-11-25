@@ -7400,6 +7400,10 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		body = withoutFields(body, "stream")
 		// a signature another provider gave goes to none (ownSignatures)
 		body = geminiBodySignatures(body, p.ID, true)
+		// a conversation ending with the model's turn, which every
+		// upstream of Gemini's own shape turns away, is asked with a user
+		// turn after it, as the translation of one is (#7702)
+		body, _ = geminiModelLastBody(body)
 	case provider.Anthropic:
 		// what the client holds, taken before the upstream gets its own
 		// call ids back below, and those given back to it (tool_use_ids.go,

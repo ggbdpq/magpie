@@ -33,6 +33,7 @@ func geminiIn(at place) *Agent {
 	model := jsonGet(path, "model.name")
 	base := func() string { v, _ := edit.GetEnvFile(envPath, "GOOGLE_GEMINI_BASE_URL"); return v }
 	envKey := func() string { v, _ := edit.GetEnvFile(envPath, "GEMINI_API_KEY"); return v }
+	envModel := func() string { v, _ := edit.GetEnvFile(envPath, "GEMINI_MODEL"); return v }
 	// routed: the .env names the gateway, or names it at an address it
 	// no longer has (a WSL distro's under NAT changes as WSL restarts) with
 	// magpie's key: either way what is there is magpie's, never stashed as
@@ -76,6 +77,16 @@ func geminiIn(at place) *Agent {
 		} else if err := edit.DelJSON(path, "security.auth.selectedType"); err != nil {
 			return err
 		}
+		// GEMINI_MODEL goes back to what the .env said before magpie, or
+		// goes away: the CLI lets it beat model.name (#7699), so a stale
+		// one would start it on a model magpie never picked
+		if m := unstash(at.key("gemini.env_model")); m != "" {
+			if err := edit.SetEnvFile(envPath, edit.KV{Path: "GEMINI_MODEL", Value: m}); err != nil {
+				return err
+			}
+		} else if err := edit.DelEnvFile(envPath, "GEMINI_MODEL"); err != nil {
+			return err
+		}
 		if m := unstash(at.key("gemini.model")); m != "" {
 			return edit.SetJSON(path, edit.KV{Path: "model.name", Value: m})
 		}
@@ -84,8 +95,8 @@ func geminiIn(at place) *Agent {
 	setModel := func(v string) error {
 		if v == "" {
 			if routed() {
-				forget(at.key("gemini.base_url"), at.key("gemini.api_key"), at.key("gemini.auth"), at.key("gemini.model"))
-				if err := edit.DelEnvFile(envPath, "GOOGLE_GEMINI_BASE_URL", "GEMINI_API_KEY"); err != nil {
+				forget(at.key("gemini.base_url"), at.key("gemini.api_key"), at.key("gemini.auth"), at.key("gemini.model"), at.key("gemini.env_model"))
+				if err := edit.DelEnvFile(envPath, "GOOGLE_GEMINI_BASE_URL", "GEMINI_API_KEY", "GEMINI_MODEL"); err != nil {
 					return err
 				}
 				if err := edit.DelJSON(path, "security.auth.selectedType"); err != nil {
@@ -96,9 +107,9 @@ func geminiIn(at place) *Agent {
 		}
 		if isMagpie(v) {
 			if !routed() {
-				stash(map[string]string{at.key("gemini.base_url"): base(), at.key("gemini.api_key"): envKey(), at.key("gemini.auth"): auth(), at.key("gemini.model"): model()})
+				stash(map[string]string{at.key("gemini.base_url"): base(), at.key("gemini.api_key"): envKey(), at.key("gemini.auth"): auth(), at.key("gemini.model"): model(), at.key("gemini.env_model"): envModel()})
 			}
-			if err := edit.SetEnvFile(envPath, edit.KV{Path: "GOOGLE_GEMINI_BASE_URL", Value: at.gw()}, edit.KV{Path: "GEMINI_API_KEY", Value: at.gwKey()}); err != nil {
+			if err := edit.SetEnvFile(envPath, edit.KV{Path: "GOOGLE_GEMINI_BASE_URL", Value: at.gw()}, edit.KV{Path: "GEMINI_API_KEY", Value: at.gwKey()}, edit.KV{Path: "GEMINI_MODEL", Value: v}); err != nil {
 				return err
 			}
 			return edit.SetJSON(path, edit.KV{Path: "security.auth.selectedType", Value: "gemini-api-key"}, edit.KV{Path: "model.name", Value: v})
@@ -212,6 +223,12 @@ func geminiIn(at place) *Agent {
 			}
 			if a := auth(); a != "gemini-api-key" {
 				return "Gemini CLI signs in with " + orDefault(a) + " rather than magpie's key, so it asks Google directly"
+			}
+			// the CLI lets GEMINI_MODEL beat model.name (#7699): a .env
+			// connected before the pick was synced there, or edited by
+			// hand since, starts on another model
+			if m := envModel(); m != "" && m != model() {
+				return "Gemini CLI starts with GEMINI_MODEL=" + m + " from " + envPath + ", not the model picked here: pick the model again to put it in the .env, or take GEMINI_MODEL out of the file"
 			}
 			return ""
 		},

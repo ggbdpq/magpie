@@ -395,7 +395,13 @@ func writeRouter(dir, skills string, routed map[string]bool) (bool, map[string]s
 	b.WriteString("# The user's skills\n\n")
 	b.WriteString("Each skill below is a folder of instructions, and often scripts or templates, for one kind of task. ")
 	b.WriteString("When a task matches a skill's description, read that skill's SKILL.md at the exact path given before you start (it is there, so don't search for it), and follow it. ")
-	b.WriteString("A file or script a skill names is in that skill's own folder, beside its SKILL.md.\n\n")
+	b.WriteString("A file or script a skill names is in that skill's own folder, beside its SKILL.md. ")
+	// a skill whose instructions name another listed skill is followed by
+	// reading that skill's SKILL.md at its path here, not by calling the
+	// Skill tool for it (#7722: a listed skill has no Skill-tool entry —
+	// its /name is manual-only — so the call is refused and a composite
+	// skill ends)
+	b.WriteString("When a skill's instructions tell you to use another skill below, read that skill's SKILL.md at the path given here and follow it the same way — don't call the Skill tool for it, for none of the skills below is one the Skill tool can call.\n\n")
 	if slices.ContainsFunc(list, func(e entry) bool { return e.code }) {
 		fmt.Fprintf(&b, "A skill marked with code has a %s: magpie's MCP router runs it in its run_code tool as `skills.<name>(args)` (- as _), calling the router's tools, in one step. Its SKILL.md says which args it takes.\n\n", SkillCode)
 	}
@@ -472,7 +478,12 @@ func (l *Library) routerCommands(t *Target, routed map[string]bool, a *Applied, 
 				continue
 			}
 			at := routedAt(rdir, t.Skills, n)
-			body := routerCommand(n, at)
+			// where the router's own SKILL.md is read, through the agent's
+			// own folder: it names each listed skill's path, which a skill
+			// whose instructions name another of them sends the agent to
+			// (#7722)
+			listAt := filepath.Join(realDir(t.Skills), RouterSkill, "SKILL.md")
+			body := routerCommand(n, at, listAt)
 			if _, err := os.Lstat(path); err == nil && !had[path] {
 				// the user's own command by that name, unless it is what
 				// magpie would write
@@ -501,17 +512,21 @@ func routerCommandsDir(t *Target) string {
 	return filepath.Join(filepath.Dir(t.Settings), "commands")
 }
 
-// routerCommand is the slash command for the routed skill n, whose folder
-// is at.
-func routerCommand(n, at string) []byte {
+// routerCommand is the slash command for the routed skill n, whose own
+// SKILL.md is at and the router's list of the user's skills at listAt.
+func routerCommand(n, at, listAt string) []byte {
 	m, _ := readMeta(skillDir(n))
 	kv := [][2]string{}
 	if m.Description != "" {
 		kv = append(kv, [2]string{"description", yamlStr(m.Description)})
 	}
 	kv = append(kv, [2]string{"disable-model-invocation", "true"})
-	body := fmt.Sprintf("Use the user's skill %s: read `%s` and follow it. A file or script it names is in `%s`, beside it.\n\n$ARGUMENTS\n",
-		n, filepath.Join(at, "SKILL.md"), at)
+	body := fmt.Sprintf("Use the user's skill %s: read `%s` and follow it. A file or script it names is in `%s`, beside it. ", n, filepath.Join(at, "SKILL.md"), at)
+	// the same convention the router's SKILL.md body gives (#7722): a
+	// sibling the skill's instructions name is read at its path in
+	// magpie-skills, never through the Skill tool, whose list the routed
+	// skill isn't on and whose only entry by the name is this command
+	body += fmt.Sprintf("When its instructions tell you to use another skill of the user's, read that skill's SKILL.md at the path %s's SKILL.md (`%s`) gives for it, and follow it the same way — don't call the Skill tool for it, for none of the skills %s lists is one the Skill tool can call.\n\n$ARGUMENTS\n", RouterSkill, listAt, RouterSkill)
 	return frontmatter(kv, body)
 }
 
@@ -652,9 +667,10 @@ func dropStubs(t *Target, keep map[string]bool, res *Result) {
 const stubYAML = "policy:\n  allow_implicit_invocation: false\n"
 
 // stubText is the SKILL.md of the stub of the skill n, whose own SKILL.md
-// is at: its name, description and argument hint, for the user alone to
-// type, and where its instructions are.
-func stubText(n string, m meta, at string) string {
+// is at and the router's list of the user's skills at listAt: its name,
+// description and argument hint, for the user alone to type, and where
+// its instructions are.
+func stubText(n string, m meta, at, listAt string) string {
 	desc := m.Description
 	if desc == "" {
 		desc = n
@@ -668,7 +684,12 @@ func stubText(n string, m meta, at string) string {
 	}
 	b.WriteString("disable-model-invocation: true\n---\n\n")
 	fmt.Fprintf(&b, "The user called up the skill %s. Its instructions are in its SKILL.md at `%s`: read that file now, before anything else (it is there, so don't search for it), and follow it for this task. ", n, at)
-	b.WriteString("A file or script it names is in that skill's own folder, beside its SKILL.md.\n")
+	b.WriteString("A file or script it names is in that skill's own folder, beside its SKILL.md. ")
+	// the same convention the router's SKILL.md body gives (#7722): a
+	// sibling the skill's instructions name is read at its path in
+	// magpie-skills, never through the Skill tool, whose list the routed
+	// skill isn't on
+	fmt.Fprintf(&b, "When its instructions tell you to use another skill of the user's, read that skill's SKILL.md at the path %s's SKILL.md (`%s`) gives for it, and follow it the same way — don't call the Skill tool for it, for none of the skills %s lists is one the Skill tool can call.\n", RouterSkill, listAt, RouterSkill)
 	return b.String()
 }
 
@@ -701,7 +722,11 @@ func placeStubs(t *Target, slash map[string]bool, at map[string]string, res *Res
 		}
 		m, _ := readMeta(skillDir(n))
 		d := filepath.Join(sd, n)
-		w1, err := writeIfNot(filepath.Join(d, "SKILL.md"), stubText(n, m, at[n]))
+		// the router's own SKILL.md, through the agent's own folder: it
+		// names each listed skill's path, which a skill whose instructions
+		// name another of them sends the agent to (#7722)
+		listAt := filepath.Join(realDir(t.Skills), RouterSkill, "SKILL.md")
+		w1, err := writeIfNot(filepath.Join(d, "SKILL.md"), stubText(n, m, at[n], listAt))
 		if err != nil {
 			res.fail(id, "skill:"+n, err)
 			continue

@@ -120,6 +120,13 @@ func TestSkillRouter(t *testing.T) {
 	if !strings.Contains(md, "Read PDFs. Use for any .pdf file") {
 		t.Fatalf("pdf's description isn't given whole in the body:\n%s", md)
 	}
+	// a skill's instructions that name another listed skill are followed by
+	// reading that skill's SKILL.md at its path here, not by calling the
+	// Skill tool for it (#7722: a listed skill has no Skill-tool entry, so
+	// the call is refused and a composite skill ends)
+	if !strings.Contains(md, "read that skill's SKILL.md at the path given here") || !strings.Contains(md, "don't call the Skill tool for it") {
+		t.Fatalf("the body doesn't tell the agent how a skill names another:\n%s", md)
+	}
 	if a := loaded(t).Applied["claude"]; a == nil || !a.Router || slices.Contains(a.Skills, "pdf") {
 		t.Fatalf("applied: %+v", a)
 	}
@@ -212,6 +219,12 @@ func TestSkillRouterSlash(t *testing.T) {
 			at := filepath.Join(realDir(dir), RouterSkill, ".skills", n, "SKILL.md")
 			if !strings.Contains(md, "`"+at+"`") {
 				t.Fatalf("%s: %s's stub doesn't send the agent to %s:\n%s", id, n, at, md)
+			}
+			// a sibling the skill's instructions name is read at its path in
+			// magpie-skills, not called by the Skill tool (#7722)
+			listAt := filepath.Join(realDir(dir), RouterSkill, "SKILL.md")
+			if !strings.Contains(md, "`"+listAt+"`") || !strings.Contains(md, "don't call the Skill tool for it") {
+				t.Fatalf("%s: %s's stub doesn't tell the agent how a skill names another:\n%s", id, n, md)
 			}
 			if got := read(t, at); !strings.Contains(got, "name: "+n) {
 				t.Fatalf("%s: the stub's path doesn't lead to %s: %q", id, n, got)
@@ -491,7 +504,11 @@ func TestSkillRouterKeepsSlashCommands(t *testing.T) {
 	stub := filepath.Join(cmds, "pdf.md")
 	got := read(t, stub)
 	at := filepath.Join(realDir(filepath.Join(h, ".claude", "skills")), RouterSkill, ".skills", "pdf", "SKILL.md")
-	for _, w := range []string{"disable-model-invocation: true\n", `description: "Read PDFs. Use for any .pdf file"`, "`" + at + "`", "$ARGUMENTS"} {
+	listAt := filepath.Join(realDir(filepath.Join(h, ".claude", "skills")), RouterSkill, "SKILL.md")
+	for _, w := range []string{"disable-model-invocation: true\n", `description: "Read PDFs. Use for any .pdf file"`, "`" + at + "`", "$ARGUMENTS",
+		// a sibling the skill's instructions name is read at its path in
+		// magpie-skills, not called by the Skill tool (#7722)
+		"`" + listAt + "`", "don't call the Skill tool for it"} {
 		if !strings.Contains(got, w) {
 			t.Fatalf("pdf's stub has no %q:\n%s", w, got)
 		}

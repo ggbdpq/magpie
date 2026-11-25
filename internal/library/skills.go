@@ -619,6 +619,11 @@ func sharedHas(name string) bool { return sharedEntry(name) != "" }
 // right in the shared one under another name, that entry. "" when none.
 // HandOverSkills moves such a skill out of it (skill_handover.go).
 func sharedEntry(name string) string {
+	if sharedIsLibrary() {
+		// the shared folder is the library's own: its entries are the
+		// library's, none of them the user's by the skill's name (#6699)
+		return ""
+	}
 	lib := skillDir(name)
 	if _, err := os.Stat(lib); err != nil {
 		return ""
@@ -649,6 +654,11 @@ type sharedOwn map[string][]string
 
 func readSharedOwn() sharedOwn {
 	out := sharedOwn{}
+	if sharedIsLibrary() {
+		// the shared folder is the library's own: nothing in it is the
+		// user's own by another installer's hand (#6699)
+		return out
+	}
 	dir := sharedSkillsDir()
 	es, err := os.ReadDir(dir)
 	if err != nil {

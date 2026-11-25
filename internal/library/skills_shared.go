@@ -41,10 +41,28 @@ func SetSkillsWhere(where string) (*Result, error) {
 	})
 }
 
+// sharedIsLibrary is whether ~/.agents/skills is the library's own skills
+// folder, or inside it, or holds it: a user coming from another skill
+// manager points the symlink it makes at the library's folder, and the
+// shared folder and the library's are one (WardLu, #6699, #6697). Every
+// entry there is the library's own then, and none of it is the user's: a
+// link of the library's into it would be an entry onto itself, and hand-
+// over would take a library entry away. The shared-folder faces stand
+// down (sharedEntry, the user's own there, the setting that puts skills
+// there, hand-over and hand-back), so the ticks hold for the agents that
+// read the folder, and nothing of the library's is taken away.
+func sharedIsLibrary() bool {
+	sh, lib := realDir(sharedSkillsDir()), realDir(skillsDir())
+	return sh == lib || within(sh, lib) || within(lib, sh)
+}
+
 // keepsShared is whether the library puts its skill s in ~/.agents/skills:
 // the setting is on, the skill is on here and its folder is there.
 func (l *Library) keepsShared(s *Skill) bool {
-	if !l.SharedSkills || s == nil || s.OffHere {
+	if !l.SharedSkills || s == nil || s.OffHere || sharedIsLibrary() {
+		// the shared folder is the library's own: every skill is there
+		// already, and a link of the library's there would be an entry on
+		// itself (#6699)
 		return false
 	}
 	_, err := os.Stat(filepath.Join(skillDir(s.Name), "SKILL.md"))

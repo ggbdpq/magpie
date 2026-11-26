@@ -284,17 +284,32 @@ func save(l List) error {
 	if err := writeWhole(listPath(), append(b, '\n')); err != nil {
 		return err
 	}
-	listSeen.Lock()
-	listSeen.stamp, listSeen.set = seenStamp(), true
-	listSeen.Unlock()
+	recordSeen(true, true)
 	return nil
 }
 
-// listSeen is plugins.json as this magpie last wrote or read it.
+// listSeen is plugins.json and the enabled path plugins as this magpie last
+// wrote or read them.
 var listSeen struct {
 	sync.Mutex
 	stamp string
+	list  string
+	specs map[string]string
+	files map[string]map[string]string
 	set   bool
+}
+
+// recordSeen snapshots the current plugins.json and path-plugin state into
+// listSeen; clearLoops also resets any path-plugin reload loop breakers.
+func recordSeen(set, clearLoops bool) {
+	if clearLoops {
+		resetPathLoops()
+	}
+	snap := pathsSnapshot()
+	st := snap.list + "|" + snap.stamp
+	listSeen.Lock()
+	listSeen.stamp, listSeen.list, listSeen.specs, listSeen.files, listSeen.set = st, snap.list, snap.specs, snap.files, set
+	listSeen.Unlock()
 }
 
 // listStamp is plugins.json as it is now, and what is installed: bun's
@@ -322,11 +337,39 @@ var hostStale atomic.Bool
 // the plugins as they are, and the providers the other magpie last saw
 // asked for are the ones known meanwhile. It says whether they changed.
 func checkList() bool {
-	st := seenStamp()
+	snap := pathsSnapshot()
+	st := snap.list + "|" + snap.stamp
 	listSeen.Lock()
-	moved := listSeen.set && listSeen.stamp != st
-	listSeen.stamp, listSeen.set = st, true
+	wasSet := listSeen.set
+	prevStamp := listSeen.stamp
+	prevList := listSeen.list
+	prevSpecs := listSeen.specs
+	prevFiles := listSeen.files
+	listSeen.stamp, listSeen.list, listSeen.specs, listSeen.files, listSeen.set = st, snap.list, snap.specs, snap.files, true
 	listSeen.Unlock()
+	if !wasSet || prevStamp == st {
+		return false
+	}
+	moved := false
+	if snap.list != prevList {
+		moved = true
+	} else {
+		seen := map[string]bool{}
+		for spec := range prevSpecs {
+			seen[spec] = true
+		}
+		for spec := range snap.specs {
+			seen[spec] = true
+		}
+		for _, spec := range slices.Sorted(maps.Keys(seen)) {
+			if prevSpecs[spec] == snap.specs[spec] {
+				continue
+			}
+			if allowPathReload(spec, firstChangedFile(prevFiles[spec], snap.files[spec])) {
+				moved = true
+			}
+		}
+	}
 	if !moved {
 		return false
 	}

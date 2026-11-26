@@ -1,9 +1,12 @@
 package plugin
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -123,5 +126,85 @@ func TestPathsLookedAtOnceASecond(t *testing.T) {
 	pathsEvery = 0
 	if pathsStamp() == first {
 		t.Fatal("the edit wasn't seen once pathsEvery went by")
+	}
+}
+
+// TestPathPluginRestartLoopCircuitBreaker (#7198): a local path plugin that
+// keeps writing inside its own folder must log the triggering plugin/file and
+// trip a per-plugin auto-reload circuit breaker rather than restarting the
+// shared plugin host forever, while leaving other path plugins working and
+// letting an explicit Restart resume watching.
+func TestPathPluginRestartLoopCircuitBreaker(t *testing.T) {
+	storeSandbox(t)
+	every := pathsEvery
+	pathsEvery = 0
+	t.Cleanup(func() { pathsEvery = every })
+
+	var logs bytes.Buffer
+	oldOut := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(oldOut) })
+
+	loopDir := filepath.Join(t.TempDir(), "loop-plugin")
+	otherDir := filepath.Join(t.TempDir(), "other-plugin")
+	for _, d := range []string{filepath.Join(loopDir, "page"), otherDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := time.Now().Add(-time.Hour)
+	writeAt := func(p, body string, at time.Time) {
+		t.Helper()
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dataFile := filepath.Join(loopDir, "page", "data.js")
+	otherFile := filepath.Join(otherDir, "index.js")
+	writeAt(dataFile, "v0", base)
+	writeAt(otherFile, "v0", base)
+
+	b, _ := json.Marshal(List{Plugins: []Entry{{Spec: loopDir}, {Spec: otherDir}}})
+	writeList(t, string(b))
+
+	prevStale := hostStale.Swap(false)
+	t.Cleanup(func() { hostStale.Store(prevStale) })
+	checkList()
+	hostStale.Store(false)
+	stale := func() bool { checkList(); return hostStale.Swap(false) }
+
+	reloads := 0
+	for i := 1; i <= 8; i++ {
+		writeAt(dataFile, strings.Repeat("x", i+2), base.Add(time.Duration(i)*time.Second))
+		if stale() {
+			reloads++
+		}
+	}
+	if reloads != 5 {
+		t.Fatalf("loop plugin triggered %d reloads out of 8 writes, want circuit breaker at 5", reloads)
+	}
+	gotLog := logs.String()
+	if !strings.Contains(gotLog, "loop-plugin") || !strings.Contains(gotLog, "data.js") {
+		t.Errorf("log did not name triggering plugin and file: %q", gotLog)
+	}
+	if !strings.Contains(gotLog, "paused auto-reload") {
+		t.Errorf("log did not report paused auto-reload: %q", gotLog)
+	}
+
+	// Another path plugin must still hot-reload normally while loop-plugin is paused.
+	writeAt(otherFile, "v1-updated", base.Add(time.Minute))
+	if !stale() {
+		t.Fatal("pausing loop-plugin blocked reloads for other-plugin")
+	}
+
+	// Explicit Restart clears the paused state so loop-plugin reloads again.
+	Restart()
+	hostStale.Store(false)
+	writeAt(dataFile, "after-restart", base.Add(2*time.Minute))
+	if !stale() {
+		t.Fatal("explicit Restart did not resume path watching for loop-plugin")
 	}
 }

@@ -600,9 +600,7 @@ func UseCached(ps []Provider) {
 	}
 	provMu.Unlock()
 	// as asked with the plugins as they are now
-	listSeen.Lock()
-	listSeen.stamp, listSeen.set = seenStamp(), ps != nil
-	listSeen.Unlock()
+	recordSeen(ps != nil, false)
 }
 
 // Listed is every provider the plugins last listed, an off plugin's among

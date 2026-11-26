@@ -856,9 +856,7 @@ func tell(f func()) {
 func Restart() {
 	// the next host loads the plugins as they are now: what this magpie
 	// installed is not another magpie's change (checkList)
-	listSeen.Lock()
-	listSeen.stamp, listSeen.set = seenStamp(), true
-	listSeen.Unlock()
+	recordSeen(true, true)
 	hostMu.Lock()
 	h := current
 	current = nil

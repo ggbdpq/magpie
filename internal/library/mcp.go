@@ -1401,8 +1401,8 @@ func (f *mcpFile) read() (map[string]*Server, error) {
 			out[name] = s
 		}
 	}
-	if (f.Format == fmtPi || f.Format == fmtPiNative || f.Format == fmtDesktop) && err == nil {
-		// Pi's (or Desktop's) other files, the one magpie writes first
+	if (f.Format == fmtPi || f.Format == fmtPiNative || f.Format == fmtDesktop || f.Format == fmtDsh) && err == nil {
+		// Pi's, Desktop's or dsh's other files, the one magpie writes first
 		// winning a name
 		for _, p := range append(slices.Clone(f.Also), f.Extra...) {
 			more, _ := (&mcpFile{Path: p, Format: f.Format}).read()
@@ -1416,9 +1416,9 @@ func (f *mcpFile) read() (map[string]*Server, error) {
 	return out, err
 }
 
-// also is the file of each of Also, for formats written file by file.
+// also is the file of each of Also, for formats with secondary files.
 func (f *mcpFile) also() []*mcpFile {
-	if f.Format != fmtPi && f.Format != fmtDesktop {
+	if f.Format != fmtPi && f.Format != fmtDesktop && f.Format != fmtDsh {
 		return nil
 	}
 	var out []*mcpFile

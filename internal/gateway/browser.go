@@ -418,6 +418,12 @@ func browserExtensionKey(r *http.Request) (access.Identity, bool) {
 // whether the key is still on (watchKey).
 var browserKeyCheck = 5 * time.Second
 
+// browserReadTimeout is how long an extension socket may stay completely
+// silent before the gateway drops it as half-open (frozen MV3 service
+// worker or sleep/wake). The extension pings every 20s (and on its 30s
+// alarm), so a live browser stays well within this bound.
+var browserReadTimeout = 90 * time.Second
+
 // watchKey closes c's connection once the key it connected with is no
 // longer Current: turned off, removed, expired or rotated, looking every
 // each. A browser call looks too (call), so none is handed to it in
@@ -476,8 +482,11 @@ func (s *Server) browserExtension(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Magpie Browser disconnected")
 		}
 	}()
+	readTimeout := browserReadTimeout
 	for {
-		_, data, err := ws.Read(ctx)
+		rctx, cancel := context.WithTimeout(ctx, readTimeout)
+		_, data, err := ws.Read(rctx)
+		cancel()
 		if err != nil {
 			return
 		}

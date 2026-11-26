@@ -13,9 +13,21 @@ const ACT_SNAPSHOT_MAX = 30000;
 
 // ---- the gateway connection --------------------------------------------
 
+const PING_MS = 20000;
+const STALE_MS = 45000;
+
 let ws = null;
 let retry = 1000;
 let connecting = false;
+let lastHeard = 0;
+let connectGen = 0;
+
+function drop(s) {
+  if (ws === s) ws = null;
+  connecting = false;
+  lastHeard = 0;
+  try { s.close(); } catch {}
+}
 
 async function gatewayURL() {
   try {
@@ -37,37 +49,55 @@ async function gatewayKey() {
 }
 
 async function connect() {
-  if (connecting || (ws && ws.readyState <= 1)) return;
+  // Chrome freezes the MV3 service worker (or the machine sleeps) without
+  // firing onclose, leaving ws.readyState at 1 on a half-open socket.
+  // Treat a socket with nothing heard for STALE_MS as dead and replace it.
+  const stale = lastHeard > 0 && Date.now() - lastHeard >= STALE_MS;
+  if (connecting && !stale) return;
+  if (ws && ws.readyState <= 1) {
+    if (!stale) return;
+    drop(ws);
+  }
+  const gen = ++connectGen;
   connecting = true;
+  lastHeard = Date.now();
   const base = await gatewayURL();
   const key = await gatewayKey();
+  if (gen !== connectGen) return;
   let s;
   try {
     s = new WebSocket(base.replace(/\/$/, "") + "/v1/magpie/browser/extension" + (key ? "?key=" + encodeURIComponent(key) : ""));
   } catch (e) {
     connecting = false;
+    lastHeard = 0;
     setStatus({ connected: false, gateway: base, error: String(e.message || e) });
     return later();
   }
   ws = s;
   s.onopen = () => {
+    if (ws !== s) { try { s.close(); } catch {} return; }
     connecting = false;
     retry = 1000;
+    lastHeard = Date.now();
     s.send(JSON.stringify({ type: "hello", version: VERSION, agent: navigator.userAgent }));
     setStatus({ connected: true, gateway: base });
   };
   s.onmessage = (ev) => {
+    if (ws !== s) return;
+    lastHeard = Date.now();
     let m;
     try { m = JSON.parse(ev.data); } catch { return; }
     if (m.type === "ping") return s.send(JSON.stringify({ type: "pong" }));
     if (!m.id || !m.tool) return;
     run(m).then((result) => {
-      if (s.readyState === 1) s.send(JSON.stringify({ id: m.id, result }));
+      if (ws === s && s.readyState === 1) s.send(JSON.stringify({ id: m.id, result }));
     });
   };
   s.onclose = () => {
+    if (ws !== s) return;
     connecting = false;
-    if (ws === s) ws = null;
+    ws = null;
+    lastHeard = 0;
     setStatus({ connected: false, gateway: base });
     later();
   };
@@ -87,24 +117,39 @@ function setStatus(s) {
   chrome.action.setBadgeBackgroundColor({ color: "#8a8a8a" }).catch(() => {});
 }
 
+function keepAlive() {
+  if (ws && ws.readyState <= 1 && lastHeard > 0 && Date.now() - lastHeard >= STALE_MS) {
+    connect();
+    return;
+  }
+  if (ws && ws.readyState === 1) {
+    try { ws.send(JSON.stringify({ type: "ping" })); } catch {}
+  }
+}
+
 // a message every 20s keeps the service worker alive while connected;
-// the alarm brings it back to reconnect when Chrome stopped it
-setInterval(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "ping" })); }, 20000);
+// the alarm brings it back to reconnect when Chrome stopped or froze it
+setInterval(keepAlive, PING_MS);
 chrome.alarms.create("magpie-reconnect", { periodInMinutes: 0.5 });
-chrome.alarms.onAlarm.addListener(() => connect());
+chrome.alarms.onAlarm.addListener(() => {
+  connect();
+  if (ws && ws.readyState === 1 && Date.now() - lastHeard >= PING_MS) {
+    try { ws.send(JSON.stringify({ type: "ping" })); } catch {}
+  }
+});
 chrome.runtime.onStartup.addListener(() => connect());
 chrome.runtime.onInstalled.addListener(() => connect());
 chrome.storage.onChanged.addListener((c, area) => {
   if (area === "local" && (c.gateway || c.key)) {
     retry = 1000;
-    if (ws) ws.close();
-    else connect();
+    if (ws) drop(ws);
+    connect();
   }
 });
 chrome.runtime.onMessage.addListener((m, _s, reply) => {
   if (m && m.type === "reconnect") {
     retry = 1000;
-    if (ws) ws.close();
+    if (ws) drop(ws);
     connect();
     reply({ ok: true });
   }

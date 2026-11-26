@@ -1253,6 +1253,15 @@ func claudeIn(at place) *Agent {
 			}
 			rows = append(rows, map[string]any{"model": t, "label": label, "description": strings.ToUpper(t[:1]) + t[1:] + " · " + note})
 		}
+		// With the built-in lineup replaced, Claude Code's Opus Plan Mode
+		// (opusplan) row disappears with it. Keep an opusplan row whenever
+		// Opus and Sonnet point at different targets so /model can still
+		// select plan/exec routing (#7592).
+		if replace {
+			if opusV, sonnetV := env(tierEnv("opus")), env(tierEnv("sonnet")); opusV != "" && sonnetV != "" && strings.TrimSuffix(opusV, "[1m]") != strings.TrimSuffix(sonnetV, "[1m]") {
+				rows = append(rows, map[string]any{"model": "opusplan", "label": "Opus Plan Mode", "description": "Opus in plan mode, Sonnet otherwise · via magpie"})
+			}
+		}
 		for _, o := range via {
 			if slices.ContainsFunc(onTier, func(v string) bool { return sameAs(v, o) }) {
 				continue

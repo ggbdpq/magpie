@@ -343,14 +343,15 @@ func readAdvised(body []byte, clientMarks, facts, advised bool) (*Request, error
 	} else if th != nil && (th.Type == "enabled" || th.Type == "adaptive") {
 		r.Thinking = true
 		r.Effort = effortOfBudget(th.BudgetTokens)
-		if oc := a.OutputConfig; oc != nil && effortOf(oc.Effort) != "" {
-			r.Effort = effortOf(oc.Effort)
-		} else if e := turnEffort(body); e != "" {
-			// the level of the turn, kept in a message of its own (Claude
-			// Desktop's and Claude Code's {role: "system"} message with an
-			// output_config), is the one picked; the budget beside it is
-			// only nearest to it (a High asked as 31999 read as Max)
+		if e := turnEffort(body); e != "" {
+			// A mid-conversation message's output_config.effort overrides the
+			// top-level output_config.effort for this turn (e.g. pi-ai with
+			// supportsMidConvoEffort pins top-level effort to "low" for prompt
+			// cache stability and puts the chosen level on a trailing system
+			// message, #6842).
 			r.Effort = e
+		} else if oc := a.OutputConfig; oc != nil && effortOf(oc.Effort) != "" {
+			r.Effort = effortOf(oc.Effort)
 		}
 	}
 	return r, nil

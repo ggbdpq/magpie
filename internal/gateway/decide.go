@@ -784,21 +784,19 @@ func requestEffort(proto provider.Protocol, body []byte) string {
 	if decodeJSON(body, &v) != nil || v.Thinking == nil || v.Thinking.Type != "enabled" && v.Thinking.Type != "adaptive" {
 		return ""
 	}
-	if e := effortOf(v.OutputConfig.Effort); e != "" {
+	if e := turnEffort(body); e != "" {
 		return e
 	}
-	if e := turnEffort(body); e != "" {
+	if e := effortOf(v.OutputConfig.Effort); e != "" {
 		return e
 	}
 	return effortOfBudget(v.Thinking.Budget)
 }
 
 // outputConfigEffort is the effort an Anthropic request's output_config
-// names, whatever it asks of thinking; "" when it names none. A request
-// whose own output_config names none but carries the level of its turns
-// (Claude Code's {role: "system"} message with an output_config, which a
-// relay may keep when it drops the request's own) is asked at the last
-// of them.
+// names, whatever it asks of thinking; "" when it names none. A mid-conversation
+// message's output_config.effort overrides the top-level effort for that turn
+// (#6842), falling back to the request's own output_config.
 func outputConfigEffort(body []byte) string {
 	var v struct {
 		OutputConfig struct {
@@ -813,15 +811,15 @@ func outputConfigEffort(body []byte) string {
 	if decodeJSON(body, &v) != nil {
 		return ""
 	}
-	if e := effortOf(v.OutputConfig.Effort); e != "" {
-		return e
-	}
 	for i := len(v.Messages) - 1; i >= 0; i-- {
 		if oc := v.Messages[i].OutputConfig; oc != nil {
 			if e := effortOf(oc.Effort); e != "" {
 				return e
 			}
 		}
+	}
+	if e := effortOf(v.OutputConfig.Effort); e != "" {
+		return e
 	}
 	return ""
 }

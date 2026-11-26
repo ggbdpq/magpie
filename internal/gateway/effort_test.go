@@ -279,3 +279,53 @@ func TestRequestEffort(t *testing.T) {
 		}
 	}
 }
+
+// #6842: pi-ai with supportsMidConvoEffort pins top-level output_config.effort
+// to "low" for prompt-cache stability and declares the active turn's effort in
+// a trailing mid-conversation system message's output_config.effort. The last
+// message-level output_config.effort must override top-level output_config.effort
+// in parseAnthropic, requestEffort, and outputConfigEffort.
+func TestAnthropicMidConvoTurnEffortOverridesTopLevel(t *testing.T) {
+	body := []byte(`{
+		"model": "claude-opus-5-5",
+		"max_tokens": 16000,
+		"thinking": {"type": "adaptive"},
+		"output_config": {"effort": "low"},
+		"messages": [
+			{"role": "user", "content": "first"},
+			{"role": "system", "content": [], "output_config": {"effort": "medium"}},
+			{"role": "assistant", "content": "ok"},
+			{"role": "user", "content": "second"},
+			{"role": "system", "content": [], "output_config": {"effort": "high"}}
+		]
+	}`)
+	r, err := parseAnthropic(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Effort != "high" {
+		t.Errorf("parseAnthropic Effort = %q, want high", r.Effort)
+	}
+	if got := requestEffort(provider.Anthropic, body); got != "high" {
+		t.Errorf("requestEffort = %q, want high", got)
+	}
+	if got := outputConfigEffort(body); got != "high" {
+		t.Errorf("outputConfigEffort = %q, want high", got)
+	}
+	// Without any mid-conversation output_config, top-level effort still wins.
+	topOnly := []byte(`{
+		"model": "claude-opus-5-5",
+		"max_tokens": 16000,
+		"thinking": {"type": "adaptive"},
+		"output_config": {"effort": "medium"},
+		"messages": [{"role": "user", "content": "hi"}]
+	}`)
+	r2, err := parseAnthropic(topOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2.Effort != "medium" || requestEffort(provider.Anthropic, topOnly) != "medium" || outputConfigEffort(topOnly) != "medium" {
+		t.Errorf("top-only effort: parse=%q request=%q outputConfig=%q, want medium",
+			r2.Effort, requestEffort(provider.Anthropic, topOnly), outputConfigEffort(topOnly))
+	}
+}

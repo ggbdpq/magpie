@@ -50,6 +50,8 @@ func (t *trace) keepBody(id int64, from provider.Protocol, body []byte, plain bo
 	// Show request content off: none is kept (request_text.go)
 	if HidesRequestText() {
 		t.dropBodies()
+		clearKeptImages()
+		dropLastArchived()
 		return
 	}
 	// its pictures kept apart, so a conversation of pictures keeps its
@@ -184,6 +186,14 @@ var lastArchived struct {
 	id   int64
 	sum  [32]byte
 	body []byte
+}
+
+func dropLastArchived() {
+	lastArchived.Lock()
+	lastArchived.id = 0
+	lastArchived.sum = [32]byte{}
+	lastArchived.body = nil
+	lastArchived.Unlock()
 }
 
 func archivedMasked(id int64, body []byte) ([]byte, bool) {

@@ -45,9 +45,12 @@ func (s *Server) forgetRingText() {
 }
 
 // forgetRequestText lets go of every request's content magpie keeps in
-// memory: the trace's bodies and the ring's.
+// memory: the trace's bodies, kept inline images, the cached archive body,
+// and the ring's.
 func (s *Server) forgetRequestText() {
 	s.trace.dropBodies()
+	clearKeptImages()
+	dropLastArchived()
 	s.mu.Lock()
 	s.forgetRingText()
 	s.mu.Unlock()

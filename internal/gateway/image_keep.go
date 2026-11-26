@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -32,10 +33,16 @@ const (
 	keptImagesMax = 128 << 20
 )
 
+// keptImagesTTL is how long an untouched picture stays in keptImages before
+// it is released, so an idle process does not hold up to keptImagesMax
+// indefinitely (#7634). A var for tests.
+var keptImagesTTL = 30 * time.Minute
+
 type keptImage struct {
 	id  int64
 	sum [32]byte
 	b64 string
+	at  time.Time
 }
 
 var keptImages = struct {
@@ -45,31 +52,98 @@ var keptImages = struct {
 	lru   *list.List // front: the newest
 	size  int
 	next  int64
+	timer *time.Timer
 }{bySum: map[[32]byte]*list.Element{}, byID: map[int64]*list.Element{}, lru: list.New()}
+
+func dropKeptImageLocked(e *list.Element) {
+	k := &keptImages
+	old := e.Value.(*keptImage)
+	k.lru.Remove(e)
+	delete(k.bySum, old.sum)
+	delete(k.byID, old.id)
+	k.size -= len(old.b64)
+}
+
+// expireKeptImagesLocked drops entries untouched for keptImagesTTL and arms
+// a one-shot timer for the oldest remaining entry (or stops it when empty).
+func expireKeptImagesLocked(now time.Time) {
+	k := &keptImages
+	ttl := keptImagesTTL
+	if ttl <= 0 {
+		if k.timer != nil {
+			k.timer.Stop()
+			k.timer = nil
+		}
+		return
+	}
+	for k.lru.Len() > 0 {
+		e := k.lru.Back()
+		if now.Sub(e.Value.(*keptImage).at) < ttl {
+			break
+		}
+		dropKeptImageLocked(e)
+	}
+	if k.lru.Len() == 0 {
+		if k.timer != nil {
+			k.timer.Stop()
+			k.timer = nil
+		}
+		return
+	}
+	wait := max(ttl-now.Sub(k.lru.Back().Value.(*keptImage).at), time.Millisecond)
+	if k.timer == nil {
+		k.timer = time.AfterFunc(wait, pruneKeptImages)
+	} else {
+		k.timer.Reset(wait)
+	}
+}
+
+func pruneKeptImages() {
+	k := &keptImages
+	k.Lock()
+	defer k.Unlock()
+	expireKeptImagesLocked(time.Now())
+}
+
+// clearKeptImages drops every kept picture and stops the expiry timer.
+func clearKeptImages() {
+	k := &keptImages
+	k.Lock()
+	defer k.Unlock()
+	if k.timer != nil {
+		k.timer.Stop()
+		k.timer = nil
+	}
+	clear(k.bySum)
+	clear(k.byID)
+	k.lru.Init()
+	k.size = 0
+}
 
 // keepImage keeps a picture's base64, giving its id; the same picture
 // keeps one id.
 func keepImage(b64 []byte) int64 {
 	sum := sha256.Sum256(b64)
+	now := time.Now()
 	k := &keptImages
 	k.Lock()
 	defer k.Unlock()
 	if e, ok := k.bySum[sum]; ok {
+		im := e.Value.(*keptImage)
+		im.at = now
 		k.lru.MoveToFront(e)
-		return e.Value.(*keptImage).id
+		expireKeptImagesLocked(now)
+		return im.id
 	}
 	k.next++
-	im := &keptImage{id: k.next, sum: sum, b64: string(b64)}
+	im := &keptImage{id: k.next, sum: sum, b64: string(b64), at: now}
 	e := k.lru.PushFront(im)
 	k.bySum[sum], k.byID[im.id] = e, e
 	k.size += len(im.b64)
 	for k.size > keptImagesMax && k.lru.Len() > 1 {
-		old := k.lru.Back().Value.(*keptImage)
-		k.lru.Remove(k.lru.Back())
-		delete(k.bySum, old.sum)
-		delete(k.byID, old.id)
-		k.size -= len(old.b64)
+		dropKeptImageLocked(k.lru.Back())
 	}
+	expireKeptImagesLocked(now)
 	return im.id
 }
 
@@ -80,15 +154,20 @@ func keptImageOf(ref string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
+	now := time.Now()
 	k := &keptImages
 	k.Lock()
 	defer k.Unlock()
+	expireKeptImagesLocked(now)
 	e, ok := k.byID[id]
 	if !ok {
 		return "", false
 	}
+	im := e.Value.(*keptImage)
+	im.at = now
 	k.lru.MoveToFront(e)
-	return e.Value.(*keptImage).b64, true
+	expireKeptImagesLocked(now)
+	return im.b64, true
 }
 
 // imageMagic is how a PNG, JPEG, GIF or WebP's base64 starts: an

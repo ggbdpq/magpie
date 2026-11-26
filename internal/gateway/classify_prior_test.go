@@ -268,3 +268,98 @@ func TestJevIsToldTheTurnMaskedWhenTheGroupGoesUnmasked(t *testing.T) {
 		t.Fatalf("state %v", st)
 	}
 }
+
+// #7673 (@Dunqing): an approval ("Yes, do it.") after the assistant proposed
+// implementation work in a planning turn must not be told to inherit the
+// prior kind or effort; the continuity hint keeps the prior kind/effort for
+// continuing the same work and directs approvals to the work proposed in the
+// assistant's previous reply, across both chat classifiers and native
+// decision models.
+func TestClassifierContinuityHintDistinguishesApprovals(t *testing.T) {
+	planUser := "For the fictional ferry timetable app, plan how to move fare rules out of the mobile client."
+	planReply := "Plan: (1) add a fares endpoint to the timetable API, (2) switch the mobile client to fetch it, (3) keep the bundled table as a fallback for one release, (4) run the end-to-end suite. Shall I go ahead?"
+	intents := []string{"planning", "implementation"}
+	prev := before{Intent: "planning", Effort: "medium", User: planUser, Reply: planReply}
+
+	// End-to-end through the gateway HTTP boundary on a two-turn chat
+	// conversation seeded with planning on turn 1.
+	s, _, _, c := intented(t,
+		provider.Rule{Use: "a/small", Intent: "planning"},
+		provider.Rule{Use: "b/big", Intent: "implementation"},
+	)
+	c.set("1", 0)
+	postOK(t, s, "s-approve", `{"model":"group/r","messages":[{"role":"user","content":`+quote(planUser)+`}]}`)
+	c.set("2", 0)
+	_, r := postOK(t, s, "s-approve", `{"model":"group/r","messages":[`+
+		`{"role":"user","content":`+quote(planUser)+`},`+
+		`{"role":"assistant","content":`+quote(planReply)+`},`+
+		`{"role":"user","content":"Yes, do it."}]}`)
+	if r.Rule == nil || r.Rule.Classified == nil || r.Rule.Classified.After != "planning" || r.Rule.Classified.Intent != "implementation" {
+		t.Fatalf("turn 2 rule = %+v", r.Rule)
+	}
+	var asked struct {
+		Messages []struct{ Content string } `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(c.last()), &asked); err != nil || len(asked.Messages) != 2 {
+		t.Fatalf("turn 2 classifier request: %v %s", err, c.last())
+	}
+	chatIntent := asked.Messages[1].Content
+
+	var effortReq struct {
+		Messages []struct{ Content string } `json:"messages"`
+	}
+	if err := json.Unmarshal(effortBody("m", "", prev, "Yes, do it."), &effortReq); err != nil || len(effortReq.Messages) != 2 {
+		t.Fatalf("effortBody: %v", err)
+	}
+	chatEffort := effortReq.Messages[1].Content
+
+	var jev struct {
+		Questions map[string]struct {
+			Instructions string `json:"instructions"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(jevBody("jev-latest", intents, nil, prev, true, "Yes, do it."), &jev); err != nil {
+		t.Fatalf("jevBody: %v", err)
+	}
+
+	checks := map[string]string{
+		"chat intent": chatIntent,
+		"chat effort": chatEffort,
+		"jev intent":  jev.Questions["intent"].Instructions,
+		"jev level":   jev.Questions["level"].Instructions,
+		"jev effort":  jev.Questions["effort"].Instructions,
+	}
+	for name, prompt := range checks {
+		for _, bad := range []string{
+			"go on, yes, do it, fix that",
+			"go on, yes, do it",
+		} {
+			if strings.Contains(prompt, bad) {
+				t.Errorf("%s still groups approvals (%q) as inheriting the prior turn:\n%s", name, bad, prompt)
+			}
+		}
+		if !strings.Contains(prompt, "carries on") {
+			t.Errorf("%s lost continuity guidance:\n%s", name, prompt)
+		}
+		if !strings.Contains(prompt, "approves") || !strings.Contains(prompt, "assistant's previous reply") {
+			t.Errorf("%s does not direct approvals to the work proposed in the assistant's previous reply:\n%s", name, prompt)
+		}
+	}
+
+	// Without a prior assistant reply, Jev instructions still must not name
+	// the absent previous_assistant_reply state key.
+	var noReply struct {
+		State     map[string]string `json:"state"`
+		Questions map[string]struct {
+			Instructions string `json:"instructions"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(jevBody("jev-latest", intents, nil, before{Intent: "planning", Effort: "medium", User: planUser}, true, "go on"), &noReply); err != nil {
+		t.Fatalf("jevBody without reply: %v", err)
+	}
+	for _, q := range []string{"intent", "level", "effort"} {
+		if strings.Contains(noReply.Questions[q].Instructions, "previous_assistant_reply") {
+			t.Errorf("jev %s without reply mentions previous_assistant_reply: %q", q, noReply.Questions[q].Instructions)
+		}
+	}
+}

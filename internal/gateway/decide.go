@@ -202,7 +202,9 @@ func intentAsk(prev before) string {
 		q = p + "\n\nBy these instructions, which kind is the `message`?"
 	}
 	if prev.Intent != "" {
-		q += " A message that only carries on from the user's message before it (go on, yes, do it, fix that) is of `previous_message_kind`; one that asks for something of its own is of the kind that fits it."
+		q += " A message that only carries on the same work from the user's message before it (go on, continue) is of `previous_message_kind`; " +
+			"one that approves or starts work proposed in the assistant's previous reply (yes, do it) is of the kind that fits the work being started, " +
+			"and one that asks for something of its own is of the kind that fits it."
 	}
 	return q + priorAsk(prev)
 }
@@ -236,7 +238,8 @@ func levelAsk(prev before, work bool) string {
 func effortAsk(prev before) string {
 	q := "How much reasoning does an AI assistant need to handle the `message` well?"
 	if prev.Effort != "" {
-		q += " A message that only carries on from the user's message before it (go on, yes, do it) needs what that one did, `previous_message_reasoning` (low, medium, high or xhigh)."
+		q += " A message that only carries on the same work from the user's message before it (go on, continue) needs what that one did, `previous_message_reasoning` (low, medium, high or xhigh); " +
+			"one that approves or starts work proposed in the assistant's previous reply (yes, do it) needs the reasoning that fits the work being started."
 	}
 	return q + priorAsk(prev)
 }

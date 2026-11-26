@@ -470,8 +470,9 @@ func classifyBody(model, effort string, intents []string, prev before, text stri
 	writePrior(&b, prev)
 	if i := slices.Index(intents, prev.Intent); i >= 0 {
 		fmt.Fprintf(&b, "\nThe user's message before this one, in the same conversation, was of kind %d. "+
-			"A message that only carries on from it — go on, yes, do it, fix that — is of kind %d too; "+
-			"one that asks for something of its own is of the kind that fits it.\n", i+1, i+1)
+			"A message that only carries on the same work — go on, continue — is of kind %d too; "+
+			"one that approves or starts work proposed in the assistant's previous reply (yes, do it) "+
+			"is of the kind that fits the work being started, and one that asks for something of its own is of the kind that fits it.\n", i+1, i+1)
 	}
 	b.WriteString("\nThe user's message:\n<message>\n")
 	b.WriteString(text)
@@ -745,7 +746,9 @@ func effortBody(model, effort string, prev before, text string) []byte {
 	writePrior(&b, prev)
 	if was > 0 {
 		fmt.Fprintf(&b, "\nThe user's message before this one, in the same conversation, needed level %d. "+
-			"A message that only carries on from it — go on, yes, do it — needs level %d too.\n", was, was)
+			"A message that only carries on the same work — go on, continue — needs level %d too; "+
+			"one that approves or starts work proposed in the assistant's previous reply (yes, do it) "+
+			"needs the level that fits the work being started.\n", was, was)
 	}
 	b.WriteString("\nThe user's message:\n<message>\n")
 	b.WriteString(text)

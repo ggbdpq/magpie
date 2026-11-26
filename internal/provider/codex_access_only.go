@@ -16,6 +16,7 @@ package provider
 // to it (switchSavedLogin), as Codex would refresh it as it runs.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -127,3 +128,63 @@ func SetLoginAccessOnly(agent, user string, on bool) error {
 // errAccessOnlyHeld: an account Codex is signed in to on this computer
 // isn't imported access token only; Codex renews it.
 var errAccessOnlyHeld = errors.New("Codex on this computer is signed in to this account and renews its sign-in itself; import it without \"access token only\", or sign Codex out of it first")
+
+// codexStandIn picks a saved, enabled access-only ChatGPT account to serve as
+// the Codex provider entry when no local Codex sign-in is present (#6141).
+// Non-access-only saved accounts are intentionally left out so local sign-out
+// reporting (savedButSignedOut) keeps its existing behavior. A non-lapsed,
+// non-expired account ranks ahead of a lapsed/expired one, preserving
+// logins.json order within each rank.
+func codexStandIn(ls []savedLogin) (savedLogin, bool) {
+	now := time.Now()
+	var picked savedLogin
+	best := 0
+	for _, l := range ls {
+		if l.Agent != "codex" || !l.AccessOnly || !l.On {
+			continue
+		}
+		var a codexAuth
+		if json.Unmarshal(l.Auth, &a) != nil || a.Tokens.AccessToken == "" {
+			continue
+		}
+		rank := 1
+		if l.Lapsed == "" && !accessTokenRunOut(a.Tokens.AccessToken, now) {
+			rank = 2
+		}
+		if rank > best {
+			picked, best = l, rank
+		}
+	}
+	return picked, best > 0
+}
+
+// codexStandInAccount builds the Codex provider backed by a saved, enabled
+// access-only ChatGPT account when no local Codex sign-in exists (#6141).
+func codexStandInAccount() (Provider, bool) {
+	loginsMu.Lock()
+	ls := readLogins()
+	loginsMu.Unlock()
+	l, ok := codexStandIn(ls)
+	if !ok {
+		return Provider{}, false
+	}
+	user := l.User
+	acct := &Account{
+		Agent:   "codex",
+		User:    user,
+		Plan:    l.Plan,
+		Stream:  true,
+		standIn: true,
+		token: func(ctx context.Context) (string, error) {
+			tok, _, err := savedLoginToken(ctx, "codex", user)
+			return tok, err
+		},
+		sign: codexSign(func(ctx context.Context) (string, string, error) {
+			return savedLoginToken(ctx, "codex", user)
+		}),
+		renew: func(ctx context.Context, stale string) (string, string, error) {
+			return renewSavedLoginFrom(ctx, "codex", user, stale)
+		},
+	}
+	return codexProvider(acct), true
+}

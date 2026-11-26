@@ -51,6 +51,11 @@ func SetLoginOn(agent, user string, on bool) error {
 		if u := claudeStandIn(ls); u != "" {
 			live, ok = savedLogin{Agent: agent, User: u}, true
 		}
+	} else if !ok && agent == "codex" {
+		// No local Codex sign-in, an enabled access-only account stands in (#6141)
+		if l, found := codexStandIn(ls); found {
+			live, ok = l, true
+		}
 	}
 	if ok && strings.EqualFold(live.User, user) {
 		// the account the agent is signed in to stays so: off, it is

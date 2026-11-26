@@ -612,7 +612,7 @@ func fetchSubscriptionUsage(ctx context.Context) []SubscriptionQuota {
 	moved("grok")
 	if home, err := os.UserHomeDir(); err == nil {
 		if p, ok := codexAccount(home); ok && !hidden["codex"] {
-			if ls := accountsOf("codex"); len(ls) > 1 {
+			if ls := accountsOf("codex"); len(ls) > 1 || p.Account.standIn {
 				fetches = append(fetches, perLogin(via("codex"), ls, accountCard("codex"))...)
 			} else {
 				dir := appdir.CodexHomeIn(home)

@@ -62,8 +62,9 @@ type Account struct {
 	// logins_on.go): the access token to run the agent's binary with.
 	token func(ctx context.Context) (string, error)
 
-	// standIn is a saved Claude account served in the place of Claude
-	// Code's own while Claude Code is signed out (claude_dirs.go).
+	// standIn is a saved account served in the place of the agent's own
+	// while the agent is signed out (Claude in claude_dirs.go, or an
+	// enabled access-only Codex account in codex_access_only.go).
 	standIn bool
 
 	// off is an account the user turned off, made only for a test sent
@@ -1126,7 +1127,7 @@ func codexAccount(home string) (Provider, bool) {
 	b, _, err := readCodexLogin(dir, false)
 	var a codexAuth
 	if err != nil || json.Unmarshal(b, &a) != nil || a.Tokens.AccessToken == "" || a.AuthMode == "apikey" {
-		return Provider{}, false
+		return codexStandInAccount()
 	}
 	id := jwtClaims(a.Tokens.IDToken)
 	acct := &Account{Agent: "codex", Stream: true,
@@ -1142,6 +1143,12 @@ func codexAccount(home string) (Provider, bool) {
 	acct.renew = func(ctx context.Context, stale string) (string, string, error) {
 		return codexTokenRenewing(ctx, dir, stale)
 	}
+	return codexProvider(acct), true
+}
+
+// codexProvider wraps acct with the shared Codex ChatGPT provider metadata,
+// request shaping, and model catalog fetch wiring.
+func codexProvider(acct *Account) Provider {
 	acct.body = codexBody
 	acct.models = catalog.Codex
 	acct.listedOnly = true
@@ -1155,7 +1162,7 @@ func codexAccount(home string) (Provider, bool) {
 		ms = codexPoolModels(ms)
 		return ms, catalog.SaveLive("codex", CodexBase, ms)
 	}
-	return Provider{ID: "codex", Name: "Codex", Icon: "codex-color", Responses: CodexBase, Website: "https://chatgpt.com/codex", Account: acct}, true
+	return Provider{ID: "codex", Name: "Codex", Icon: "codex-color", Responses: CodexBase, Website: "https://chatgpt.com/codex", Account: acct}
 }
 
 // codexToken returns a usable access token for the Codex home dir,

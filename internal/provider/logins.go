@@ -803,9 +803,10 @@ func claudeSignedInUser(plan, statusPlan, status string) (user string, acct map[
 // are served beside the account the agent is signed in to, and there is
 // none.
 func savedButSignedOut() []Exclusion {
+	ls := readLogins()
 	saved := map[string]int{}
 	users := map[string][]string{}
-	for _, l := range readLogins() {
+	for _, l := range ls {
 		saved[l.Agent]++
 		users[l.Agent] = append(users[l.Agent], l.User)
 	}
@@ -818,6 +819,13 @@ func savedButSignedOut() []Exclusion {
 		}
 		if _, ok := liveLogin(a); ok {
 			continue
+		}
+		// An enabled access-only Codex account stands in when no local
+		// Codex sign-in exists (#6141).
+		if a == "codex" {
+			if _, ok := codexStandIn(ls); ok {
+				continue
+			}
 		}
 		n := "1 account is"
 		if saved[a] > 1 {
@@ -1281,6 +1289,12 @@ func loginsNow(agent string) []Login {
 		// signed-out one too, which the row then says is signed out
 		standIn = claudeListed(ls)
 	}
+	codexFirst := ""
+	if _, ok := active["codex"]; !ok {
+		if l, ok := codexStandIn(ls); ok {
+			codexFirst = l.User
+		}
+	}
 	back := map[string]string{}
 	for a, user := range active {
 		// only where magpie goes back to it (returnsToFirst): a return
@@ -1294,7 +1308,8 @@ func loginsNow(agent string) []Login {
 			continue
 		}
 		using := strings.EqualFold(active[l.Agent], l.User)
-		first := l.Agent == "claude" && strings.EqualFold(standIn, l.User)
+		first := l.Agent == "claude" && strings.EqualFold(standIn, l.User) ||
+			l.Agent == "codex" && strings.EqualFold(codexFirst, l.User)
 		lg := Login{Agent: l.Agent, User: l.User, Plan: l.Plan, Seen: l.Seen, Active: using, On: using || first || l.On,
 			Paused: (using || first) && pausedOwn(ls, l.Agent, l.User), first: first}
 		if !using && l.Agent == "codex" {

@@ -4735,18 +4735,24 @@ var sensitiveCode = lazyre.New(`SensitiveContentDetected$`)
 // its usage policy, rather than malformed.
 var flaggedWords = lazyre.New(`(?i)flagged|usage polic`)
 
+// modelArtsContentFilter is Huawei CodeArts / ModelArts MaaS's content-filter
+// error code (#7472).
+const modelArtsContentFilter = "InferHub.ModelArts.81011.403"
+
 // policyRefusal tells whether an error — an error object, a body holding
 // one, or a stream's error event — is the vendor's safety filter refusing
 // the request: Azure's content_filter, OpenAI's content_policy_violation,
-// bio_policy and invalid_prompt flagged as against its usage policy. It is
-// not the request at fault, as another 400 is: another account or model
-// may answer it (#248).
+// bio_policy, invalid_prompt flagged as against its usage policy, and Huawei
+// CodeArts/ModelArts's InferHub.ModelArts.81011.403. It is not the request at
+// fault, as another 400 is: another account or model may answer it (#248).
 func policyRefusal(raw []byte) (string, bool) {
 	var e struct {
-		Code    any    `json:"code"`
-		Type    string `json:"type"`
-		Message string `json:"message"`
-		Error   *struct {
+		Code      any    `json:"code"`
+		ErrorCode string `json:"error_code"`
+		Type      string `json:"type"`
+		Message   string `json:"message"`
+		ErrorMsg  string `json:"error_msg"`
+		Error     *struct {
 			Code    any    `json:"code"`
 			Type    string `json:"type"`
 			Message string `json:"message"`
@@ -4756,6 +4762,12 @@ func policyRefusal(raw []byte) (string, bool) {
 		return "", false
 	}
 	code, typ, msg := e.Code, e.Type, e.Message
+	if code == nil && e.ErrorCode != "" {
+		code = e.ErrorCode
+	}
+	if msg == "" && e.ErrorMsg != "" {
+		msg = e.ErrorMsg
+	}
 	if e.Error != nil {
 		code, typ, msg = e.Error.Code, e.Error.Type, e.Error.Message
 	}
@@ -4780,6 +4792,8 @@ func policyRefusal(raw []byte) (string, bool) {
 		return note(r)
 	case policyCode.MatchString(c), sensitiveCode.MatchString(c):
 		return note(c)
+	case c == modelArtsContentFilter || strings.Contains(msg, modelArtsContentFilter):
+		return note(modelArtsContentFilter)
 	case c == "1301" && strings.Contains(msg, "敏感"):
 		// Zhipu's: "系统检测到输入或生成内容可能包含不安全或敏感内容"
 		return note("sensitive")

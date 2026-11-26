@@ -88,27 +88,37 @@ func TestCodexThreadOnChatUpstreamCaches(t *testing.T) {
 // without it, and not sent it again.
 func TestPromptCacheKeyRefused(t *testing.T) {
 	for _, c := range []struct {
-		name   string
-		refuse func(body []byte) (int, string)
-		codes  []int // each turn's status to Codex
-		calls  []int // upstream calls each turn
-		keyed  bool  // the key still goes upstream after
+		name    string
+		refuse  func(body []byte) (int, string)
+		codes   []int  // each turn's status to Codex
+		calls   []int  // upstream calls each turn
+		keyed   bool   // the key still goes upstream after
+		wantMsg string // expected error text when status >= 400
 	}{
 		{"names it", func(body []byte) (int, string) {
 			if bytes.Contains(body, []byte(`"prompt_cache_key"`)) {
 				return 400, `{"error":{"message":"Invalid JSON payload received. Unknown name \"prompt_cache_key\": Cannot find field."}}`
 			}
 			return 0, ""
-		}, []int{200, 200}, []int{2, 1}, false},
+		}, []int{200, 200}, []int{2, 1}, false, ""},
 		{"doesn't name it", func(body []byte) (int, string) {
 			if bytes.Contains(body, []byte(`"prompt_cache_key"`)) {
 				return 422, `{"error":{"message":"invalid request body"}}`
 			}
 			return 0, ""
-		}, []int{200, 200}, []int{2, 1}, false},
+		}, []int{200, 200}, []int{2, 1}, false, ""},
 		{"refused for something else", func(body []byte) (int, string) {
 			return 400, `{"error":{"message":"context too long"}}`
-		}, []int{400, 400}, []int{2, 2}, true},
+		}, []int{400, 400}, []int{1, 1}, true, "context too long"},
+		{"says it is required", func(body []byte) (int, string) {
+			return 400, `{"error":{"message":"prompt_cache_key is required"}}`
+		}, []int{400, 400}, []int{1, 1}, true, "prompt_cache_key is required"},
+		{"unrelated 400, then requires it", func(body []byte) (int, string) {
+			if bytes.Contains(body, []byte(`"prompt_cache_key"`)) {
+				return 400, `{"error":{"message":"context too long"}}`
+			}
+			return 400, `{"error":{"message":"prompt_cache_key is required"}}`
+		}, []int{400, 400}, []int{1, 1}, true, "context too long"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := &fake{t: t, reply: deepseekReply, refuse: c.refuse}
@@ -119,6 +129,9 @@ func TestPromptCacheKeyRefused(t *testing.T) {
 				code, body := postTo(t, srv, "/v1/responses", codexTurn(""))
 				if code != c.codes[turn] || code == 200 && !strings.Contains(body, "response.completed") {
 					t.Fatalf("turn %d: %d %s", turn+1, code, body)
+				}
+				if c.wantMsg != "" && !strings.Contains(body, c.wantMsg) {
+					t.Errorf("turn %d: body %q missing %q", turn+1, body, c.wantMsg)
 				}
 				if n := f.calls - calls; n != c.calls[turn] {
 					t.Errorf("turn %d: %d upstream calls, want %d", turn+1, n, c.calls[turn])

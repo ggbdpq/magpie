@@ -9513,14 +9513,16 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 			r.Tier, req = "", &r
 			continue
 		}
-		// magpie's own key is what a refusal is about only when it says so:
-		// another 400 is not asked again for it
-		ownKeyKept := ownKey != "" && req.CacheKey == ownKey && !refusesField(res.StatusCode, b, cacheKeyField)
-		if req.CacheKey != "" && !ownKeyKept && badRequest(res.StatusCode) && !wrongEndpoint(res.StatusCode, b) && !provider.CopilotRefusal(b) {
+		cacheKeyRefused := slices.Contains(refusedOptional(res.StatusCode, b, body), cacheKeyField)
+		// Only probe without prompt_cache_key on an unspecific 422 when the
+		// client supplied it (not magpie's own key, and never on a generic 400
+		// that may be an unrelated error masking the original failure, #7615).
+		cacheKeyProbe := res.StatusCode == http.StatusUnprocessableEntity && (ownKey == "" || req.CacheKey != ownKey)
+		if req.CacheKey != "" && badRequest(res.StatusCode) && !wrongEndpoint(res.StatusCode, b) && !provider.CopilotRefusal(b) && (cacheKeyRefused || cacheKeyProbe) {
 			// a vendor that turns away fields it doesn't know is asked again
 			// without the cache key, and not sent it again once that works —
-			// at once when its error names the key; not every error does
-			if refusesField(res.StatusCode, b, cacheKeyField) {
+			// at once when its error explicitly refuses the key; not every 422 does
+			if cacheKeyRefused {
 				s.markUnfit(p.ID, cacheKeyField, to)
 			} else {
 				dropped = true
@@ -9793,7 +9795,7 @@ func refusedOptional(status int, msg, body []byte) []string {
 }
 
 var unknownOptionalField = lazyre.New("(?i)\\b(?:unknown (?:name|field|parameter)|unsupported (?:parameter|field|property|argument)|unrecognized (?:request )?(?:argument|parameter)(?: supplied)?):?\\s*['\"\\x60]([a-z_]+)['\"\\x60]")
-var unquotedUnsupportedOptionalField = lazyre.New("(?i)\\bunsupported (?:parameter|field|property|argument):\\s*([a-z_]+)\\b")
+var unquotedUnsupportedOptionalField = lazyre.New("(?i)\\b(?:unsupported (?:parameter|field|property|argument)|unrecognized (?:request )?(?:argument|parameter)(?: supplied)?):\\s*([a-z_]+)\\b")
 
 // chineseRefusedOptionalField is a relay refusing a field in Chinese:
 // 基元律动's "未知请求字段：prompt_cache_retention" (ldl123292 on X).

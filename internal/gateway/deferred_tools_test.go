@@ -423,3 +423,119 @@ func TestDeepSeekAnthropicIsStrippedUpFront(t *testing.T) {
 		t.Errorf("the ToolSearch answer did not go as a declared reference: %s", sent[0])
 	}
 }
+
+// #7817: agy-cli builds its ide-tools MCP declarations only from top-level
+// tools and ignores tool_addition and ToolSearch tool_definition blocks while
+// still answering 200, so deferred tools stayed uncallable after ToolSearch
+// and DeferredToolPlaceholder leaked into ide-tools. Hoisting deferred
+// definitions up front and stripping DeferredToolPlaceholder keeps loaded
+// tools callable from the next turn without affecting other providers.
+func TestAgyCLIDeferredToolsHoistedAndPlaceholderStripped(t *testing.T) {
+	var mu sync.Mutex
+	var sent []string
+	pid := besideFake(t, "agy-cli", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		sent = append(sent, string(b))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse(
+			`event: message_start`,
+			`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"fake-claude","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+			`event: content_block_start`,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			`event: content_block_delta`,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+			`event: content_block_stop`,
+			`data: {"type":"content_block_stop","index":0}`,
+			`event: message_delta`,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+			`event: message_stop`,
+			`data: {"type":"message_stop"}`,
+		))
+	}))
+	s := New()
+	h := s.Handler()
+
+	// Turn 1: before ToolSearch, DeferredToolPlaceholder is stripped while eager tools stay.
+	turn1 := `{"model":"` + pid + `/fake-claude","max_tokens":32,"stream":true,` +
+		`"tools":[{"name":"Edit","description":"edit file","input_schema":{"type":"object"}},` +
+		`{"name":"ToolSearch","description":"find tools","input_schema":{"type":"object"}},` +
+		`{"name":"DeferredToolPlaceholder","description":"","input_schema":{"type":"object"},"defer_loading":true}],` +
+		`"messages":[{"role":"user","content":"inspect repo"}]}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(turn1)))
+	if rec.Code != 200 {
+		t.Fatalf("turn 1 status %d: %s", rec.Code, rec.Body)
+	}
+
+	// Turn 2: after ToolSearch loads Read (in tool_result) and Bash (via tool_addition),
+	// both definitions join top-level tools and DeferredToolPlaceholder stays out.
+	bashAdd := `{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"Bash","description":"run shell","input_schema":{"type":"object"}}}}`
+	turn2 := `{"model":"` + pid + `/fake-claude","max_tokens":32,"stream":true,` +
+		`"tools":[{"name":"Edit","description":"edit file","input_schema":{"type":"object"}},` +
+		`{"name":"ToolSearch","description":"find tools","input_schema":{"type":"object"}},` +
+		`{"name":"DeferredToolPlaceholder","description":"","input_schema":{"type":"object"},"defer_loading":true}],` +
+		`"messages":[` +
+		`{"role":"user","content":"inspect repo"},` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"ToolSearch","input":{"query":"select:Read,Bash"}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[{"type":"tool_definition","definition":{"name":"Read","description":"read a file","input_schema":{"type":"object"}}}]}]},` +
+		`{"role":"system","content":[` + bashAdd + `]},` +
+		`{"role":"user","content":"read README"}]}`
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(turn2)))
+	if rec.Code != 200 {
+		t.Fatalf("turn 2 status %d: %s", rec.Code, rec.Body)
+	}
+
+	mu.Lock()
+	got := append([]string(nil), sent...)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("agy-cli asked %d times, want 2", len(got))
+	}
+	if strings.Contains(got[0], `"DeferredToolPlaceholder"`) {
+		t.Errorf("turn 1 still sent DeferredToolPlaceholder: %s", got[0])
+	}
+	if !strings.Contains(got[0], `"name":"Edit"`) || !strings.Contains(got[0], `"name":"ToolSearch"`) {
+		t.Errorf("turn 1 lost eager tools: %s", got[0])
+	}
+	for _, banned := range []string{`"DeferredToolPlaceholder"`, `"tool_addition"`, `"tool_definition"`} {
+		if strings.Contains(got[1], banned) {
+			t.Errorf("turn 2 still sent %s: %s", banned, got[1])
+		}
+	}
+	for _, want := range []string{`"tool_name":"Read"`, `"tool_use_id":"toolu_01"`} {
+		if !strings.Contains(got[1], want) {
+			t.Errorf("turn 2 missing %s: %s", want, got[1])
+		}
+	}
+	var turn2Sent struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(got[1]), &turn2Sent); err != nil {
+		t.Fatalf("parse turn 2 body: %v", err)
+	}
+	toolNames := make(map[string]bool, len(turn2Sent.Tools))
+	for _, tl := range turn2Sent.Tools {
+		toolNames[tl.Name] = true
+	}
+	for _, want := range []string{"Edit", "ToolSearch", "Read", "Bash"} {
+		if !toolNames[want] {
+			t.Errorf("turn 2 top-level tools missing %q: %v", want, turn2Sent.Tools)
+		}
+	}
+	if toolNames["DeferredToolPlaceholder"] {
+		t.Errorf("turn 2 top-level tools still contain DeferredToolPlaceholder: %v", turn2Sent.Tools)
+	}
+	// Guard: unrelated plugins and prose mentions of DeferredToolPlaceholder stay untouched.
+	if deferredOutUpFront(provider.PluginForTest("other", "other"), provider.Anthropic, []byte(`{"model":"gemini-4-neon"}`)) {
+		t.Errorf("unrelated plugin was stripped up front")
+	}
+	proseOnly := `{"model":"m","max_tokens":8,"tools":[{"name":"Edit","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"DeferredToolPlaceholder mentioned in prose"}]}`
+	if unchanged := string(withoutDeferredTools([]byte(proseOnly))); unchanged != proseOnly {
+		t.Errorf("prose mention of DeferredToolPlaceholder altered body: %s", unchanged)
+	}
+}

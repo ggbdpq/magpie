@@ -453,15 +453,16 @@ func hasDeferredTools(body []byte) bool {
 }
 
 // withoutDeferredTools is body without the deferred-tool blocks in its
-// messages, and without a message they leave empty. Definitions carried
-// only inline join the request's own tools list; a definition already on
-// that list wins. A tool_result's tool_reference stays: it is
-// the tool's answer, and Kimi and DeepSeek take it. A tool_definition in
-// a tool_result's content (a ToolSearch answer carrying the definition
-// itself, #5404) joins the tools as its block goes as the reference a
-// tool_result takes. A body with none is sent as it was.
+// messages, without DeferredToolPlaceholder in its tools, and without a
+// message they leave empty. Definitions carried only inline join the
+// request's own tools list; a definition already on that list wins. A
+// tool_result's tool_reference stays: it is the tool's answer, and Kimi,
+// DeepSeek and agy-cli take it. A tool_definition in a tool_result's
+// content (a ToolSearch answer carrying the definition itself, #5404)
+// joins the tools as its block goes as the reference a tool_result takes.
+// A body with none is sent as it was.
 func withoutDeferredTools(body []byte) []byte {
-	if !hasDeferredTools(body) {
+	if !hasDeferredTools(body) && !bodyHas(body, `"DeferredToolPlaceholder"`) {
 		return body
 	}
 	var v struct {
@@ -472,10 +473,18 @@ func withoutDeferredTools(body []byte) []byte {
 		return body
 	}
 	have := make(map[string]bool, len(v.Tools))
+	tools := make([]json.RawMessage, 0, len(v.Tools))
+	toolsChanged := false
 	for _, tool := range v.Tools {
-		have[gjson.GetBytes(tool, "name").String()] = true
+		name := gjson.GetBytes(tool, "name").String()
+		if name == "DeferredToolPlaceholder" {
+			toolsChanged = true
+			continue
+		}
+		have[name] = true
+		tools = append(tools, tool)
 	}
-	tools := v.Tools
+	msgsChanged := false
 	out := make([]json.RawMessage, 0, len(v.Messages))
 	for _, raw := range v.Messages {
 		c := gjson.GetBytes(raw, "content")
@@ -491,6 +500,7 @@ func withoutDeferredTools(body []byte) []byte {
 				if name := def.Get("name"); def.IsObject() && name.Type == gjson.String && name.String() != "" && !have[name.String()] {
 					tools = append(tools, json.RawMessage(def.Raw))
 					have[name.String()] = true
+					toolsChanged = true
 				}
 			}
 			if b.Get("type").String() == "tool_result" && strings.Contains(b.Get("content").Raw, `"tool_definition"`) {
@@ -498,7 +508,10 @@ func withoutDeferredTools(body []byte) []byte {
 				// definition joins the tools and the block goes as the
 				// reference the result takes (#5404)
 				if fixed, added := resultDefinitionRef(b, have); fixed != nil {
-					tools = append(tools, added...)
+					if len(added) > 0 {
+						tools = append(tools, added...)
+						toolsChanged = true
+					}
 					kept = append(kept, fixed)
 					changed = true
 					continue
@@ -512,6 +525,7 @@ func withoutDeferredTools(body []byte) []byte {
 			out = append(out, raw)
 			continue
 		}
+		msgsChanged = true
 		if len(kept) == 0 {
 			continue // it said only that tools came or went
 		}
@@ -530,8 +544,14 @@ func withoutDeferredTools(body []byte) []byte {
 		}
 		out = append(out, b)
 	}
-	fields := map[string]any{"messages": out}
-	if len(tools) != len(v.Tools) {
+	if !msgsChanged && !toolsChanged {
+		return body
+	}
+	fields := map[string]any{}
+	if msgsChanged {
+		fields["messages"] = out
+	}
+	if toolsChanged {
 		fields["tools"] = tools
 	}
 	return withFields(body, fields)
@@ -866,8 +886,11 @@ func withRefsAsText(body []byte) []byte {
 // first ask (withoutDeferredTools), as forwardOnce sends it: Kimi's
 // Anthropic endpoint turns the whole request away with a 400 that names
 // nothing to learn from (#2042), DeepSeek's own takes a tool_addition at
-// no position (#5404), and OpenCode's DeepSeek route hides the refusal
-// behind a 422 "Endpoint is unavailable.".
+// no position (#5404), OpenCode's DeepSeek route hides the refusal behind
+// a 422 "Endpoint is unavailable.", and the agy-cli plugin builds its
+// ide-tools MCP declarations only from top-level tools while answering 200
+// (#7817).
 func deferredOutUpFront(p provider.Provider, to provider.Protocol, body []byte) bool {
-	return isKimi(p, to) || isDeepSeekAnthropic(p, to) || p.IsOpenCode() && strings.Contains(strings.ToLower(modelOf(body)), "deepseek")
+	return isKimi(p, to) || isDeepSeekAnthropic(p, to) || p.IsOpenCode() && strings.Contains(strings.ToLower(modelOf(body)), "deepseek") ||
+		to == provider.Anthropic && p.PluginProvider() == "agy-cli"
 }

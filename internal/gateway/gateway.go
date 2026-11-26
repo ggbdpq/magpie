@@ -5868,7 +5868,17 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			if waitsOf(c.patience, patienceFallback) > 0 && !hw.turnedAway && busyFor(c, hw.code(), hw.errBody()) && !routedThere(hw.header) {
 				busyNow = noteBusy(busyNow, c, hw.header)
 			}
-			continue
+			if restSkipsKey(rest, c) {
+				if left := otherRestKeys(cands[i+1:], rest.Key); len(left) != len(cands[i+1:]) {
+					cands = append(cands[:i+1:i+1], left...)
+					if len(left) == 0 {
+						last = true
+					}
+				}
+			}
+			if !last {
+				continue
+			}
 		}
 		// (a plain provider's: not ChatGPT's reset of a large request,
 		// which Codex is told at its 503 with what may help, as Codex's
@@ -5914,7 +5924,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			}
 			if next, wait, ok := replan(busyNow, rounds, waitFrom, patienceFallback); ok && !kept.tooQuiet(wait) && !kept.outlives(wait) {
 				try.Fail, try.Again = failureOf(c, hw.code(), hw.errBody()), wait.Milliseconds()
-				if lastSpent {
+				if lastSpent && try.Rest == nil {
 					rest := s.restAfterMarked(c, hw.code(), hw.header, hw.errBody(), hw.sharedPool)
 					try.Fail, try.Rest = rest.Why, &rest
 				}
@@ -6011,7 +6021,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				continue
 			}
 		}
-		if last && !held && !hw.passing && hw.failed() && quotaStatus(hw.code()) && (c.p.Account == nil || !hw.turnedAway && try.Fail != failPrompt) && (try.Fail == failQuota || try.Fail == failCredit || failure(hw.code(), hw.errBody()) == failQuota || failure(hw.code(), hw.errBody()) == failCredit) {
+		if last && try.Rest == nil && !held && !hw.passing && hw.failed() && quotaStatus(hw.code()) && (c.p.Account == nil || !hw.turnedAway && try.Fail != failPrompt) && (try.Fail == failQuota || try.Fail == failCredit || failure(hw.code(), hw.errBody()) == failQuota || failure(hw.code(), hw.errBody()) == failCredit) {
 			// the last key left is out of its allowance: it rests as the
 			// ones before it did, for the next request to be answered
 			// from the rests until the first of them is back (#1772). An
@@ -6024,7 +6034,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// rest of an account it spends a reset of
 			rest := s.restAfterMarked(c, hw.code(), hw.header, hw.errBody(), hw.sharedPool)
 			try.Fail, try.Rest = rest.Why, &rest
-		} else if last && !held && !hw.passing && hw.failed() && hw.code() == http.StatusTooManyRequests && !hw.turnedAway && try.Fail != failPrompt && failure(hw.code(), hw.errBody()) == failRate && vendorSaidWhen(hw.header, hw.errBody()) {
+		} else if last && try.Rest == nil && !held && !hw.passing && hw.failed() && hw.code() == http.StatusTooManyRequests && !hw.turnedAway && try.Fail != failPrompt && failure(hw.code(), hw.errBody()) == failRate && vendorSaidWhen(hw.header, hw.errBody()) {
 			// the last one left is rate limited till a time its vendor
 			// named: it rests till then too, for the agent's retries to be
 			// answered from the rest (timedHeld) rather than sent on to

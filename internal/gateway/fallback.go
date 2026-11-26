@@ -2750,6 +2750,32 @@ func otherThanClaudeAccounts(left []candidate) []candidate {
 	return kept
 }
 
+// restSkipsKey says a key- or account-wide rest recorded during a fallback
+// walk makes remaining candidates sharing c.restKey doomed for this request.
+// Model-scoped rests (r.Model != "") leave sibling models on the same key
+// eligible (e.g. PaidBesideFree, pooled quotas, model-limited relays).
+func restSkipsKey(r Rest, c candidate) bool {
+	if r.Key == "" || r.Key != c.restKey() || r.Model != "" || r.Until.IsZero() || r.By == "off" {
+		return false
+	}
+	switch r.Why {
+	case failCredit, failQuota, failAuth, failRestricted, failSuspended:
+		return true
+	}
+	return false
+}
+
+// otherRestKeys is left without candidates sharing restKey.
+func otherRestKeys(left []candidate, restKey string) []candidate {
+	var kept []candidate
+	for _, x := range left {
+		if x.restKey() != restKey {
+			kept = append(kept, x)
+		}
+	}
+	return kept
+}
+
 // matesLast puts last, of the candidates left, the other keys or accounts
 // of the member c is of: what turns one of them away is in the request, so
 // it turns them all away the same, and the group is better spent on a

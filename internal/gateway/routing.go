@@ -339,17 +339,18 @@ func creditBackoff(id string, header http.Header, body []byte, now time.Time) (d
 
 var (
 	// creditWords: the account or key has no money left.
-	creditWords = lazyre.New(`(?i)insufficient.?(balance|credit|fund)|balance|credit|billing|payment|arrear|overdue|suspended|余额|欠费|充值|账户.*(不足|停)`)
+	creditWords = lazyre.New(`(?i)insufficient.?(balance|credit|fund)|balance|credit|billing|payment|arrear|overdue|suspended|余额|欠费|充值|账户.*(不足|停)|额度已用尽.*(?:购买|充值|加量包)`)
 	// brokeWords: a 429 that says the balance itself is spent, as Zhipu
 	// answers a GLM Coding Plan's key at the pay-as-you-go endpoint (1113
 	// "余额不足或无可用资源包，请充值") — out of credit, not a rate limit;
 	// WorkBuddy's 429 14018 "Credits exhausted. Please visit the link
-	// below to purchase add-on packs…" too (Creat.wu on Discord), and
+	// below to purchase add-on packs…" (Creat.wu on Discord) and its
+	// Chinese wording ("额度已用尽…购买加量包", #7690) too, and
 	// OpenAI's 429 credit_balance_exhausted for an organization whose
 	// prepaid API credits are spent: its underscores kept "credits
 	// exhausted" from matching, so it read as a rate limit and the same
 	// key was asked again rather than the next account
-	brokeWords = lazyre.New(`(?i)insufficient.?(balance|credit|fund)|\bcredits? (are )?exhausted\b|credit.?balance.?exhausted|余额不足|欠费|请充值`)
+	brokeWords = lazyre.New(`(?i)insufficient.?(balance|credit|fund)|\bcredits? (are )?exhausted\b|credit.?balance.?exhausted|余额不足|欠费|请充值|额度已用尽.*(?:购买|充值|加量包)`)
 	// quotaWords: it has used up what its plan allows for now. The budget's
 	// words needn't sit beside each other: LiteLLM's spent key answers 429
 	// "Budget has been exceeded! Key=… (sk-…), Current cost: …, Max budget:

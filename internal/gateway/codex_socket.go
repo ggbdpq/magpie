@@ -541,7 +541,13 @@ func (t codexSocket) turn(req *http.Request, k *codexKept, msg []byte, shape *co
 		return err
 	}
 	trace := socketTrace(req, reused)
-	if err := k.c.Write(req.Context(), websocket.MessageText, msg); err != nil {
+	// Bound the WebSocket write so a wedged/half-open kept connection cannot
+	// hang indefinitely inside TCP Write (#7448); on timeout k.close() tears
+	// it down and ended() retries whole on a fresh socket (or over HTTP).
+	writeCtx, writeCancel := context.WithTimeout(req.Context(), codexSocketDial)
+	err := k.c.Write(writeCtx, websocket.MessageText, msg)
+	writeCancel()
+	if err != nil {
 		k.close()
 		return nil, ended(err)
 	}

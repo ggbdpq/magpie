@@ -83,6 +83,12 @@ var codexSocketDial = 30 * time.Second
 // for headers before the reply is handed on.
 const codexSocketPrelude = 8
 
+// codexSocketBigTurn is the smallest message size whose silent stall before
+// any frame arrives on a fresh WebSocket is treated as a too-big refusal and
+// routed over HTTP. Small turns keep waiting without a first-frame cap so
+// slow reasoning relays are never cut short.
+const codexSocketBigTurn = 1 << 20
+
 var (
 	codexShunMu sync.Mutex
 	codexShun   = map[string]time.Time{}
@@ -534,6 +540,9 @@ func (t codexSocket) turn(req *http.Request, k *codexKept, msg []byte, shape *co
 		if req.Context().Err() != nil {
 			return req.Context().Err()
 		}
+		if !reused && len(msg) >= codexSocketBigTurn && errors.Is(err, context.DeadlineExceeded) {
+			refusedTooBig(k.host, len(msg))
+		}
 		err = codexSocketEnded(k.host, len(msg), err)
 		if reused {
 			return errCodexSocketAgain
@@ -541,7 +550,10 @@ func (t codexSocket) turn(req *http.Request, k *codexKept, msg []byte, shape *co
 		return err
 	}
 	trace := socketTrace(req, reused)
-	if err := k.c.Write(req.Context(), websocket.MessageText, msg); err != nil {
+	writeCtx, cancelWrite := context.WithTimeout(req.Context(), codexSocketDial)
+	err := k.c.Write(writeCtx, websocket.MessageText, msg)
+	cancelWrite()
+	if err != nil {
 		k.close()
 		return nil, ended(err)
 	}
@@ -552,7 +564,15 @@ func (t codexSocket) turn(req *http.Request, k *codexKept, msg []byte, shape *co
 	header := k.header.Clone()
 	body := &codexSocketBody{c: k.c, ctx: req.Context(), k: k, shape: shape}
 	for i := range codexSocketPrelude {
-		frame, err := body.frame()
+		fctx := req.Context()
+		var cancelFrame context.CancelFunc
+		if i == 0 && len(msg) >= codexSocketBigTurn {
+			fctx, cancelFrame = context.WithTimeout(fctx, codexSocketDial)
+		}
+		frame, err := body.frame(fctx)
+		if cancelFrame != nil {
+			cancelFrame()
+		}
 		if i == 0 && err == nil && trace != nil && trace.GotFirstResponseByte != nil {
 			trace.GotFirstResponseByte()
 		}
@@ -800,11 +820,11 @@ type codexSocketBody struct {
 }
 
 // frame is the socket's next frame, nil for one the reply leaves out.
-func (b *codexSocketBody) frame() ([]byte, error) {
+func (b *codexSocketBody) frame(ctx context.Context) ([]byte, error) {
 	if b.done {
 		return nil, io.EOF
 	}
-	typ, data, err := b.c.Read(b.ctx)
+	typ, data, err := b.c.Read(ctx)
 	if err != nil {
 		b.done = true
 		b.k.close()
@@ -858,7 +878,7 @@ func (b *codexSocketBody) Read(p []byte) (int, error) {
 		if b.done {
 			return 0, io.EOF
 		}
-		frame, err := b.frame()
+		frame, err := b.frame(b.ctx)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				// the backend ended the socket before the reply's end:

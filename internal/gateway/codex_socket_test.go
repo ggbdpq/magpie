@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -443,5 +444,114 @@ func TestCodexSocketTooBigMidReplyIsCut(t *testing.T) {
 	}
 	if posts, _ := f.counts(); posts != 0 {
 		t.Fatalf("%d HTTP posts; the turn was asked twice", posts)
+	}
+}
+
+// A large turn that silently stalls on a fresh upstream WebSocket before any
+// frame arrives must not hang until the client's idle timeout: it falls back
+// to HTTP and remembers the host's size limit so subsequent equally-large turns
+// go straight over HTTP, while small turns still use the WebSocket even when
+// the upstream takes longer than codexSocketDial before its first frame.
+func TestCodexSocketLargeTurnStallFallsBackToHTTP(t *testing.T) {
+	socketOn(t)
+	wasDial := codexSocketDial
+	codexSocketDial = 80 * time.Millisecond
+	t.Cleanup(func() { codexSocketDial = wasDial })
+
+	release := make(chan struct{})
+	var handshakes, posts atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/backend-api/codex/responses") {
+			http.NotFound(w, r)
+			return
+		}
+		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			c, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer c.CloseNow()
+			handshakes.Add(1)
+			c.SetReadLimit(-1)
+			_, msg, err := c.Read(r.Context())
+			if err != nil {
+				return
+			}
+			if len(msg) >= 1<<20 {
+				// Simulate silent stall on oversized WS message (no frame, no close).
+				select {
+				case <-r.Context().Done():
+				case <-release:
+				}
+				return
+			}
+			// Small turn: wait past codexSocketDial to verify slow reasoning
+			// relays on small turns are not prematurely cut short.
+			select {
+			case <-time.After(140 * time.Millisecond):
+			case <-r.Context().Done():
+				return
+			case <-release:
+				return
+			}
+			for _, fr := range wholeReply(socketTurn{}) {
+				if c.Write(r.Context(), websocket.MessageText, []byte(fr)) != nil {
+					return
+				}
+			}
+			c.Close(websocket.StatusNormalClosure, "")
+			return
+		}
+		io.ReadAll(r.Body)
+		posts.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse(
+			`event: response.created`+"\n"+`data: {"type":"response.created","response":{"id":"h1"}}`,
+			`event: response.output_text.delta`+"\n"+`data: {"type":"response.output_text.delta","delta":"pong"}`,
+			`event: response.completed`+"\n"+`data: {"type":"response.completed","response":{"id":"h1","usage":{"input_tokens":7,"output_tokens":1}}}`))
+	}))
+	t.Cleanup(up.Close)
+	t.Cleanup(func() { close(release) })
+	wasBase := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	t.Cleanup(func() { provider.CodexBase = wasBase })
+
+	post := func(body string, timeout time.Duration) (int, string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(body)).WithContext(ctx)
+		req.Header.Set("Authorization", "Bearer chatgpt-token")
+		req.Header.Set("chatgpt-account-id", "acct-1")
+		New().Handler().ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String(), ctx.Err()
+	}
+
+	big := `{"model":"gpt-5.5","stream":true,"input":"` + strings.Repeat("a", (1<<20)+1024) + `"}`
+	// Turn 1: fresh WS silently stalls on large body -> must fall back to HTTP before client timeout.
+	code, body, ctxErr := post(big, 600*time.Millisecond)
+	if ctxErr != nil || code != 200 || !strings.Contains(body, "response.completed") {
+		t.Fatalf("large turn 1: code=%d ctxErr=%v body=%q; want HTTP 200 fallback", code, ctxErr, body)
+	}
+	if posts.Load() != 1 || handshakes.Load() != 1 {
+		t.Fatalf("after large turn 1: posts=%d handshakes=%d; want 1 and 1", posts.Load(), handshakes.Load())
+	}
+
+	// Turn 2: equally-large turn goes straight over HTTP without opening another WS.
+	code, body, ctxErr = post(big, 600*time.Millisecond)
+	if ctxErr != nil || code != 200 || !strings.Contains(body, "response.completed") {
+		t.Fatalf("large turn 2: code=%d ctxErr=%v body=%q; want direct HTTP 200", code, ctxErr, body)
+	}
+	if posts.Load() != 2 || handshakes.Load() != 1 {
+		t.Fatalf("after large turn 2: posts=%d handshakes=%d; want 2 and 1", posts.Load(), handshakes.Load())
+	}
+
+	// Small turn: still uses WebSocket and succeeds even when first frame takes > codexSocketDial.
+	code, body, ctxErr = post(`{"model":"gpt-5.5","stream":true,"input":"ping"}`, 2*time.Second)
+	if ctxErr != nil || code != 200 || !strings.Contains(body, "response.completed") {
+		t.Fatalf("small turn: code=%d ctxErr=%v body=%q; want WS 200", code, ctxErr, body)
+	}
+	if posts.Load() != 2 || handshakes.Load() != 2 {
+		t.Fatalf("after small turn: posts=%d handshakes=%d; want 2 HTTP posts and 2 WS handshakes", posts.Load(), handshakes.Load())
 	}
 }

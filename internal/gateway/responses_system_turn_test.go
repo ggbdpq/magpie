@@ -73,3 +73,90 @@ func TestClaudeSystemTurnSaidInTheInstructionsOnResponses(t *testing.T) {
 		t.Fatalf("the system message after a reply was to be told as a reminder: %s", bodies[0])
 	}
 }
+
+// #7204: ZCode sends a Chat Completions request whose later tool rounds
+// append role:"system" reminders. readChat previously hoisted every system
+// and developer message into r.System, rewriting the cached top-level
+// Anthropic system block on every turn. Leading system prompts stay in
+// top-level system (byte-stable across turns), while mid-conversation
+// reminders after a reply stay in place as <system-reminder>.
+func TestChatToAnthropicKeepsCachedSystemPrefixOnLateReminder(t *testing.T) {
+	srv, seen := relayOfEvery(t)
+	fresh(t)
+	if err := provider.Save(provider.Provider{
+		ID: "anth-relay", Name: "Anthropic relay", Key: "k",
+		Anthropic: srv.URL, Models: []string{"claude-fable-5.2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prefix := "Reply with OK. Synthetic leading prompt."
+	reqA := `{"model":"anth-relay/claude-fable-5.2","stream":true,"max_completion_tokens":32,"messages":[` +
+		`{"role":"system","content":"` + prefix + `"},` +
+		`{"role":"user","content":"Reply with OK."}]}`
+	reqB := `{"model":"anth-relay/claude-fable-5.2","stream":true,"max_completion_tokens":32,"messages":[` +
+		`{"role":"system","content":"` + prefix + `"},` +
+		`{"role":"user","content":"Reply with OK."},` +
+		`{"role":"assistant","content":"OK"},` +
+		`{"role":"user","content":"Reply with OK once more."},` +
+		`{"role":"system","content":"Reminder for this turn: use a one-word reply."}]}`
+	reqC := `{"model":"anth-relay/claude-fable-5.2","stream":true,"max_completion_tokens":32,"messages":[` +
+		`{"role":"system","content":"` + prefix + `"},` +
+		`{"role":"user","content":"Read README"},` +
+		`{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","content":"file contents"},` +
+		`{"role":"system","content":"Tool-round reminder."}]}`
+
+	for i, body := range []string{reqA, reqB, reqC} {
+		if code, out := post(t, "/v1/chat/completions", body); code != 200 {
+			t.Fatalf("req %d: %d %s", i, code, out)
+		}
+	}
+	paths, bodies := seen()
+	if len(paths) != 3 || paths[0] != "/v1/messages" || paths[1] != "/v1/messages" || paths[2] != "/v1/messages" {
+		t.Fatalf("upstream paths %v, want three /v1/messages requests", paths)
+	}
+	type anthReq struct {
+		System   json.RawMessage `json:"system"`
+		Messages []struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type      string `json:"type"`
+				Text      string `json:"text"`
+				ToolUseID string `json:"tool_use_id"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	var got [3]anthReq
+	for i := range got {
+		if err := json.Unmarshal([]byte(bodies[i]), &got[i]); err != nil {
+			t.Fatalf("parse body %d: %v", i, err)
+		}
+	}
+	// Leading cached system block must remain byte-for-byte identical across all three requests.
+	if string(got[1].System) != string(got[0].System) {
+		t.Errorf("reqB rewrote cached system prefix:\n reqA: %s\n reqB: %s", got[0].System, got[1].System)
+	}
+	if string(got[2].System) != string(got[0].System) {
+		t.Errorf("reqC rewrote cached system prefix:\n reqA: %s\n reqC: %s", got[0].System, got[2].System)
+	}
+	// reqB keeps the late reminder in the trailing user message.
+	lastB := got[1].Messages[len(got[1].Messages)-1]
+	if lastB.Role != "user" {
+		t.Fatalf("reqB last message role %q, want user", lastB.Role)
+	}
+	foundB := false
+	for _, b := range lastB.Content {
+		if b.Type == "text" && strings.Contains(b.Text, "<system-reminder>") && strings.Contains(b.Text, "Reminder for this turn: use a one-word reply.") {
+			foundB = true
+		}
+	}
+	if !foundB {
+		t.Errorf("reqB lost late reminder in trailing message: %s", bodies[1])
+	}
+	// reqC keeps tool_result first and late reminder after it in the trailing user message.
+	lastC := got[2].Messages[len(got[2].Messages)-1]
+	if lastC.Role != "user" || len(lastC.Content) < 2 || lastC.Content[0].Type != "tool_result" || lastC.Content[0].ToolUseID != "call_1" ||
+		!strings.Contains(lastC.Content[1].Text, "Tool-round reminder.") {
+		t.Errorf("reqC did not keep tool_result followed by late reminder: %s", bodies[2])
+	}
+}

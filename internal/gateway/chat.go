@@ -144,14 +144,26 @@ func readChat(body []byte, facts bool) (*Request, error) {
 		decodeJSON(c.Stop, &r.Stop)
 	}
 	var sys []string
+	replied := false
 	for _, m := range c.Messages {
 		switch m.Role {
 		case "system", "developer":
+			if replied {
+				// Keep mid-conversation system/developer reminders in place so
+				// they do not rewrite the leading cached system prefix (#7204);
+				// responseInstructions folds them in place as <system-reminder>
+				// across all translated builders.
+				if t := stringOrText(m.Content); t != "" {
+					r.Messages = append(r.Messages, Message{Role: m.Role, Parts: []Part{{Kind: Text, Text: t}}})
+				}
+				continue
+			}
 			sys = append(sys, stringOrText(m.Content))
 			r.systemRaw = append(r.systemRaw, m.Content)
 		case "user":
 			r.Messages = append(r.Messages, Message{Role: "user", Parts: chatParts(m.Content)})
 		case "assistant":
+			replied = true
 			if facts {
 				r.Messages = append(r.Messages, Message{Role: "assistant"})
 				continue
@@ -174,6 +186,7 @@ func readChat(body []byte, facts bool) (*Request, error) {
 			}
 			r.Messages = append(r.Messages, msg)
 		case "tool":
+			replied = true
 			if facts {
 				r.Messages = append(r.Messages, Message{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: m.ToolCallID}}})
 				continue

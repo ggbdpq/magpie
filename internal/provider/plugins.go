@@ -979,7 +979,9 @@ func notePluginSignIn(pp plugin.Provider, account string, resp *http.Response) {
 
 // notePluginSaid marks or clears an account's lapse as the plugin said
 // ("expired", "kept", "renewed"), or, when it said nothing, as status
-// reads: a 401 marks it and a success clears it.
+// reads: a 401 marks it and a success clears it. "kept" suppresses
+// marking on non-2xx responses while a 2xx success still clears a stale
+// lapse mark (#6078).
 func notePluginSaid(pp plugin.Provider, account, said string, status int) {
 	switch said {
 	case "expired":
@@ -987,6 +989,9 @@ func notePluginSaid(pp plugin.Provider, account, said string, status int) {
 	case "renewed":
 		notePluginLapse(pp, account, http.StatusOK)
 	case "kept":
+		if status >= 200 && status <= 299 {
+			notePluginLapse(pp, account, status)
+		}
 	default:
 		notePluginLapse(pp, account, status)
 	}

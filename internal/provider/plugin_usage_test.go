@@ -240,6 +240,94 @@ func TestPluginUsageLapse(t *testing.T) {
 	}
 }
 
+// "kept" suppresses marking an account lapsed on non-2xx / error responses,
+// but a 200 OK response with X-Magpie-Sign-In: kept or a clean usage() read
+// with signIn: "kept" clears a stale lapsed mark (#6078).
+func TestPluginKeptClearsStaleLapse(t *testing.T) {
+	bun := testenv.Bun(t)
+	claudeHome(t)
+	t.Setenv("MAGPIE_BUN", bun)
+	t.Cleanup(plugin.Settle)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	abs, _ := filepath.Abs("../plugin/testdata/fake/index.js")
+	if _, err := plugin.Add(ctx, abs); err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]string{}
+	var rows []savedLogin
+	for user, refresh := range map[string]string{
+		"chat@fake":      "r-ok",
+		"usage-ok@fake":  "r-kept-ok",
+		"usage-err@fake": "r-kept",
+	} {
+		k, err := plugin.Import(ctx, "fakeco", map[string]any{"type": "oauth", "refresh": refresh, "access": "a", "expires": 9e15, "accountId": user})
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys[user] = k
+		rows = append(rows, savedLogin{Agent: "plugin:fakeco", User: user, Home: k, On: true})
+	}
+	saveLogins(t, rows...)
+	if _, err := plugin.Providers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pp := mustPlugin(t)
+	lapsed := func(user string) bool {
+		for _, l := range pluginLogins(mustPlugin(t)) {
+			if l.User == user {
+				return l.Lapsed != ""
+			}
+		}
+		t.Fatalf("no account %s", user)
+		return false
+	}
+
+	// Non-2xx with X-Magpie-Sign-In: kept leaves an unmarked account unmarked.
+	resp401 := &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{SignInHeader: {"kept"}}}
+	notePluginSignIn(pp, keys["chat@fake"], resp401)
+	if lapsed("chat@fake") {
+		t.Fatal("401 with X-Magpie-Sign-In: kept marked an unmarked account lapsed")
+	}
+
+	// Mark all three accounts lapsed, simulating an earlier transient 401.
+	for _, u := range []string{"chat@fake", "usage-ok@fake", "usage-err@fake"} {
+		notePluginLapse(pp, keys[u], http.StatusUnauthorized)
+		if !lapsed(u) {
+			t.Fatalf("%s was not marked lapsed", u)
+		}
+	}
+
+	// Non-2xx or status 0 with "kept" must not clear an existing lapse.
+	notePluginSaid(pp, keys["chat@fake"], "kept", http.StatusUnauthorized)
+	notePluginSaid(pp, keys["chat@fake"], "kept", 0)
+	if !lapsed("chat@fake") {
+		t.Fatal("non-2xx / status 0 with kept cleared a lapsed mark")
+	}
+
+	// 200 OK with X-Magpie-Sign-In: kept clears the stale lapse mark.
+	resp200 := &http.Response{StatusCode: http.StatusOK, Header: http.Header{SignInHeader: {"kept"}}}
+	notePluginSignIn(pp, keys["chat@fake"], resp200)
+	if lapsed("chat@fake") {
+		t.Error("200 OK with X-Magpie-Sign-In: kept left stale lapsed mark")
+	}
+
+	// Clean usage() with signIn: "kept" clears the stale lapse mark.
+	q := pluginLoginQuota(ctx, Login{Agent: "plugin:fakeco", User: "usage-ok@fake"})
+	if q.Error != "" {
+		t.Fatalf("usage-ok@fake returned error: %s", q.Error)
+	}
+	if lapsed("usage-ok@fake") {
+		t.Error("clean usage() with signIn: kept left stale lapsed mark")
+	}
+
+	// Error usage() with signIn: "kept" leaves the existing lapse mark intact.
+	pluginLoginQuota(ctx, Login{Agent: "plugin:fakeco", User: "usage-err@fake"})
+	if !lapsed("usage-err@fake") {
+		t.Error("error usage() with signIn: kept cleared an existing lapsed mark")
+	}
+}
+
 // A usage read begun before a request was answered doesn't overrule what
 // the answer told of the sign-in: one that ends clean leaves the mark of a
 // 401 that came meanwhile, and one that ends refused doesn't mark an

@@ -118,6 +118,9 @@ func pluginLoginQuota(ctx context.Context, l Login) SubscriptionQuota {
 	case u.SignIn == "renewed":
 		notePluginLapseSince(pp, key, http.StatusOK, began)
 	case u.SignIn == "kept":
+		if u.Error == "" {
+			notePluginLapseSince(pp, key, http.StatusOK, began)
+		}
 	case signInGone.MatchString(u.Error):
 		notePluginLapseSince(pp, key, http.StatusUnauthorized, began)
 	case u.Error == "":

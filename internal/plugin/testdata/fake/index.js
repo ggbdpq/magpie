@@ -315,6 +315,7 @@ export const FakePlugin = async ({ client }) => ({
         }
       }
       if (a.refresh === "r-kept") return { error: "sign in again to see usage", signIn: "kept" }
+      if (a.refresh === "r-kept-ok") return { plan: "Fake Pro", signIn: "kept" }
       if (a.refresh === "r-renewed") return { error: "usage is down", signIn: "renewed" }
       // $FAKE_WINDOWS: a JSON file of each account's windows, read at
       // each reading, as a vendor's usage page says them now (Factory's

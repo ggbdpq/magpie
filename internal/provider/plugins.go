@@ -653,7 +653,16 @@ func pluginProviderServing(pp plugin.Provider, l pluginLogin, keys []string) Pro
 		}
 	}
 	for _, m := range pp.Models {
+		// Non-text models (image-only, video-only, audio, embeddings) use
+		// OpenAIBase/DrawersOf/VideomakersOf rather than text chat routes;
+		// letting them set p.Chat made an Anthropic-only plugin (e.g. agy-cli
+		// with gemini-3.1-flash-image, #7889) look relayable on Chat.
+		// CodeAssist stays enabled so image-only @ai-sdk/google models still draw.
+		nonText := m.OutputsSaid && !slices.Contains(m.Outputs, "text")
 		for _, proto := range pluginProtocols(pp.ID, m) {
+			if nonText && proto != CodeAssist {
+				continue
+			}
 			switch proto {
 			case Chat:
 				p.Chat = pluginBase + pp.ID + "/v1"

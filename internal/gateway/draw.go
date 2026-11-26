@@ -1523,12 +1523,12 @@ func (s *Server) drawAsked(ctx context.Context, p provider.Provider, model strin
 		// completions at all, is served too (#7263)
 		return s.drawGemini(ctx, p, model, d)
 	}
-	if p.Base(provider.Chat) == "" && p.Base(provider.Responses) == "" {
+	if p.Base(provider.Chat) == "" && p.Base(provider.Responses) == "" && !(p.IsPlugin() && p.PluginOpenAICompatible(model)) {
 		return drawn{}, 400, fmt.Errorf("%s can't draw: magpie draws only through an OpenAI-compatible API, and %s has none", p.Name, p.Name)
 	}
 	via := viaFor(p, model)
 	out, code, err := s.drawOn(ctx, p, model, d, via)
-	if err != nil && via != viaGemini && (((code == 404 || code == 405) && !(isOpenRouter(p) && via == viaImages)) || pointsAway(via, code, err)) {
+	if err != nil && via != viaGemini && !(via == viaImages && p.Base(provider.Chat) == "") && (((code == 404 || code == 405) && !(isOpenRouter(p) && via == viaImages)) || pointsAway(via, code, err)) {
 		other := viaChat
 		if via == viaChat {
 			other = viaImages
@@ -1758,6 +1758,9 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 		return s.drawMiniMax(ctx, p, model, d)
 	}
 	base := strings.TrimRight(p.Base(provider.Chat), "/")
+	if base == "" && p.IsPlugin() && p.PluginOpenAICompatible(model) {
+		base = strings.TrimRight(p.OpenAIBase(), "/")
+	}
 	if base == "" {
 		// a Responses-only relay serves the images API under the same root
 		// as its Responses endpoint

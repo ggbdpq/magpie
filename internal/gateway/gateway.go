@@ -6011,7 +6011,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				continue
 			}
 		}
-		if last && !held && !hw.passing && hw.failed() && quotaStatus(hw.code()) && (c.p.Account == nil || !hw.turnedAway && try.Fail != failPrompt) && (try.Fail == failQuota || try.Fail == failCredit || failure(hw.code(), hw.errBody()) == failQuota || failure(hw.code(), hw.errBody()) == failCredit) {
+		if last && !held && !hw.passing && hw.failed() && (quotaStatus(hw.code()) || hw.code() >= 400 && hw.code() < 500) && (c.p.Account == nil || !hw.turnedAway && try.Fail != failPrompt) && (try.Fail == failQuota || try.Fail == failCredit || failure(hw.code(), hw.errBody()) == failQuota || failure(hw.code(), hw.errBody()) == failCredit) {
 			// the last key left is out of its allowance: it rests as the
 			// ones before it did, for the next request to be answered
 			// from the rests until the first of them is back (#1772). An
@@ -6019,7 +6019,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// of failure went on to, and its 429 the agent's, request
 			// after request, while the relay before it would answer
 			// (dbydd on Discord), once its own refusal is read as out of
-			// quota or credit (not Antigravity's 429 to a prompt).
+			// quota or credit (not Antigravity's 429 to a prompt). A 4xx
+			// out-of-credit or expired-subscription refusal on a single-key
+			// provider rests it too so AutoVision and group picks stop
+			// hitting it while quotaHeld stays gated on quotaStatus.
 			// quotaHeld still holds keys alone, and autoReset lifts the
 			// rest of an account it spends a reset of
 			rest := s.restAfterMarked(c, hw.code(), hw.header, hw.errBody(), hw.sharedPool)
@@ -6031,6 +6034,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// the vendor, which flags an account asked so (hsjzg58958 on
 			// X). A 429 naming no time rests nobody, as before: a relay's
 			// moment of saturation is asked again
+			rest := s.restAfterMarked(c, hw.code(), hw.header, hw.errBody(), hw.sharedPool)
+			try.Fail, try.Rest = rest.Why, &rest
+		} else if last && !held && !hw.passing && hw.failed() && !hw.turnedAway && try.Fail != failPrompt && modelRefused(hw.code(), hw.errBody()) {
+			// A model the vendor's plan does not serve rests alone even when
+			// it was the only candidate asked (e.g. a vision describer call),
+			// so automatic pickers pass over it instead of repeating 404s.
 			rest := s.restAfterMarked(c, hw.code(), hw.header, hw.errBody(), hw.sharedPool)
 			try.Fail, try.Rest = rest.Why, &rest
 		}

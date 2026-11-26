@@ -617,7 +617,7 @@ func smallReadyOf(p provider.Provider, cs []smallCand, from provider.Protocol) (
 	}
 	now := time.Now()
 	for _, c := range cs {
-		if _, spent := spentModel(p, c.id, from, now); !spent {
+		if _, spent := spentModel(p, c.id, from, now); !spent && !unservedModel(p, c.id, from) {
 			// every account of p signed out, none is asked: a Claude
 			// sign-in Anthropic refused stayed Image recognition's first
 			// pick, and each image failed on it (@freefcw on X)

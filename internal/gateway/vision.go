@@ -617,7 +617,18 @@ func (s *Server) describeWith(ctx context.Context, model, src, system, text stri
 		if len(r) == 0 || !r[0].ready {
 			break
 		}
+		// Prefer a ready describer on another provider before trying more
+		// models on a provider that already failed this description.
 		next := r[0].model
+		for _, c := range r {
+			if !c.ready {
+				break
+			}
+			if !slices.ContainsFunc(tried, func(m string) bool { return providerOfRef(m) == providerOfRef(c.model) }) {
+				next = c.model
+				break
+			}
+		}
 		askCtx = describingInstead(ctx, ask, model, err)
 		tried = append(tried, next)
 		ask = next

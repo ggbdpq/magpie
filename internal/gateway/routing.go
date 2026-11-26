@@ -338,8 +338,8 @@ func creditBackoff(id string, header http.Header, body []byte, now time.Time) (d
 }
 
 var (
-	// creditWords: the account or key has no money left.
-	creditWords = lazyre.New(`(?i)insufficient.?(balance|credit|fund)|balance|credit|billing|payment|arrear|overdue|suspended|余额|欠费|充值|账户.*(不足|停)`)
+	// creditWords: the account or key has no money left, or its subscription expired.
+	creditWords = lazyre.New(`(?i)insufficient.?(balance|credit|fund)|balance|credit|billing|payment|arrear|overdue|suspended|subscription.{0,32}(expired|inactive|canceled|cancelled|ended)|(?:no|without|not have a) (?:valid |active )?.{0,32}subscription|余额|欠费|充值|账户.*(不足|停)|订阅.{0,12}(过期|到期|失效|未开通)`)
 	// brokeWords: a 429 that says the balance itself is spent, as Zhipu
 	// answers a GLM Coding Plan's key at the pay-as-you-go endpoint (1113
 	// "余额不足或无可用资源包，请充值") — out of credit, not a rate limit;

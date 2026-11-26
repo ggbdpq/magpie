@@ -1657,6 +1657,23 @@ func spentModel(p provider.Provider, model string, from provider.Protocol, now t
 	return back, true
 }
 
+// unservedModel reports whether every candidate routing would try for p's model
+// is currently resting solely because the vendor refused that model as unserved.
+func unservedModel(p provider.Provider, model string, from provider.Protocol) bool {
+	out, aside, _, _ := perKeyBarred(p, model, from)
+	cs := append(out, aside...)
+	if len(cs) == 0 {
+		return false
+	}
+	for _, c := range cs {
+		r, ok := restOf(c.restID())
+		if !ok || r.Why != failOther || r.Model != c.model || !modelRefused(r.Status, []byte(r.Error)) {
+			return false
+		}
+	}
+	return true
+}
+
 var restingUntil = struct {
 	sync.Mutex
 	m    map[string]time.Time

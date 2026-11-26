@@ -294,3 +294,65 @@ func TestCrushModelsSayTheyTakeImages(t *testing.T) {
 		t.Fatalf("supports_attachments %v in:\n%s", got, readFile(cr.Path))
 	}
 }
+
+// #7581: Crush reads catwalk's reasoning_levels and default_reasoning_effort
+// (migrating them to reasoning.effort_levels / reasoning.default_effort_level
+// on Crush 0.99+). Models with effort levels must emit both fields so Crush's
+// effort picker, ValidateReasoningEffort, and agent_dispatch work; models
+// without effort levels must omit them.
+func TestCrushModelsEmitReasoningLevels(t *testing.T) {
+	home, _ := crushHome(t)
+	if err := provider.Save(provider.Provider{
+		ID: "think", Name: "Think", Chat: "https://example.test/v1", Key: "key",
+		Models: []string{"tiered", "custom-def", "plain"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive("think", "https://example.test/v1", []catalog.Model{
+		{ID: "tiered", Efforts: []string{"low", "medium", "high"}},
+		{ID: "custom-def", Efforts: []string{"none", "low", "high"}, DefaultEffort: "high"},
+		{ID: "plain"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cr := crush(home, filepath.Join(home, ".config"))
+	if err := cr.Field("model").Set("magpie/think/tiered"); err != nil {
+		t.Fatal(err)
+	}
+	var f struct {
+		Providers map[string]struct {
+			Models []struct {
+				ID                     string   `json:"id"`
+				CanReason              bool     `json:"can_reason"`
+				ReasoningLevels        []string `json:"reasoning_levels"`
+				DefaultReasoningEffort string   `json:"default_reasoning_effort"`
+			} `json:"models"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal([]byte(readFile(cr.Path)), &f); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]struct {
+		canReason bool
+		levels    []string
+		def       string
+	}{}
+	for _, m := range f.Providers["magpie"].Models {
+		if strings.HasPrefix(m.ID, "think/") {
+			byID[m.ID] = struct {
+				canReason bool
+				levels    []string
+				def       string
+			}{m.CanReason, m.ReasoningLevels, m.DefaultReasoningEffort}
+		}
+	}
+	if got := byID["think/tiered"]; !got.canReason || strings.Join(got.levels, ",") != "low,medium,high" || got.def != "medium" {
+		t.Fatalf("think/tiered = %+v, want canReason=true levels=[low medium high] def=medium\n%s", got, readFile(cr.Path))
+	}
+	if got := byID["think/custom-def"]; !got.canReason || strings.Join(got.levels, ",") != "none,low,high" || got.def != "high" {
+		t.Fatalf("think/custom-def = %+v, want canReason=true levels=[none low high] def=high\n%s", got, readFile(cr.Path))
+	}
+	if got := byID["think/plain"]; got.canReason || len(got.levels) != 0 || got.def != "" {
+		t.Fatalf("think/plain = %+v, want canReason=false levels=[] def=\"\"\n%s", got, readFile(cr.Path))
+	}
+}

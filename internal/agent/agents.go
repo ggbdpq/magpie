@@ -768,6 +768,32 @@ func magpieProviderJSONAt(shape, catalog, gw string) any {
 			// for a model that takes them (Novello42 on X, #6515)
 			cm := map[string]any{"id": m.ID, "name": m.Name, "context_window": window, "default_max_tokens": tokens,
 				"can_reason": len(m.Efforts) > 0, "supports_attachments": m.Images}
+			// Crush uses catwalk's reasoning_levels and default_reasoning_effort
+			// (migrated by Crush 0.99+ into reasoning.effort_levels and
+			// reasoning.default_effort_level) for its effort picker,
+			// ValidateReasoningEffort, and agent_dispatch (#7581).
+			if len(m.Efforts) > 0 {
+				levels := slices.Clone(m.Efforts)
+				cm["reasoning_levels"] = levels
+				def := ""
+				switch {
+				case m.DefaultEffort != "" && slices.Contains(levels, m.DefaultEffort):
+					def = m.DefaultEffort
+				case slices.Contains(levels, "medium"):
+					def = "medium"
+				default:
+					for _, l := range levels {
+						if l != "none" {
+							def = l
+							break
+						}
+					}
+					if def == "" {
+						def = levels[0]
+					}
+				}
+				cm["default_reasoning_effort"] = def
+			}
 			// Crush counts a session's cost by it (catwalk's cost_per_1m_*,
 			// Crush 0.39.3): in_cached is a cache write, out_cached a read
 			if p := m.Price; p != nil {

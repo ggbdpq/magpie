@@ -254,6 +254,11 @@ type Request struct {
 	// request is Claude Code's interactive mode, not claude -p: what a
 	// refusal it ends in is told with (thirdPartyRefused, #4503)
 	interactive bool
+	// longContext, for the Claude bridge, is that the caller explicitly
+	// asked for the "[1m]" long-context suffix on the model (e.g.
+	// claude/claude-opus-4-6[1m]), which provider.Resolve stripped before
+	// routing (#7586).
+	longContext bool
 	// tuiRefused, for the Claude bridge, is a request whose agent's
 	// system prompt Anthropic refused in the interactive mode as a
 	// third-party app's (#4503): its run is claude -p, which is served

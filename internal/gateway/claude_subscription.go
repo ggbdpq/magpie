@@ -180,11 +180,12 @@ var (
 const parkedMost = 16
 
 type subscriptionRun struct {
-	bridge *subscriptionBridge
-	token  string
-	model  string
-	cmd    *exec.Cmd
-	tree   *proc.Tree // cmd once started, with all it starts
+	bridge      *subscriptionBridge
+	token       string
+	model       string
+	longContext bool
+	cmd         *exec.Cmd
+	tree        *proc.Tree // cmd once started, with all it starts
 	// the read ends of Claude Code's output, and their readers
 	outputs []*os.File
 	reading sync.WaitGroup
@@ -1086,7 +1087,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	mcpConfig, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{
 		"magpie": map[string]any{"command": exe, "args": []string{claudetui.MCPCommand, callbackPath, toolsPath, filepath.Join(tmp, "listed")}},
 	}})
-	args := claudeCLIArgs(claudeRunName(model), string(mcpConfig), req.Effort, req.WebSearch)
+	args := claudeCLIArgs(claudeRunNameFor(model, req.longContext), string(mcpConfig), req.Effort, req.WebSearch)
 	if req.ThinkOff {
 		// the client turned thinking off, as Claude Code's auto mode
 		// classifier and its small asks do: a run at Claude Code's own
@@ -1401,7 +1402,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	}
 	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
 
-	run := &subscriptionRun{bridge: b, token: token, model: model, cmd: cmd, tmp: tmp, schema: len(req.Format.schema()) > 0, pending: map[string]chan mcpToolResult{}, stdin: stdin, effort: req.Effort, sessions: sessions, started: time.Now()}
+	run := &subscriptionRun{bridge: b, token: token, model: model, longContext: req.longContext, cmd: cmd, tmp: tmp, schema: len(req.Format.schema()) > 0, pending: map[string]chan mcpToolResult{}, stdin: stdin, effort: req.Effort, sessions: sessions, started: time.Now()}
 	run.owner.Store(&owner)
 	run.names = bridgeNames(req.Tools)
 	run.safeguardBeta = req.SafeguardBeta
@@ -2364,7 +2365,7 @@ func newLooseTurn(owner string, req *Request, msgs []Message, sealed bool) *loos
 		}
 	}
 	h := sha256.New()
-	fmt.Fprintf(h, "%s\x00%s\x00%t\x00%t\x00%s\x00%s\x00%t\x00%s", owner, req.Model, req.Effort != "", req.ThinkOff, req.ToolChoice, withoutBillingHeader(req.System), req.WebSearch, req.Format.schema())
+	fmt.Fprintf(h, "%s\x00%s\x00%t\x00%t\x00%t\x00%s\x00%s\x00%t\x00%s", owner, req.Model, req.longContext, req.Effort != "", req.ThinkOff, req.ToolChoice, withoutBillingHeader(req.System), req.WebSearch, req.Format.schema())
 	cacheIdentity(h, req)
 	settings := hex.EncodeToString(h.Sum(nil))
 	fmt.Fprintf(h, "\x00%d", start)
@@ -3973,7 +3974,7 @@ func (r *subscriptionRun) park() {
 func turnKey(owner string, req *Request, msgs []Message) string {
 	h := sha256.New()
 	tools, _ := json.Marshal(req.Tools)
-	fmt.Fprintf(h, "%s\x00%s\x00%t\x00%t\x00%s\x00%s\x00%s\x00%t\x00%s", owner, req.Model, req.Effort != "", req.ThinkOff, req.ToolChoice, withoutBillingHeader(req.System), tools, req.WebSearch, req.Format.schema())
+	fmt.Fprintf(h, "%s\x00%s\x00%t\x00%t\x00%t\x00%s\x00%s\x00%s\x00%t\x00%s", owner, req.Model, req.longContext, req.Effort != "", req.ThinkOff, req.ToolChoice, withoutBillingHeader(req.System), tools, req.WebSearch, req.Format.schema())
 	cacheIdentity(h, req)
 	hashMessages(h, msgs, nil)
 	return hex.EncodeToString(h.Sum(nil))
@@ -4132,6 +4133,19 @@ func claudeRunName(model string) string {
 		return model
 	}
 	return model + "[1m]"
+}
+
+// claudeRunNameFor is claudeRunName, also keeping an explicit "[1m]"
+// suffix the caller asked for in the request body (e.g.
+// claude/claude-opus-4-6[1m]), which provider.Resolve stripped before
+// routing (#7586). Models Claude Code already runs to 1M by their own
+// id (claudeKnownLong) keep their bare id.
+func claudeRunNameFor(model string, longContext bool) string {
+	name := claudeRunName(model)
+	if !longContext || strings.HasSuffix(name, "[1m]") || slices.Contains(claudeKnownLong, strings.ToLower(name)) {
+		return name
+	}
+	return name + "[1m]"
 }
 
 // claudeCLIArgs runs Claude Code with none of its own tools but, when the
@@ -6159,7 +6173,7 @@ func (b *subscriptionBridge) match(req *Request) (*subscriptionRun, []Part, stri
 			h := sha256.New()
 			hashMessages(h, req.Messages, func(int) { before[hex.EncodeToString(h.Sum(nil))] = true })
 		}
-		run, named, w := b.remap(req.Model, calls, fresh, before)
+		run, named, w := b.remap(req.Model, req.longContext, calls, fresh, before)
 		if run != nil {
 			return run, named, byRemap
 		}
@@ -6180,7 +6194,7 @@ func (b *subscriptionBridge) match(req *Request) (*subscriptionRun, []Part, stri
 // arguments. Only one may be: two conversations that are the same so far,
 // down to their calls, would have their results told to either, and a new
 // run is started instead. The results are returned named by the run's ids.
-func (b *subscriptionBridge) remap(model string, calls, fresh []Part, before map[string]bool) (*subscriptionRun, []Part, string) {
+func (b *subscriptionBridge) remap(model string, longContext bool, calls, fresh []Part, before map[string]bool) (*subscriptionRun, []Part, string) {
 	if len(calls) == 0 {
 		return nil, nil, noRunWaiting
 	}
@@ -6208,7 +6222,7 @@ func (b *subscriptionBridge) remap(model string, calls, fresh []Part, before map
 	for _, run := range runs {
 		run.mu.Lock()
 		shown, told := slices.Clone(run.shown), run.told
-		waiting := !run.closed && !run.parkedAt.IsZero() && (run.model == "" || model == "" || run.model == model)
+		waiting := !run.closed && !run.parkedAt.IsZero() && (run.model == "" || model == "" || run.model == model) && run.longContext == longContext
 		run.mu.Unlock()
 		if !waiting || len(shown) != len(calls) {
 			continue
@@ -7612,6 +7626,7 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
 		}
 	}
 	req.Model = model
+	req.longContext = name == "Claude Code" && strings.HasSuffix(strings.TrimSpace(modelOf(body)), "[1m]")
 	if req.clientCache != nil {
 		req.clientCache.report = func() { cacheReportReady(w, req) }
 	}

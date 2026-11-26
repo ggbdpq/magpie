@@ -790,7 +790,7 @@ type codexSocketBody struct {
 	ctx    context.Context
 	k      *codexKept
 	shape  *codexTurnShape // nil: the socket isn't kept after the turn
-	output []itemSum
+	output []codexOutItem
 	// sealed: which of output are reasoning items (codexKept.sealed)
 	sealed  []bool
 	pending []byte

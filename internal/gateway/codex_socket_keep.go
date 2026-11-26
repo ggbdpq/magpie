@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -75,7 +77,7 @@ type codexKept struct {
 	timer  *time.Timer
 	fields map[string]string
 	input  []itemSum
-	output []itemSum
+	output []codexOutItem
 	// sealed says which of output are reasoning items, which a Copilot
 	// turn may come back without: Copilot's reasoning ids are Base64,
 	// + and / in them, and plainItemIDs leaves such reasoning out of the
@@ -267,24 +269,48 @@ func codexShape(body []byte) (*codexTurnShape, bool) {
 	return s, true
 }
 
+// codexOutItem holds the digests a client's replay of a response.output_item.done
+// item may match: exact, plus any subset of top-level relay bookkeeping fields
+// (metadata, internal_chat_message_metadata_passthrough) or an assistant
+// message's phase omitted on replay. Changed values are not in the set, so
+// edited metadata, phase, or item content still falls back to full history.
+type codexOutItem []itemSum
+
+func (o codexOutItem) matches(sum itemSum) bool {
+	return slices.Contains(o, sum)
+}
+
 // codexSocketItem is an item's digest as the backend and Codex both have it:
 // with neither its own id nor status (Codex sends its items back without
 // ids the backend gave), and nothing null, an empty list, annotations or
 // logprobs at any depth (Codex keeps none of them).
 func codexSocketItem(raw []byte) (itemSum, bool) {
+	m, ok := codexSocketItemMap(raw)
+	if !ok {
+		return itemSum{}, false
+	}
+	return codexSocketItemDigest(m)
+}
+
+func codexSocketItemMap(raw []byte) (map[string]any, bool) {
 	var v any
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
 	if d.Decode(&v) != nil {
-		return itemSum{}, false
+		return nil, false
 	}
 	m, ok := v.(map[string]any)
 	if !ok {
-		return itemSum{}, false
+		return nil, false
 	}
 	delete(m, "id")
 	delete(m, "status")
-	b, err := json.Marshal(codexSocketItemBare(m))
+	codexSocketItemBare(m)
+	return m, true
+}
+
+func codexSocketItemDigest(m map[string]any) (itemSum, bool) {
+	b, err := json.Marshal(m)
 	if err != nil {
 		return itemSum{}, false
 	}
@@ -333,8 +359,8 @@ func (k *codexKept) delta(body []byte, s *codexTurnShape) ([]byte, bool) {
 		}
 	}
 	n := len(k.input)
-	for i, sum := range k.output {
-		if n < len(s.sums) && s.sums[n] == sum {
+	for i, out := range k.output {
+		if n < len(s.sums) && out.matches(s.sums[n]) {
 			n++
 			continue
 		}
@@ -378,11 +404,44 @@ func withField(body []byte, key string, raw []byte) []byte {
 	return append(out, rest...)
 }
 
-// codexReplyItem is a response.output_item.done frame's item's digest.
-func codexReplyItem(frame []byte) (itemSum, bool) {
+// codexReplyItem is a response.output_item.done frame's item's acceptable
+// replay digests.
+func codexReplyItem(frame []byte) (codexOutItem, bool) {
 	it := gjson.GetBytes(frame, "item")
 	if !it.IsObject() {
-		return itemSum{}, false
+		return nil, false
 	}
-	return codexSocketItem([]byte(it.Raw))
+	m, ok := codexSocketItemMap([]byte(it.Raw))
+	if !ok {
+		return nil, false
+	}
+	var drop []string
+	for _, k := range []string{"metadata", "internal_chat_message_metadata_passthrough"} {
+		if _, has := m[k]; has {
+			drop = append(drop, k)
+		}
+	}
+	if m["type"] == "message" && m["role"] == "assistant" {
+		if _, has := m["phase"]; has {
+			drop = append(drop, "phase")
+		}
+	}
+	out := make(codexOutItem, 0, 1<<len(drop))
+	for mask := range 1 << len(drop) {
+		c := m
+		if mask != 0 {
+			c = maps.Clone(m)
+			for i, k := range drop {
+				if mask&(1<<i) != 0 {
+					delete(c, k)
+				}
+			}
+		}
+		sum, ok := codexSocketItemDigest(c)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, sum)
+	}
+	return out, true
 }

@@ -331,3 +331,108 @@ func TestCodexSocketRowCountsWhatTheSocketSent(t *testing.T) {
 		t.Errorf("the delta turn counted %d bytes up, the whole conversation", rows[1].UpBytes)
 	}
 }
+
+// Relay output items may carry top-level metadata, passthrough metadata, or an
+// assistant message phase that Codex omits when replaying history on the next
+// turn. Omitting those output-only fields still sends a delta, while changing
+// their values or changing item content still falls back to full history.
+func TestCodexKeptSocketDeltaAllowsOmittedOutputMetaAndPhase(t *testing.T) {
+	const (
+		fcReplay = `{"type":"function_call","call_id":"call_1","name":"example_tool","arguments":"{}"}`
+		fcOut    = `{"type":"function_call_output","call_id":"call_1","output":"ok"}`
+		msgBase  = `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"working"}]}`
+	)
+	relayReply := func(f *fakeSocketBackend) func(socketTurn) []string {
+		return func(turn socketTurn) []string {
+			f.mu.Lock()
+			n := len(f.sockets)
+			f.mu.Unlock()
+			created := fmt.Sprintf(`{"type":"response.created","response":{"id":"resp-%d"}}`, n)
+			if prev := gjson.GetBytes(turn.msg, "previous_response_id").String(); prev != "" {
+				created = fmt.Sprintf(`{"type":"response.created","response":{"id":"resp-%d","previous_response_id":%q}}`, n, prev)
+			}
+			return []string{
+				created,
+				`{"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_1","name":"example_tool","arguments":"{}","metadata":{"turn_id":"t1"},"internal_chat_message_metadata_passthrough":{"create_time":1234567890,"turn_id":"t1","content_token_count":12}}}`,
+				`{"type":"response.output_item.done","output_index":1,"item":{"id":"msg_1","type":"message","status":"completed","role":"assistant","phase":"commentary","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"working"}],"metadata":{"turn_id":"t1"},"internal_chat_message_metadata_passthrough":{"create_time":1234567891,"turn_id":"t1"}}}`,
+				`{"type":"response.output_text.delta","delta":"pong"}`,
+				fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp-%d","usage":{"input_tokens":7,"output_tokens":1}}}`, n),
+			}
+		}
+	}
+
+	cases := []struct {
+		name      string
+		replayFC  string
+		replayMsg string
+		wantDelta bool
+	}{
+		{
+			name:      "omit_meta_and_phase",
+			replayFC:  fcReplay,
+			replayMsg: msgBase,
+			wantDelta: true,
+		},
+		{
+			name:      "omit_meta_keep_phase",
+			replayFC:  fcReplay,
+			replayMsg: `{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"working"}]}`,
+			wantDelta: true,
+		},
+		{
+			name:      "omit_passthrough_keep_meta",
+			replayFC:  `{"type":"function_call","call_id":"call_1","name":"example_tool","arguments":"{}","metadata":{"turn_id":"t1"}}`,
+			replayMsg: `{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"working"}],"metadata":{"turn_id":"t1"}}`,
+			wantDelta: true,
+		},
+		{
+			name:      "changed_phase_goes_whole",
+			replayFC:  fcReplay,
+			replayMsg: `{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"working"}]}`,
+			wantDelta: false,
+		},
+		{
+			name:      "changed_metadata_goes_whole",
+			replayFC:  `{"type":"function_call","call_id":"call_1","name":"example_tool","arguments":"{}","metadata":{"turn_id":"t2"}}`,
+			replayMsg: msgBase,
+			wantDelta: false,
+		},
+		{
+			name:      "changed_arguments_goes_whole",
+			replayFC:  `{"type":"function_call","call_id":"call_1","name":"example_tool","arguments":"{\"a\":1}"}`,
+			replayMsg: msgBase,
+			wantDelta: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			socketOn(t)
+			f := &fakeSocketBackend{keep: true}
+			f.frames = relayReply(f)
+			chatgpt(t, f.ServeHTTP)
+
+			keptPost(t, "acct-1", keptTurn("conv-"+tc.name, "gpt-5.5", userPing))
+			keptPost(t, "acct-1", keptTurn("conv-"+tc.name, "gpt-5.5", userPing, tc.replayFC, tc.replayMsg, fcOut, userAgain))
+
+			if posts, sockets := f.counts(); posts != 0 || sockets != 2 || f.opened() != 1 {
+				t.Fatalf("%d posts, %d turns on %d sockets; want 2 turns on 1 socket", posts, sockets, f.opened())
+			}
+			second := gjson.ParseBytes(f.turn(1).msg)
+			hasPrev := second.Get("previous_response_id").Exists()
+			in := second.Get("input").Array()
+			if tc.wantDelta {
+				if !hasPrev || second.Get("previous_response_id").String() != "resp-1" {
+					t.Fatalf("expected delta with previous_response_id=resp-1, got: %s", f.turn(1).msg)
+				}
+				if len(in) != 2 || in[0].Get("type").String() != "function_call_output" || in[1].Get("content.0.text").String() != "again" {
+					t.Fatalf("expected delta input [function_call_output, again], got: %s", second.Get("input").Raw)
+				}
+			} else {
+				if hasPrev || len(in) != 5 {
+					t.Fatalf("expected full history without previous_response_id, got prev=%v len=%d msg=%s", hasPrev, len(in), f.turn(1).msg)
+				}
+			}
+		})
+	}
+}

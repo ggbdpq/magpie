@@ -84,6 +84,16 @@ import (
 // (withRefsAsText). A translated route (Chat, Responses, Gemini) already
 // carries them as that text (stringOrText).
 //
+// A DeepSeek-family Anthropic endpoint whose tool_choice deserializer knows
+// the `function` variant alone turns every request carrying the protocol's
+// own choices away: 422 "tool_choice: field `type`: unknown variant `auto`,
+// expected `function`" (#7714, zcode and Claude Code). Relayed turns carry
+// the agent's choice verbatim, and a translated route builds the same shape
+// when parallel tool use is disabled (anthropic.go). A provider that refuses
+// the field is asked again at once without it and sent none thereafter:
+// omitting tool_choice is the protocol's default (the model chooses), which
+// matches "auto".
+//
 // Command Code's Anthropic endpoint names no block at all: a tool_reference
 // in a tool_result is 400 "Invalid input at messages.72.content" (#7833,
 // kongk0ng, whose analysis this follows), with or without text beside it.
@@ -104,6 +114,7 @@ const (
 	shapeDeferred   = "shape:messages[].content[].tool_addition"
 	shapeRefsOnly   = "shape:tool_result.content=tool_reference"
 	shapeRefs       = "shape:tool_result.content[].tool_reference"
+	shapeToolChoice = "shape:tool_choice"
 )
 
 var (
@@ -115,6 +126,9 @@ var (
 	safeguardsRefused   = lazyre.New(`\bsafeguards:? Extra inputs are not permitted`)
 	deferredRefused     = lazyre.New("messages\\[\\d+\\]\\.content: unknown variant `(?:tool_addition|tool_removal|tool_definition|tool_reference)`")
 	refsOnlyRefused     = lazyre.New("missing field `content`")
+	// a tool_choice variant refused by a deserializer that knows only another
+	// variant (e.g. DeepSeek's "unknown variant `auto`, expected `function`", #7714)
+	toolChoiceVariantRefused = lazyre.New(`(?i)\btool_choice\b[^\n{}]{0,60}?unknown variant`)
 	// a refusal of tool_reference in words, not in a request echoed back
 	// (no brace between); refsRefused leaves out one that names it as what
 	// was expected (DeepSeek's "expected `tool_reference`" is about a
@@ -186,6 +200,9 @@ func (s *Server) refuseShapes(p provider.Provider, errBody, body []byte) bool {
 			mark(shapeDeferred)
 		}
 	}
+	if toolChoiceVariantRefused.Match(errBody) && gjson.GetBytes(body, "tool_choice").Exists() {
+		mark(shapeToolChoice)
+	}
 	return fresh
 }
 
@@ -240,6 +257,9 @@ func (s *Server) withoutRefusedShapes(p provider.Provider, body []byte) []byte {
 	}
 	if !s.fits(p.ID, shapeSafeguards, provider.Anthropic) && gjson.GetBytes(body, "safeguards").Exists() {
 		body = withoutFields(body, "safeguards")
+	}
+	if !s.fits(p.ID, shapeToolChoice, provider.Anthropic) {
+		body = withoutFields(body, "tool_choice")
 	}
 	if !bodyHas(body, `"display"`) && !bodyHas(body, `"output_config"`) {
 		return body

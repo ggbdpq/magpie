@@ -307,6 +307,42 @@ func TestBiliOffWithoutRecord(t *testing.T) {
 	}
 }
 
+// TestBiliClaudeEnabledBeforeMagpieStillKeepsMagpieOnRemove: bili enabled
+// before Claude Code connected to magpie (so ANTHROPIC_BASE_URL later moved
+// from .../bili/https://api.anthropic.com to .../bili/http://127.0.0.1:3425);
+// switching bili off must unwrap to magpie's gateway rather than dropping
+// ANTHROPIC_BASE_URL.
+func TestBiliClaudeEnabledBeforeMagpieStillKeepsMagpieOnRemove(t *testing.T) {
+	h := sandbox(t)
+	newFakeBili(t, h)
+	cc := filepath.Join(h, ".claude", "settings.json")
+	write(t, cc, `{}`)
+	if _, err := SetBili("claude", true); err != nil {
+		t.Fatal(err)
+	}
+	// simulate Claude Code connecting to magpie while keeping the /bili/ prefix
+	m := map[string]any{}
+	if err := json.Unmarshal([]byte(read(t, cc)), &m); err != nil {
+		t.Fatal(err)
+	}
+	m["env"].(map[string]any)["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:18787/bili/http://127.0.0.1:3425"
+	m["env"].(map[string]any)["ANTHROPIC_AUTH_TOKEN"] = "magpie"
+	b, _ := json.MarshalIndent(m, "", "  ")
+	write(t, cc, string(b))
+
+	if _, err := SetBili("claude", false); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]any{}
+	if err := json.Unmarshal([]byte(read(t, cc)), &got); err != nil {
+		t.Fatalf("%v:\n%s", err, read(t, cc))
+	}
+	env, _ := got["env"].(map[string]any)
+	if env["ANTHROPIC_BASE_URL"] != "http://127.0.0.1:3425" {
+		t.Fatalf("ANTHROPIC_BASE_URL = %v, want http://127.0.0.1:3425:\n%s", env["ANTHROPIC_BASE_URL"], read(t, cc))
+	}
+}
+
 // TestBiliNotInstalled: no bili, so no switch works, and the page has
 // billion-context's own install command when npm is here.
 func TestBiliNotInstalled(t *testing.T) {

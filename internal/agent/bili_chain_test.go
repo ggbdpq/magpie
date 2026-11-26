@@ -150,3 +150,95 @@ func TestClaudeBehindBiliLaneKept(t *testing.T) {
 		t.Fatalf("a pick wrote ANTHROPIC_BASE_URL = %s over the lane %s", u, lane)
 	}
 }
+
+func TestBiliChainPrefix(t *testing.T) {
+	for v, want := range map[string]string{
+		"http://127.0.0.1:18787/bili/https://api.anthropic.com":                             "http://127.0.0.1:18787/bili/",
+		"http://127.0.0.1:18787/bili/https://api.anthropic.com/":                            "http://127.0.0.1:18787/bili/",
+		"http://localhost:8787/bili/anthropic/https://api.anthropic.com":                    "http://localhost:8787/bili/anthropic/",
+		"http://[::1]:18787/bili/https://api.anthropic.com":                                 "http://[::1]:18787/bili/",
+		"http://127.0.0.1:18787/bili/http://127.0.0.1:3425":                                 "http://127.0.0.1:18787/bili/",
+		"http://127.0.0.1:18787/bili/http://127.0.0.1:18787/bili/https://api.anthropic.com": "http://127.0.0.1:18787/bili/",
+		"http://127.0.0.1:18787/other/https://api.anthropic.com":                            "",
+		"https://relay.example/bili/https://api.anthropic.com":                              "",
+		"http://127.0.0.1:18787/bili/":                                                      "",
+		"http://127.0.0.1:3425":                                                             "",
+		"http://127.0.0.1:18787/bili/http://user@127.0.0.1:3425":                            "",
+	} {
+		if got := biliChainPrefix(v); got != want {
+			t.Errorf("biliChainPrefix(%q) = %q, want %q", v, got, want)
+		}
+	}
+}
+
+// #7846: enabling billion-context for Claude Code before connecting it in
+// magpie leaves ANTHROPIC_BASE_URL on http://127.0.0.1:18787/bili/<upstream>.
+// Connecting Claude Code, syncing, reconnecting after a gateway port change,
+// and disconnecting/reconnecting must all keep the /bili/ prefix in front of
+// magpie's gateway without stacking it.
+func TestClaudeConnectKeepsBiliLane(t *testing.T) {
+	t.Setenv("MAGPIE_ADDR", "")
+	const prefix = "http://127.0.0.1:18787/bili/"
+	const orig = prefix + "https://api.anthropic.com"
+	home, path := claudeSettings(t, `{"env":{"ANTHROPIC_BASE_URL":"`+orig+`"}}`)
+	saveDeepseek(t)
+	setPort(t, 3592)
+	fakeMagpieAt(t, map[string]bool{})
+
+	cl := claude(home)
+	if err := cl.Apply("model", "deepseek/pro"); err != nil {
+		t.Fatal(err)
+	}
+	want := prefix + "http://127.0.0.1:3592"
+	if got, _ := edit.GetJSON(path, "env.ANTHROPIC_BASE_URL"); got != want {
+		t.Fatalf("after connect: ANTHROPIC_BASE_URL = %q, want %q", got, want)
+	}
+	if c := cl.Check(); c != "" {
+		t.Fatalf("Check after connect: %s", c)
+	}
+	if d := cl.Drift(); d != nil {
+		t.Fatalf("Drift after connect: %+v", d)
+	}
+
+	// another pick and SyncCatalog keep the same single /bili/ prefix
+	if err := cl.Apply("model", "deepseek/flash"); err != nil {
+		t.Fatal(err)
+	}
+	SyncCatalog()
+	if got, _ := edit.GetJSON(path, "env.ANTHROPIC_BASE_URL"); got != want {
+		t.Fatalf("after pick+sync: ANTHROPIC_BASE_URL = %q, want %q", got, want)
+	}
+
+	// gateway port change -> Drift reports unwired, Reapply updates the upstream port while keeping /bili/
+	setPort(t, 3599)
+	if d := cl.Drift(); d == nil || d.Kind != "unwired" {
+		t.Fatalf("Drift after port change = %+v, want unwired", d)
+	}
+	if err := cl.Reapply(); err != nil {
+		t.Fatal(err)
+	}
+	wantNew := prefix + "http://127.0.0.1:3599"
+	if got, _ := edit.GetJSON(path, "env.ANTHROPIC_BASE_URL"); got != wantNew {
+		t.Fatalf("after port change Reapply: ANTHROPIC_BASE_URL = %q, want %q", got, wantNew)
+	}
+	if c := cl.Check(); c != "" {
+		t.Fatalf("Check after Reapply: %s", c)
+	}
+	if d := cl.Drift(); d != nil {
+		t.Fatalf("Drift after Reapply: %+v", d)
+	}
+
+	// Disconnect restores the original bili -> Anthropic URL; Connect re-chains bili -> magpie
+	if err := cl.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := edit.GetJSON(path, "env.ANTHROPIC_BASE_URL"); got != orig {
+		t.Fatalf("after Disconnect: ANTHROPIC_BASE_URL = %q, want %q", got, orig)
+	}
+	if err := cl.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := edit.GetJSON(path, "env.ANTHROPIC_BASE_URL"); got != wantNew {
+		t.Fatalf("after Connect: ANTHROPIC_BASE_URL = %q, want %q", got, wantNew)
+	}
+}

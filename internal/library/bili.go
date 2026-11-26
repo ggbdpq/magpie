@@ -673,18 +673,23 @@ func biliMergeJSON(before, after, cur, now *string) (*string, error) {
 	if after != nil {
 		jsonDiffs(B, I, nil, &installed)
 	}
+	base := []string{"env", "ANTHROPIC_BASE_URL"}
+	baseRestored := false
 	for _, p := range installed {
 		ci, hc := jsonAt(C, p)
 		ii, hi := jsonAt(I, p)
 		if hc == hi && jsonEqual(ci, ii) {
 			v, has := jsonAt(B, p)
 			changes = append(changes, change{p, v, has})
+			if slices.Equal(p, base) {
+				baseRestored = true
+			}
 		}
 	}
-	if after == nil {
-		// no record of the install: all the remove took out may be bili's,
-		// except the address Claude Code was sent to before bili's proxy
-		base := []string{"env", "ANTHROPIC_BASE_URL"}
+	if !baseRestored {
+		// no record of the install, or ANTHROPIC_BASE_URL's upstream changed
+		// since (e.g. Claude Code connected to magpie after bili was enabled):
+		// put back the address bili forwarded to when remove took it out
 		c, hc := jsonAt(C, base)
 		_, hr := jsonAt(R, base)
 		if s, ok := c.(string); ok && hc && !hr {
@@ -692,7 +697,8 @@ func biliMergeJSON(before, after, cur, now *string) (*string, error) {
 				changes = append(changes, change{base, m[1], true})
 			}
 		}
-	} else {
+	}
+	if after != nil {
 		var removed [][]string
 		jsonDiffs(C, R, nil, &removed)
 		for _, p := range removed {

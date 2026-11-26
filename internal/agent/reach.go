@@ -186,6 +186,37 @@ func chainsToGateway(v, want string) bool {
 		up.User == nil && up.RawQuery == ""
 }
 
+// biliChainPrefix is the local billion-context proxy prefix at the start of v
+// (http://127.0.0.1:18787/bili/, or http://localhost:8787/bili/anthropic/)
+// when v wraps an http(s) upstream URL behind a /bili/ proxy on this
+// machine's loopback; "" otherwise.
+func biliChainPrefix(v string) string {
+	v = strings.TrimSuffix(strings.TrimSpace(v), "/")
+	if !loopbackWithPath(v) {
+		return ""
+	}
+	u, err := url.Parse(v)
+	if err != nil || u.Port() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return ""
+	}
+	if !strings.HasPrefix(u.Path, "/bili/") {
+		return ""
+	}
+	rest := u.Path
+	i := strings.Index(rest, "/http://")
+	if j := strings.Index(rest, "/https://"); j >= 0 && (i < 0 || j < i) {
+		i = j
+	}
+	if i < 0 {
+		return ""
+	}
+	up, err := url.Parse(rest[i+1:])
+	if err != nil || (up.Scheme != "http" && up.Scheme != "https") || up.Host == "" || up.User != nil || up.RawQuery != "" || up.Fragment != "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host + rest[:i+1]
+}
+
 // magpieAsked is magpieAt waited for, for a write: base, not asked yet, is
 // asked now (probedNow), so what the write
 // reads after is magpie's answer there. Unasked, surelyMagpie is no, and

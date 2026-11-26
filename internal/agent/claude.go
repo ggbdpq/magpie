@@ -777,8 +777,12 @@ func claudeIn(at place) *Agent {
 	// answered (#1985, claudeProxied), which a pick keeps (gwAt)
 	routed := func() bool { return claudeRouted(at, path) }
 	gwAt := func() string {
-		if u := env("ANTHROPIC_BASE_URL"); claudeProxied(at, path, u) {
+		u := env("ANTHROPIC_BASE_URL")
+		if claudeProxied(at, path, u) {
 			return u
+		}
+		if p := biliChainPrefix(u); p != "" && chainsToGateway(p+at.gw(), at.gw()) {
+			return p + at.gw()
 		}
 		return at.gw()
 	}

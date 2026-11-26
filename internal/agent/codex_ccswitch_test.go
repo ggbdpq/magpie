@@ -311,3 +311,119 @@ func TestCodexTakesCCSwitchMirrorForItsThreads(t *testing.T) {
 		t.Fatalf("hand-set base_url lost:\n%s", read())
 	}
 }
+
+// Changing magpie's gateway port while Codex is wired must not break
+// take/give symmetry for CC Switch's tables or OpenAI mirrors (#3186):
+//   - stepping off magpie after a port change still restores the stashed
+//     CC Switch URL instead of skipping it and dropping the stash;
+//   - Sync at the new port updates the table without clobbering the stashed
+//     original URL with magpie's old port;
+//   - a corrupt config.toml keeps the stash rather than silently forgetting it.
+func TestCodexRestoresCCSwitchAfterGatewayPortChange(t *testing.T) {
+	t.Run("tables-disconnect-after-port-change", func(t *testing.T) {
+		const ccLocal = "model_provider = \"custom\"\nmodel = \"gpt-5.4\"\n\n" +
+			"[model_providers.custom]\nname = \"custom\"\nbase_url = \"http://127.0.0.1:15721/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n"
+		home, read := codexHome(t, "", ccLocal)
+		path := filepath.Join(home, ".codex", "config.toml")
+		setPort(t, 3425)
+		cx := codex(home)
+		if err := cx.Fields[0].Set("fake/m1"); err != nil {
+			t.Fatal(err)
+		}
+		if tb, _ := edit.GetTOMLTable(path, "model_providers.custom"); tb["base_url"] != "http://127.0.0.1:3425/v1" {
+			t.Fatalf("custom not wired to port 3425:\n%s", read())
+		}
+		setPort(t, 3426)
+		if err := codex(home).Disconnect(); err != nil {
+			t.Fatal(err)
+		}
+		tb, err := edit.GetTOMLTable(path, "model_providers.custom")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tb["base_url"] != "http://127.0.0.1:15721/v1" {
+			t.Fatalf("custom base_url after port change + Disconnect = %q, want http://127.0.0.1:15721/v1:\n%s", tb["base_url"], read())
+		}
+		if _, ok := stashLoad()[here(home).key("codex.tables")]; ok {
+			t.Fatalf("codex.tables stash left after restore")
+		}
+		if _, ok := stashLoad()[here(home).key("codex.tables_at")]; ok {
+			t.Fatalf("codex.tables_at stash left after restore")
+		}
+	})
+
+	t.Run("tables-sync-then-disconnect-after-port-change", func(t *testing.T) {
+		const ccLocal = "model_provider = \"custom\"\nmodel = \"gpt-5.4\"\n\n" +
+			"[model_providers.custom]\nname = \"custom\"\nbase_url = \"http://127.0.0.1:15721/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n"
+		home, read := codexHome(t, "", ccLocal)
+		path := filepath.Join(home, ".codex", "config.toml")
+		setPort(t, 3425)
+		if err := codex(home).Fields[0].Set("fake/m1"); err != nil {
+			t.Fatal(err)
+		}
+		setPort(t, 3426)
+		if err := codex(home).Sync(); err != nil {
+			t.Fatal(err)
+		}
+		if tb, _ := edit.GetTOMLTable(path, "model_providers.custom"); tb["base_url"] != "http://127.0.0.1:3426/v1" {
+			t.Fatalf("custom not moved to port 3426 on Sync:\n%s", read())
+		}
+		if err := codex(home).Disconnect(); err != nil {
+			t.Fatal(err)
+		}
+		tb, err := edit.GetTOMLTable(path, "model_providers.custom")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tb["base_url"] != "http://127.0.0.1:15721/v1" {
+			t.Fatalf("custom base_url after Sync + Disconnect = %q, want http://127.0.0.1:15721/v1:\n%s", tb["base_url"], read())
+		}
+	})
+
+	t.Run("mirror-disconnect-after-port-change", func(t *testing.T) {
+		const cfg = "model = \"gpt-5.4\"\n\n" +
+			"[model_providers.custom]\nname = \"OpenAI\"\nrequires_openai_auth = true\nwire_api = \"responses\"\n"
+		home, read := codexHome(t, `{"tokens":{"access_token":"x","id_token":"x.e30.x"}}`, cfg)
+		path := filepath.Join(home, ".codex", "config.toml")
+		setPort(t, 3425)
+		if err := codex(home).Fields[0].Set("fake/m1"); err != nil {
+			t.Fatal(err)
+		}
+		if tb, _ := edit.GetTOMLTable(path, "model_providers.custom"); tb["base_url"] != "http://127.0.0.1:3425/backend-api/codex" {
+			t.Fatalf("mirror not wired to port 3425:\n%s", read())
+		}
+		setPort(t, 3426)
+		if err := codex(home).Fields[0].Set(""); err != nil {
+			t.Fatal(err)
+		}
+		tb, err := edit.GetTOMLTable(path, "model_providers.custom")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := tb["base_url"]; ok {
+			t.Fatalf("mirror base_url not removed after port change: %q\n%s", tb["base_url"], read())
+		}
+		if _, ok := stashLoad()[here(home).key("codex.mirrors")]; ok {
+			t.Fatalf("codex.mirrors stash left after restore")
+		}
+	})
+
+	t.Run("corrupt-config-keeps-stash", func(t *testing.T) {
+		home, _ := codexHome(t, "", ccSwitchCodex)
+		path := filepath.Join(home, ".codex", "config.toml")
+		setPort(t, 3425)
+		if err := codex(home).Fields[0].Set("fake/m1"); err != nil {
+			t.Fatal(err)
+		}
+		// Make model_providers.custom an array table so GetTOMLTable fails to read it.
+		if err := os.WriteFile(path, []byte("[[model_providers.custom]]\nname = \"custom\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := codex(home).Fields[0].Set(""); err == nil {
+			t.Fatal("expected error reading corrupt model_providers.custom table")
+		}
+		if got := stashLoad()[here(home).key("codex.tables")]; got == "" {
+			t.Fatal("codex.tables stash was dropped on read error")
+		}
+	})
+}

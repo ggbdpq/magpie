@@ -996,7 +996,7 @@ func codexIn(at place) *Agent {
 			return false
 		}
 		u := t["base_url"]
-		return u == "" || (u == at.codexURL() && (stashShared()[at.key("codex.mirror_failover")] == p || slices.Contains(mirrorsTaken(), p)))
+		return u == "" || ((isCodexGatewayOn(u, at.host()) || strings.TrimSuffix(u, "/") == at.codexURL()) && (stashShared()[at.key("codex.mirror_failover")] == p || slices.Contains(mirrorsTaken(), p)))
 	}
 	// bringOfficial moves the threads of CC Switch's "cc-switch-official"
 	// to the provider Codex is on with magpie (OpenAI beside the sign-in,
@@ -1354,7 +1354,11 @@ func codexIn(at place) *Agent {
 		}
 		for _, id := range taken {
 			t, err := edit.GetTOMLTable(path, "model_providers."+id)
-			if err != nil || t["base_url"] != at.codexURL() || stashShared()[at.key("codex.mirror_failover")] == id {
+			if err != nil {
+				return err
+			}
+			u := t["base_url"]
+			if (!isCodexGatewayOn(u, at.host()) && strings.TrimSuffix(u, "/") != at.codexURL()) || stashShared()[at.key("codex.mirror_failover")] == id {
 				continue
 			}
 			if err := edit.DelTOMLKey(path, "model_providers."+id, "base_url"); err != nil {
@@ -1377,7 +1381,9 @@ func codexIn(at place) *Agent {
 			return err
 		}
 		was := map[string]string{}
+		taken := map[string]string{}
 		json.Unmarshal([]byte(stashShared()[at.key("codex.tables")]), &was)
+		json.Unmarshal([]byte(stashShared()[at.key("codex.tables_at")]), &taken)
 		for id, u := range ccSwitchTables() {
 			if u == at.v1() {
 				continue
@@ -1385,13 +1391,19 @@ func codexIn(at place) *Agent {
 			if err := edit.SetTOMLKey(path, "model_providers."+id, "base_url", at.v1()); err != nil {
 				return err
 			}
-			was[id] = u
+			// Keep the original base URL when updating a table that still
+			// holds the gateway URL magpie wrote on a previous port.
+			if taken[id] == "" || u != taken[id] {
+				was[id] = u
+			}
+			taken[id] = at.v1()
 		}
 		if len(was) == 0 {
 			return nil
 		}
 		b, _ := json.Marshal(was)
-		stash(map[string]string{at.key("codex.tables"): string(b)})
+		bt, _ := json.Marshal(taken)
+		stash(map[string]string{at.key("codex.tables"): string(b), at.key("codex.tables_at"): string(bt)})
 		return nil
 	}
 	// giveTables puts the base URLs back, on the tables still pointed at
@@ -1405,17 +1417,23 @@ func codexIn(at place) *Agent {
 		if err := giveMirrors(); err != nil {
 			return err
 		}
-		var was map[string]string
+		var was, taken map[string]string
 		json.Unmarshal([]byte(stashShared()[at.key("codex.tables")]), &was)
+		json.Unmarshal([]byte(stashShared()[at.key("codex.tables_at")]), &taken)
 		for id, u := range was {
-			if t, err := edit.GetTOMLTable(path, "model_providers."+id); err != nil || t["base_url"] != at.v1() {
+			t, err := edit.GetTOMLTable(path, "model_providers."+id)
+			if err != nil {
+				return err
+			}
+			cur := t["base_url"]
+			if cur != at.v1() && (taken[id] == "" || cur != taken[id]) {
 				continue
 			}
 			if err := edit.SetTOMLKey(path, "model_providers."+id, "base_url", u); err != nil {
 				return err
 			}
 		}
-		forget(at.key("codex.tables"))
+		forget(at.key("codex.tables"), at.key("codex.tables_at"))
 		return nil
 	}
 	// api: the user wants magpie as Codex's provider even while Codex is
@@ -1486,11 +1504,17 @@ func codexIn(at place) *Agent {
 		if p == "" {
 			return nil
 		}
-		forget(at.key("codex.mirror_failover"))
-		t, _ := edit.GetTOMLTable(path, "model_providers."+p)
-		if t["base_url"] == at.codexURL() {
-			return edit.DelTOMLKey(path, "model_providers."+p, "base_url")
+		t, err := edit.GetTOMLTable(path, "model_providers."+p)
+		if err != nil {
+			return err
 		}
+		u := t["base_url"]
+		if isCodexGatewayOn(u, at.host()) || strings.TrimSuffix(u, "/") == at.codexURL() {
+			if err := edit.DelTOMLKey(path, "model_providers."+p, "base_url"); err != nil {
+				return err
+			}
+		}
+		forget(at.key("codex.mirror_failover"))
 		return nil
 	}
 	// the model spawned subagents start on, when not the parent's; one of

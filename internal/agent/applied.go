@@ -507,8 +507,14 @@ func (a *Agent) Reapply() error {
 		if err := a.Apply(d.Field, d.Want); err != nil {
 			return err
 		}
+		vals := a.Values()
+		opts := fieldOptions{}
 		for _, f := range a.Fields {
-			if v, ok := rec.Fields[f.Key]; ok && f.Key != d.Field && f.Get() != v {
+			if v, ok := rec.Fields[f.Key]; ok && f.Key != d.Field {
+				now := vals[f.Key]
+				if now == v || magpieValueIn(a, f, now, vals, opts) || sameGroup(v, now) {
+					continue
+				}
 				if err := a.Apply(f.Key, v); err != nil {
 					return err
 				}

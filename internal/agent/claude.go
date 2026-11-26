@@ -723,6 +723,23 @@ func tierWith(model, effort string) string {
 	return v
 }
 
+// claudeSplit is Claude Code's SplitSuffix: a model and its effort tier
+// (":xhigh", provider.MemberEfforts) and/or [1m] context mark.
+func claudeSplit(v string) (model, suffix string, one bool) {
+	m, e := tierAt(v)
+	bare, marked := strings.CutSuffix(m, "[1m]")
+	if e == "" && !marked {
+		return v, "", true
+	}
+	if e != "" {
+		suffix = ":" + e
+	}
+	if marked {
+		suffix += "[1m]"
+	}
+	return bare, suffix, true
+}
+
 // tierEfforts are the levels a tier on model can be fixed at: the ones
 // magpie knows the model has, else those Claude Code sends it.
 func tierEfforts(model string) []string {
@@ -1837,7 +1854,7 @@ func claudeIn(at place) *Agent {
 		forget(autoKey)
 		// the advisor goes where it is on magpie's model, and its switch
 		// where magpie wrote it
-		if isMagpie(strings.TrimSuffix(claudeReadOwn(jsonGet(path, "advisorModel")()), "[1m]")) {
+		if m, _ := tierAt(claudeReadOwn(jsonGet(path, "advisorModel")())); isMagpie(strings.TrimSuffix(m, "[1m]")) {
 			if err := edit.DelJSON(path, "advisorModel"); err != nil {
 				return "", err
 			}
@@ -2538,7 +2555,7 @@ func claudeIn(at place) *Agent {
 				}
 				return fmt.Errorf("pick a model through magpie for Claude Code first; its advisor can then have a model")
 			}
-			if v != "" && !isMagpie(strings.TrimSuffix(v, "[1m]")) {
+			if m, _ := tierAt(v); v != "" && !isMagpie(strings.TrimSuffix(m, "[1m]")) {
 				return fmt.Errorf("advisor: %q is not a model magpie serves", v)
 			}
 			if v == "" {
@@ -2622,6 +2639,7 @@ func claudeIn(at place) *Agent {
 		Bin: "claude", Dir: filepath.Dir(path), Path: path, signIn: ".credentials.json",
 		claudeSettings: &ClaudeSettings{path: path, distro: at.wsl},
 		Fields:         fields,
+		SplitSuffix:    claudeSplit,
 		ModelAliases:   claudeAliases,
 		Telemetry:      claudeTelemetry(at, path),
 		// Claude Code as it was before magpie: its default puts it back as

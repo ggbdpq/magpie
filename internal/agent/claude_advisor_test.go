@@ -96,3 +96,92 @@ func TestClaudeAdvisorUserSwitch(t *testing.T) {
 		t.Fatalf("disconnect took the user's own switch: %s", b)
 	}
 }
+
+// #7630: an effort tier on Claude Code's advisor model (model:xhigh[1m]) must
+// pass Agent.Spell (used by the CLI), apply and disconnect cleanly, and survive
+// Reapply ("Apply again") when another field drifted.
+func TestClaudeAdvisorEffortTierSpellAndReapply(t *testing.T) {
+	t.Run("spell-and-apply", func(t *testing.T) {
+		a, path, _ := claudeAutoModeHome(t, `{}`)
+		if err := a.Apply("model", "relay/deepseek-pro"); err != nil {
+			t.Fatal(err)
+		}
+		get := func() string { v, _ := edit.GetJSON(path, "advisorModel"); return v }
+
+		spelled, err := a.Spell("advisor", "relay/claude-opus-5-5:xhigh[1m]")
+		if err != nil || spelled != "relay/claude-opus-5-5:xhigh[1m]" {
+			t.Fatalf("Spell tiered advisor = %q, err=%v", spelled, err)
+		}
+		spelledPrefixed, err := a.Spell("advisor", "magpie/relay/claude-opus-5-5:xhigh[1m]")
+		if err != nil || spelledPrefixed != "relay/claude-opus-5-5:xhigh[1m]" {
+			t.Fatalf("Spell prefixed tiered advisor = %q, err=%v", spelledPrefixed, err)
+		}
+		if _, err := a.Spell("advisor", "relay/no-such-model:xhigh[1m]"); err == nil {
+			t.Fatal("Spell accepted unknown model with effort suffix")
+		}
+		if _, err := a.Spell("advisor", "relay/claude-opus-5-5:bogus[1m]"); err == nil {
+			t.Fatal("Spell accepted invalid effort suffix")
+		}
+
+		if err := a.Apply("advisor", spelled); err != nil {
+			t.Fatalf("Apply tiered advisor: %v", err)
+		}
+		if got := get(); got != "relay/claude-opus-5-5:xhigh[1m]" {
+			t.Fatalf("advisorModel = %q, want relay/claude-opus-5-5:xhigh[1m]", got)
+		}
+		if err := a.Disconnect(); err != nil {
+			t.Fatal(err)
+		}
+		if got := get(); got != "" {
+			t.Fatalf("Disconnect left tiered advisorModel = %q", got)
+		}
+	})
+
+	t.Run("reapply-keeps-tiered-advisor", func(t *testing.T) {
+		a, path, _ := claudeAutoModeHome(t, `{}`)
+		get := func() string { v, _ := edit.GetJSON(path, "advisorModel"); return v }
+
+		if err := a.Apply("model", "relay/deepseek-pro"); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Apply("advisor", "relay/claude-opus-5-5"); err != nil {
+			t.Fatal(err)
+		}
+		if err := edit.SetJSON(path,
+			edit.KV{Path: "advisorModel", Value: "relay/claude-opus-5-5:xhigh[1m]"},
+			edit.KV{Path: "model", Value: "sonnet"},
+		); err != nil {
+			t.Fatal(err)
+		}
+		if err := edit.DelJSON(path, "env.ANTHROPIC_DEFAULT_SONNET_MODEL"); err != nil {
+			t.Fatal(err)
+		}
+		d := a.Drift()
+		if d == nil || d.Kind != "replaced" || d.Field != "model" {
+			t.Fatalf("Drift = %+v, want replaced on model", d)
+		}
+		if err := a.Reapply(); err != nil {
+			t.Fatalf("Reapply: %v", err)
+		}
+		if got := get(); got != "relay/claude-opus-5-5:xhigh[1m]" {
+			t.Fatalf("Reapply stripped advisor effort tier: got %q, want relay/claude-opus-5-5:xhigh[1m]", got)
+		}
+
+		// If advisor itself is replaced with an off-magpie value, Reapply restores it.
+		if err := edit.SetJSON(path,
+			edit.KV{Path: "advisorModel", Value: "opus"},
+			edit.KV{Path: "model", Value: "sonnet"},
+		); err != nil {
+			t.Fatal(err)
+		}
+		if err := edit.DelJSON(path, "env.ANTHROPIC_DEFAULT_SONNET_MODEL"); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Reapply(); err != nil {
+			t.Fatalf("Reapply after off-magpie advisor: %v", err)
+		}
+		if got := get(); got != "relay/claude-opus-5-5" {
+			t.Fatalf("Reapply did not restore off-magpie advisor: got %q, want relay/claude-opus-5-5", got)
+		}
+	})
+}

@@ -390,20 +390,43 @@ func jsonEscape(s string) string {
 	return string(out[1 : len(out)-2]) // the quotes and the newline
 }
 
+// pathKeySuffixes are trailing identifier words that name where a secret is
+// stored rather than the secret value itself.
+var pathKeySuffixes = map[string]bool{
+	"path": true, "filepath": true, "file": true, "filename": true, "dir": true, "directory": true,
+}
+
+// pathKey says key names a filesystem location for a secret rather than a
+// secret value (api_key_path, private_key_file, token_dir, apiKeyPath).
+func pathKey(key string) bool {
+	words := identWords(strings.ReplaceAll(key, "-", "_"))
+	if len(words) < 2 {
+		return false
+	}
+	return pathKeySuffixes[strings.ToLower(words[len(words)-1])]
+}
+
 // namedSecret says a string under a field named for a secret holds one,
 // whatever the value looks like: the rules judge a value by its shape, the
 // name by what a field so called carries (#2946) — {"api_key": "…"} with a
 // value no rule knows, an AKIA under access_key_id, a bearer token under
 // "Authorization". A short value, one that stands for a variable (${PASS},
-// <token>, ****), and a moment (a token's expiry,
-// access_token_expires_at, dchaofei #5002) are left alone. It is asked
-// only of a tool call's arguments and a tool's structured result (args),
-// whose keys are the tool's: a key the vendor's protocol names
-// (Anthropic's mcp_servers[].authorization_token, a tool's own settings)
-// is the vendor's to read, and masked by its name, it would no longer
-// work.
+// <token>, ****), a field naming a path (api_key_path, private_key_file),
+// a bare "key" that isn't a long alphanumeric secret, and values the text
+// rules reject as non-secrets (paths, line refs, code names, versions, and
+// timestamps) are left alone (#5002, #7832). It is asked only of a tool
+// call's arguments and a tool's structured result (args), whose keys are
+// the tool's: a key the vendor's protocol names (Anthropic's
+// mcp_servers[].authorization_token, a tool's own settings) is the
+// vendor's to read, and masked by its name, it would no longer work.
 func namedSecret(key, s string) bool {
-	return key != "" && len(s) >= 8 && notAVariable(s) && !timestampValue(s) && SecretName(key)
+	if key == "" || len(s) < 8 || !notAVariable(s) || !SecretName(key) || pathKey(key) {
+		return false
+	}
+	if strings.EqualFold(key, "key") && (len(s) < 16 || !secretValue(s)) {
+		return false
+	}
+	return !lineRef(s) && !pathValue(s) && !namesASecret(s) && !versionValue(s) && !timestampValue(s)
 }
 
 // MaskJSON masks the strings of a request body, and says how many values
@@ -467,9 +490,9 @@ func MaskJSON(body []byte, o Options) ([]byte, int) {
 			return s
 		}
 		if o.Secrets && under(path, args) && namedSecret(key, s) {
-			p := put("SECRET", s)
-			total++
-			return p
+			t, n := apply(s, []span{{0, len(s), "SECRET", ByRule, 0, false}}, put, o)
+			total += n
+			return t
 		}
 		if !masked(path, key, s) || under(path, defs) {
 			return s

@@ -764,7 +764,13 @@ func codexBody(s *state, b []byte, main bool) {
 	case l.Type == "turn_context":
 		codexState(s).context("", p.TurnID, p.Model)
 		if p.Model != "" {
+			first := s.Model == ""
 			s.Model = p.Model
+			if first {
+				for _, ch := range codexState(s).backfillModel(s.Model) {
+					codexApply(s, &ch)
+				}
+			}
 		}
 		if s.Cwd == "" {
 			s.Cwd = p.Cwd
@@ -774,8 +780,14 @@ func codexBody(s *state, b []byte, main bool) {
 		codexState(s).Pending = 0
 	case l.Type == "event_msg" && p.Type == "thread_settings_applied":
 		if p.Settings.Model != "" {
+			first := s.Model == ""
 			s.Model = p.Settings.Model
 			codexState(s).context("", "", p.Settings.Model)
+			if first {
+				for _, ch := range codexState(s).backfillModel(s.Model) {
+					codexApply(s, &ch)
+				}
+			}
 		}
 	case l.Type == "event_msg" && p.Type == "user_message":
 		if s.Title == "" {

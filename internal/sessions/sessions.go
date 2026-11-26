@@ -483,14 +483,21 @@ func (s *state) use(date, model string, t Tokens) {
 	s.day(date).Models.at(model).add(t)
 }
 
-// unuse takes back what use counted.
+// unuse takes back what use counted, removing buckets that return to zero
+// so a backfilled model does not leave a zero-token empty-model entry behind.
 func (s *state) unuse(date, model string, t Tokens) {
 	if i, ok := s.Models.find(model); ok {
 		s.Models[i].v.sub(t)
+		if s.Models[i].v.zero() {
+			s.Models = slices.Delete(s.Models, i, i+1)
+		}
 	}
 	if d := s.Days.of(date); d != nil {
 		if i, ok := d.Models.find(model); ok {
 			d.Models[i].v.sub(t)
+			if d.Models[i].v.zero() {
+				d.Models = slices.Delete(d.Models, i, i+1)
+			}
 		}
 	}
 }
@@ -1529,7 +1536,7 @@ const cacheVersion = 29
 // workbuddy 1, workbuddy-ai 1, codebuddy 1: a session's first prompt is
 // its <user_query> when WorkBuddy wrote it in one block with its context
 // (wbTyped).
-var parseVersions = map[string]int{"codex": 3, "zcode": 1, "dsh": 3, "antigravity": 3, "agy": 2, "pi": 1, "raft": 1, "cindy": 1, "workbuddy": 1, "workbuddy-ai": 1, "codebuddy": 1}
+var parseVersions = map[string]int{"codex": 4, "zcode": 1, "dsh": 3, "antigravity": 3, "agy": 2, "pi": 1, "raft": 1, "cindy": 1, "workbuddy": 1, "workbuddy-ai": 1, "codebuddy": 1}
 
 type cacheFile struct {
 	Version int    `json:"version"`

@@ -39,14 +39,47 @@ type cxCheckpoint struct{ Total, Last cxUsage }
 
 // forkedFrom notes, from the first session_meta of the rollout at path,
 // the parent the rollout was forked from, and reads that parent's
-// checkpoints.
+// checkpoints (across all paginated rollout files and ancestor forks up to
+// codexForkMaxDepth, so a depth-2 fork whose parent was compacted or
+// paginated still deduplicates its grandparent's checkpoints, #7818).
 func (s *codexUsageState) forkedFrom(path, parent string) {
 	if parent == "" || path == "" {
 		return
 	}
-	if p := codexRolloutOf(path, parent); p != "" {
-		s.Copied, s.CopiedTurns = codexCheckpointsOf(p)
+	const maxDepth = 8
+	seen := map[string]bool{}
+	queue := []string{parent}
+	var allMarks map[cxCheckpoint]bool
+	var allTurns map[string]bool
+	for depth := 0; depth < maxDepth && len(queue) > 0; depth++ {
+		var next []string
+		for _, id := range queue {
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			for _, p := range codexRolloutsOf(path, id) {
+				marks, turns, up := codexCheckpointsOf(p)
+				for k := range marks {
+					if allMarks == nil {
+						allMarks = map[cxCheckpoint]bool{}
+					}
+					allMarks[k] = true
+				}
+				for k := range turns {
+					if allTurns == nil {
+						allTurns = map[string]bool{}
+					}
+					allTurns[k] = true
+				}
+				if up != "" && !seen[up] {
+					next = append(next, up)
+				}
+			}
+		}
+		queue = next
 	}
+	s.Copied, s.CopiedTurns = allMarks, allTurns
 }
 
 // ownTurn ends the copies at a turn of the fork's own. A turn id of
@@ -82,36 +115,51 @@ var codexForks struct {
 }
 
 type codexForkParent struct {
-	path  string
-	size  int64
-	mod   time.Time
-	marks map[cxCheckpoint]bool
-	turns map[string]bool
+	path   string
+	size   int64
+	mod    time.Time
+	marks  map[cxCheckpoint]bool
+	turns  map[string]bool
+	parent string
 }
 
 const codexForksKept = 8
 
 // codexCheckpointsOf are the token_count checkpoints of the rollout at
-// path, and its turn ids (nil when it names none); nil when it can't be
-// read whole.
-func codexCheckpointsOf(path string) (map[cxCheckpoint]bool, map[string]bool) {
+// path, its turn ids (nil when it names none), and its own forked_from_id
+// if any; nil when it can't be read whole.
+func codexCheckpointsOf(path string) (map[cxCheckpoint]bool, map[string]bool, string) {
 	fi, err := os.Stat(path)
 	if err != nil {
-		return nil, nil
+		return nil, nil, ""
 	}
 	codexForks.Lock()
 	for _, k := range codexForks.kept {
 		if k.path == path && k.size == fi.Size() && k.mod.Equal(fi.ModTime()) {
 			codexForks.Unlock()
-			return k.marks, k.turns
+			return k.marks, k.turns, k.parent
 		}
 	}
 	codexForks.Unlock()
 	marks := map[cxCheckpoint]bool{}
 	var turns map[string]bool
+	var parent string
+	sawMeta := false
 	err = eachLine(path, func(b []byte) {
 		h := b[:min(len(b), 1024)]
 		top, payload := typeAfter(h, cxType), typeAfter(h, cxPayload)
+		if top == "session_meta" && !sawMeta {
+			sawMeta = true
+			var l struct {
+				Payload struct {
+					ForkedFrom string `json:"forked_from_id"`
+				} `json:"payload"`
+			}
+			if json.Unmarshal(b, &l) == nil {
+				parent = l.Payload.ForkedFrom
+			}
+			return
+		}
 		if top == "turn_context" || top == "event_msg" && payload == "task_started" {
 			var l struct {
 				Payload struct {
@@ -138,50 +186,54 @@ func codexCheckpointsOf(path string) (map[cxCheckpoint]bool, map[string]bool) {
 		}
 	})
 	if err != nil {
-		return nil, nil
+		return nil, nil, ""
 	}
 	codexForks.Lock()
-	codexForks.kept = append(codexForks.kept, codexForkParent{path, fi.Size(), fi.ModTime(), marks, turns})
+	codexForks.kept = append(codexForks.kept, codexForkParent{path, fi.Size(), fi.ModTime(), marks, turns, parent})
 	if n := len(codexForks.kept); n > codexForksKept {
 		codexForks.kept = append([]codexForkParent(nil), codexForks.kept[n-codexForksKept:]...)
 	}
 	codexForks.Unlock()
-	return marks, turns
+	return marks, turns, parent
 }
 
-// codexRolloutOf is the rollout of thread id in the Codex folder that
-// holds the rollout at path, "" when there is none. Codex files a rollout
+// codexRolloutsOf are all rollout files of thread id in the Codex folder that
+// holds the rollout at path (including paginated pages). Codex files a rollout
 // under sessions/YYYY/MM/DD, the local day it began, and a thread id is a
 // UUIDv7, which carries that time: the days around it are looked in
 // first, then every day, then archived_sessions.
-func codexRolloutOf(path, id string) string {
+func codexRolloutsOf(path, id string) []string {
 	home := codexHomeOf(path)
 	if home == "" || strings.ContainsAny(id, `/\*?[`) {
-		return ""
+		return nil
 	}
 	name := "rollout-*-" + id + "*.jsonl*"
-	match := func(pattern string) string {
+	seen := map[string]bool{}
+	var out []string
+	collect := func(pattern string) {
 		found, _ := filepath.Glob(pattern)
 		for _, p := range found {
-			if m := rolloutName.FindStringSubmatch(filepath.Base(p)); m != nil && m[1] == id && p != path {
-				return p
+			if seen[p] || p == path {
+				continue
+			}
+			if m := rolloutName.FindStringSubmatch(filepath.Base(p)); m != nil && m[1] == id {
+				seen[p] = true
+				out = append(out, p)
 			}
 		}
-		return ""
 	}
 	sessions := filepath.Join(home, "sessions")
 	if at, ok := uuidV7Time(id); ok {
 		for _, d := range []int{0, -1, 1} {
 			day := at.AddDate(0, 0, d).Local()
-			if p := match(filepath.Join(sessions, day.Format("2006"), day.Format("01"), day.Format("02"), name)); p != "" {
-				return p
-			}
+			collect(filepath.Join(sessions, day.Format("2006"), day.Format("01"), day.Format("02"), name))
 		}
 	}
-	if p := match(filepath.Join(sessions, "*", "*", "*", name)); p != "" {
-		return p
+	if len(out) == 0 {
+		collect(filepath.Join(sessions, "*", "*", "*", name))
 	}
-	return match(filepath.Join(home, "archived_sessions", name))
+	collect(filepath.Join(home, "archived_sessions", name))
+	return out
 }
 
 // uuidV7Time is the time a UUIDv7 was made, its first 48 bits.

@@ -1159,7 +1159,9 @@ func codexCallLine(st *callFile, b []byte) {
 		if p.Upstream != "" {
 			r.Upstream = st.str(p.Upstream)
 		}
+		firstModel := false
 		if p.Model != "" {
+			firstModel = r.Model == ""
 			r.Model = st.str(p.Model)
 		}
 		r.Effort = st.str(string(p.Effort))
@@ -1170,6 +1172,11 @@ func codexCallLine(st *callFile, b []byte) {
 			r.Turn = p.TurnID
 		}
 		r.saveContext()
+		if firstModel {
+			for _, ch := range r.Usage.backfillModel(r.Model) {
+				st.codexChanged(&ch)
+			}
+		}
 	case l.Type == "event_msg" && p.Type == "task_started":
 		if p.TurnID != "" {
 			r.Turn = p.TurnID
@@ -1184,10 +1191,17 @@ func codexCallLine(st *callFile, b []byte) {
 		if p.Settings.Upstream != "" {
 			r.Upstream = st.str(p.Settings.Upstream)
 		}
+		firstModel := false
 		if p.Settings.Model != "" {
+			firstModel = r.Model == ""
 			r.Model = st.str(p.Settings.Model)
 		}
 		r.saveContext()
+		if firstModel {
+			for _, ch := range r.Usage.backfillModel(r.Model) {
+				st.codexChanged(&ch)
+			}
+		}
 	case l.Type == "event_msg" && p.Type == "task_complete":
 		if r.Turns == nil {
 			r.Turns = map[string]cxOpen{}

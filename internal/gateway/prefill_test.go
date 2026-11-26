@@ -19,6 +19,7 @@ import (
 const (
 	openCodeGoPrefillRefusal = `{"type":"error","error":{"type":"api_error","message":"Upstream request failed: [invalid_request_error] This model does not support assistant message prefill. The conversation must end with a user message."}}`
 	volcenginePrefillRefusal = `{"error":{"code":"InvalidParameter","message":"The parameter input[194].role specified in the request are not valid: The last message cannot be from the assistant for a model that does not support prefill","param":"input[194].role","type":"BadRequest"}}`
+	agyBridgePrefillRefusal  = `{"type":"error","error":{"type":"invalid_request_error","message":"Antigravity (local agy CLI): agy bridge: a request combining a live tool_result with an assistant prefill tail is not supported"}}`
 )
 
 // noPrefill is an upstream whose model refuses a conversation ending with
@@ -257,4 +258,43 @@ func TestUserLastBody(t *testing.T) {
 			t.Errorf("userLastBody(%s) = %s, no user turn", c.body, out)
 		}
 	}
+}
+
+// #7589: agy-bridge refuses a live tool_result combined with an assistant
+// prefill tail ("assistant prefill tail is not supported"). Both Codex's
+// Responses reconnect (Continue. retry) and magpie's cut-stream continuation
+// must recognize it via refusesPrefill.
+func TestAgyBridgePrefillTailRefusal(t *testing.T) {
+	t.Run("codex reconnect retries with Continue", func(t *testing.T) {
+		f := &noPrefill{proto: provider.Anthropic, refuse: agyBridgePrefillRefusal}
+		post := prefillServer(t, f)
+		ask := `{"model":"up/m","stream":false,"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Check status"}]},
+			{"type":"function_call","call_id":"call_1","name":"status","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_1","output":"ok"},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Let me inspect"}]}]}`
+		code, body := post("/v1/responses", ask)
+		if code != 200 || !strings.Contains(body, `"OK"`) {
+			t.Fatalf("status %d, want retry answer OK: %s", code, body)
+		}
+		if f.calls() != 2 || f.lastUser(1) != continueText {
+			t.Fatalf("calls %d, retry lastUser %q; want 2 calls with %q", f.calls(), f.lastUser(1), continueText)
+		}
+	})
+
+	t.Run("stream cut continuation surfaces original cut error", func(t *testing.T) {
+		f := &noPrefill{proto: provider.Anthropic, refuse: agyBridgePrefillRefusal, cut: true}
+		post := prefillServer(t, f)
+		ask := `{"model":"up/m","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+		code, body := post("/v1/chat/completions", ask)
+		if code != 200 || f.calls() != 2 {
+			t.Fatalf("status %d, calls %d, want 2 calls: %s", code, f.calls(), body)
+		}
+		if got := chatTextOf(body); got != "hel" {
+			t.Fatalf("client text = %q, want %q", got, "hel")
+		}
+		if strings.Contains(body, "prefill") {
+			t.Fatalf("prefill refusal leaked instead of original cut error: %s", body)
+		}
+	})
 }

@@ -33,8 +33,9 @@ import (
 // (buildCodeAssistSent, modelLastAsk).
 
 // prefillRefusal is an upstream's refusal of a conversation ending with
-// the assistant's message.
-var prefillRefusal = lazyre.New(`(?i)does not support (?:assistant message )?prefill|requests ending with a model turn are not supported`)
+// the assistant's message (including agy-bridge's "assistant prefill tail is
+// not supported", #7589).
+var prefillRefusal = lazyre.New(`(?i)does not support (?:assistant message )?prefill|requests ending with a model turn are not supported|assistant prefill tail is not supported`)
 
 // prefillRefused is how unfit remembers a provider's model refusing a
 // conversation ending with the assistant's message.

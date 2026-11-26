@@ -129,6 +129,12 @@ func (s *sums) tokens(l *access.Limit) int64 {
 	return n
 }
 
+// allTokens is every token recorded in s, cache reads included, matching the
+// full-context basis of reserve's body/4 estimate when deriving cost per token.
+func (s *sums) allTokens() int64 {
+	return s.input + s.output + s.cacheWrite + s.cacheRead
+}
+
 type held struct {
 	n      int
 	tokens int64
@@ -693,8 +699,8 @@ func reserve(who access.Identity, body int64, model string, now time.Time) (rele
 		}
 		x := &holds[j]
 		if l.Cost > 0 && x.cost == 0 {
-			s, used := ss[i], ss[i].tokens(l)
-			if used > 0 && s.cost > 0 {
+			s := ss[i]
+			if used := s.allTokens(); used > 0 && s.cost > 0 {
 				x.cost = float64(x.est) * s.cost / float64(used)
 			} else if p, ok := priceOf(model); ok {
 				x.cost = float64(x.est) * p

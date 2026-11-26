@@ -781,6 +781,15 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				held()
 			}
 			if (empty || counts && uncounted(this) || voids && stop == "") && !said && answersNothing(stop) {
+				failed, failedStatus = emptyReplyFailed(p, model, this)
+				if failedStatus == http.StatusBadRequest {
+					// the vendor's own count put the prompt past the
+					// model's window (#7601): the same reply would come
+					// back empty, billed each time — not asked again here;
+					// another model of the group still is
+					failedCode = "context_length_exceeded" // the code an agent compacts on
+					break
+				}
 				if empties < emptyRetries(w, r.Context()) && r.Context().Err() == nil && !p.PassesErrors() {
 					// asked again here first, for the agent to have the
 					// answer rather than the error: Gemini on a long
@@ -802,7 +811,6 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				// and an agent told it tries again rather than end its
 				// turn (#667); a reply that said nothing has nothing to
 				// go on from, so it isn't continued
-				failed = emptyReplyFailed(p.Name, this)
 				break
 			}
 			if voids && replyCheck(r.Context()) == nil && cutVoid(stop, !said, this.Output, request.MaxTokens) {

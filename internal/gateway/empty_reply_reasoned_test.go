@@ -65,7 +65,7 @@ func TestEmptyReplyFailedWords(t *testing.T) {
 		{Usage{Output: 40}, "X: " + emptyReply + " — the model counted 40 output tokens, and its reply carried no text or tool call; if trying again ends the same way, switch to another model or compact the conversation"},
 		{Usage{Output: 10, Reasoning: 30}, "X: " + emptyReply + " — the model counted 30 reasoning tokens, and its reply carried no text or tool call; if trying again ends the same way, switch to another model or compact the conversation"},
 	} {
-		if got := emptyReplyFailed("X", c.u); got != c.want {
+		if got, _ := emptyReplyFailed(provider.Provider{Name: "X"}, "m", c.u); got != c.want {
 			t.Errorf("%+v:\n got %q\nwant %q", c.u, got, c.want)
 		}
 	}

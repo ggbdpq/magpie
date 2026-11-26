@@ -8689,7 +8689,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		// Where a reply says its end (saysItsEnd), one that counted no
 		// usage either was cut, not empty: Command Code's killed worker
 		// ends after its role chunk, told below as a cut
-		msg := emptyReplyFailed(p.Name, sniff.u)
+		msg, _ := emptyReplyFailed(p, model, sniff.u)
 		// the line left pending is a usage frame's or [DONE]: dropped too
 		holdTail, heldTail, pending = false, nil, nil
 		w.Write(append(apart(), streamFailure(provider.Chat, msg)...))
@@ -10413,8 +10413,8 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	// a Chat reply that said nothing and never gave a finish_reason is
 	// empty too, as streamTranslated has it (28b8244d4)
 	if (empty || repliesCounted(actual) && uncounted(col.res.Usage) || cutVoidAt(actual) && col.res.Stop == "") && !saidAnything(col.res.Parts) && answersNothing(col.res.Stop) {
-		msg := emptyReplyFailed(p.Name, col.res.Usage)
-		return writeError(w, from, 502, msg), msg
+		msg, status := emptyReplyFailed(p, model, col.res.Usage)
+		return writeError(w, from, status, msg), msg
 	}
 	if cutVoidAt(actual) && replyCheck(r.Context()) == nil &&
 		cutVoid(col.res.Stop, !saidAnything(col.res.Parts), col.res.Usage.Output, request.MaxTokens) {
@@ -10453,8 +10453,16 @@ const emptyReply = "an empty reply (the model answered nothing; try again)"
 // (yuushabu_buyinn on X), and "try again" alone said nothing of that. The
 // words are only what the usage counted: what to do when trying again
 // ends the same way is said as a choice, not as the cause.
-func emptyReplyFailed(name string, u Usage) string {
-	msg := name + ": " + emptyReply
+// One whose vendor's own count put the prompt past the model's window
+// (#7601) fails as the overflow it is instead, a 400 the agent compacts
+// on: asked again, of this account or another, the same empty reply comes
+// back, and every one of them is billed. A reply under the window keeps
+// the empty reply's error, which an ask again does answer now and then.
+func emptyReplyFailed(p provider.Provider, model string, u Usage) (string, int) {
+	if w := windowOf(p, model); w > 0 && u.prompt() > w {
+		return p.Name + ": " + fmt.Sprintf("prompt is too long: the vendor counted %d prompt tokens on a reply that said nothing, more than %s's context window of %d", u.prompt(), model, w), http.StatusBadRequest
+	}
+	msg := p.Name + ": " + emptyReply
 	switch {
 	case u.Reasoning > 0 && u.Output >= u.Reasoning:
 		msg += fmt.Sprintf(" — the model reasoned for %d of the %d output tokens it counted, and its reply carried no text or tool call", u.Reasoning, u.Output)
@@ -10463,9 +10471,9 @@ func emptyReplyFailed(name string, u Usage) string {
 	case u.Output > 0:
 		msg += fmt.Sprintf(" — the model counted %d output tokens, and its reply carried no text or tool call", u.Output)
 	default:
-		return msg
+		return msg, http.StatusBadGateway
 	}
-	return msg + "; if trying again ends the same way, switch to another model or compact the conversation"
+	return msg + "; if trying again ends the same way, switch to another model or compact the conversation", http.StatusBadGateway
 }
 
 // emptyFails tells whether a reply in proto that says nothing is a

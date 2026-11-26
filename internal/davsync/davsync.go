@@ -838,6 +838,10 @@ func syncNow(ctx context.Context, force bool, expect string) error {
 	}
 	err = syncOnce(ctx, c, &st, nil)
 	if errors.Is(err, errChanged) { // another computer got in between: again, over its version
+		// The server rejected the validator we tried to write over; drop
+		// cached read validators (keeping NoCondRead) so the retry always
+		// downloads the latest remote object instead of getting a stale 304.
+		st.Server = version{NoCondRead: st.Server.NoCondRead}
 		err = syncOnce(ctx, c, &st, nil)
 	}
 	st.Error, st.File = "", nil

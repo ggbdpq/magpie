@@ -34,11 +34,14 @@ type fakeS3 struct {
 	objects            map[string][]byte
 	etags              map[string]string
 	noCond             bool
-	log                []string // each request: method, and the condition sent
-	onWrite            func()   // runs once, at the next PUT or HEAD (a write's look first), before it is answered
-	sent               int      // the bytes of objects read
-	put                int      // the bytes of objects written
-	lists, deletes     int      // the LISTs and DELETEs answered
+	// weak: an S3 proxy/gateway that returns weak ETags (W/"…") and
+	// rejects weak validators in If-Match per RFC 9110 §13.1.1 (#7218)
+	weak           bool
+	log            []string // each request: method, and the condition sent
+	onWrite        func()   // runs once, at the next PUT or HEAD (a write's look first), before it is answered
+	sent           int      // the bytes of objects read
+	put            int      // the bytes of objects written
+	lists, deletes int      // the LISTs and DELETEs answered
 	// reread, when set, is how the server reads a header back before it
 	// checks the signature over it
 	reread func(name, value string) string
@@ -95,9 +98,13 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.fail(w, http.StatusNotFound, "NoSuchKey")
 			return
 		}
-		w.Header().Set("ETag", f.etags[key])
+		etag := f.etags[key]
+		if f.weak {
+			etag = `W/` + etag
+		}
+		w.Header().Set("ETag", etag)
 		// a read of the version already had: 304, and no body
-		if r.Method == http.MethodGet && r.Header.Get("If-None-Match") == f.etags[key] {
+		if r.Method == http.MethodGet && (r.Header.Get("If-None-Match") == etag || f.weak && r.Header.Get("If-None-Match") == f.etags[key]) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
@@ -112,13 +119,17 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, there := f.objects[key]
-		if none == "*" && there || m != "" && m != f.etags[key] {
+		if none == "*" && there || m != "" && (f.weak && strings.HasPrefix(strings.TrimSpace(m), "W/") || m != f.etags[key]) {
 			f.fail(w, http.StatusPreconditionFailed, "PreconditionFailed")
 			return
 		}
 		f.put += len(body)
 		f.store(key, body)
-		w.Header().Set("ETag", f.etags[key])
+		etag := f.etags[key]
+		if f.weak {
+			etag = `W/` + etag
+		}
+		w.Header().Set("ETag", etag)
 	case http.MethodDelete:
 		f.deletes++
 		delete(f.objects, key)

@@ -28,6 +28,11 @@ type s3 struct {
 	sig         sigv4.Signer
 	client      *http.Client
 	now         func() time.Time
+	// seenExist and weakETag remember when the last get read an existing
+	// object whose ETag was weak or absent (stripped by versionOf), so put
+	// does not treat etag=="" as create-only (If-None-Match: *).
+	seenExist bool
+	weakETag  string
 }
 
 // defaultRegion is the region for an endpoint given none: R2 signs with
@@ -217,6 +222,7 @@ func (s *s3) explain(op string, e s3Error) error {
 // errNotModified when it is still have: the If-None-Match is signed with
 // the rest.
 func (s *s3) get(ctx context.Context, have version) (data []byte, v version, err error) {
+	s.seenExist, s.weakETag = false, ""
 	cond := have.conditions()
 	res, err := s.send(ctx, http.MethodGet, nil, cond)
 	if err != nil {
@@ -224,6 +230,9 @@ func (s *s3) get(ctx context.Context, have version) (data []byte, v version, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode == http.StatusNotModified && cond != nil {
+		if strongOf(have.ETag) == "" {
+			s.seenExist, s.weakETag = true, strings.TrimSpace(have.ETag)
+		}
 		return nil, have, errNotModified
 	}
 	if res.StatusCode != http.StatusOK {
@@ -242,7 +251,11 @@ func (s *s3) get(ctx context.Context, have version) (data []byte, v version, err
 	if data, err = unpacked("S3", data, res.Header.Get("Content-Encoding")); err != nil {
 		return nil, version{}, fmt.Errorf("reading %s: %w", s.where(), err)
 	}
-	return data, versionOf(res.Header), nil
+	v = versionOf(res.Header)
+	if v.ETag == "" {
+		s.seenExist, s.weakETag = true, strings.TrimSpace(res.Header.Get("ETag"))
+	}
+	return data, v, nil
 }
 
 // unconditional are the servers, by endpoint and bucket, found to refuse a
@@ -253,11 +266,21 @@ var unconditional sync.Map
 // where there is none yet — and errChanged when another computer wrote in
 // between.
 func (s *s3) put(ctx context.Context, data []byte, etag string) (version, error) {
+	seenExist, weakETag := s.seenExist, s.weakETag
+	s.seenExist, s.weakETag = false, ""
+	raw := strings.TrimSpace(etag)
+	strong := strongOf(raw)
+	// An existing object without a strong ETag (weak ETag or absent ETag
+	// from an S3 gateway/proxy) cannot use If-Match (strong comparison) and
+	// must not fall into If-None-Match: * (create-only, deterministic 412
+	// loop). Use the HEAD-then-PUT blind path without marking the server
+	// unconditional (#7218).
+	weakOrNoTag := (raw != "" && strong == "") || (raw == "" && seenExist)
 	where := s.endpoint.String() + " " + s.bucket
-	if _, no := unconditional.Load(where); !no {
+	if _, no := unconditional.Load(where); !no && !weakOrNoTag {
 		h := map[string]string{"Content-Type": "application/octet-stream"}
-		if etag != "" {
-			h["If-Match"] = etag
+		if strong != "" {
+			h["If-Match"] = strong
 		} else {
 			h["If-None-Match"] = "*"
 		}
@@ -267,7 +290,7 @@ func (s *s3) put(ctx context.Context, data []byte, etag string) (version, error)
 		}
 		defer res.Body.Close()
 		if res.StatusCode >= 200 && res.StatusCode < 300 {
-			return version{ETag: res.Header.Get("ETag")}, nil
+			return version{ETag: strongOf(res.Header.Get("ETag"))}, nil
 		}
 		e := readError(res)
 		switch {
@@ -292,7 +315,12 @@ func (s *s3) put(ctx context.Context, data []byte, etag string) (version, error)
 	if err != nil {
 		return version{}, err
 	}
-	if there != (etag != "") || there && bareETag(now) != bareETag(etag) {
+	want := raw
+	if want == "" && seenExist {
+		want = weakETag
+	}
+	expectThere := want != "" || seenExist
+	if there != expectThere || there && want != "" && bareETag(now) != bareETag(want) {
 		return version{}, errChanged
 	}
 	res, err := s.send(ctx, http.MethodPut, data, map[string]string{"Content-Type": "application/octet-stream"})
@@ -301,7 +329,7 @@ func (s *s3) put(ctx context.Context, data []byte, etag string) (version, error)
 	}
 	defer res.Body.Close()
 	if res.StatusCode >= 200 && res.StatusCode < 300 {
-		return version{ETag: res.Header.Get("ETag"), Blind: true}, nil
+		return version{ETag: strongOf(res.Header.Get("ETag")), Blind: true}, nil
 	}
 	return version{}, s.explain("write", readError(res))
 }

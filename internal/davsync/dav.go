@@ -58,18 +58,35 @@ func (v version) conditions() map[string]string {
 		return nil
 	}
 	switch {
-	case v.ETag != "":
-		return map[string]string{"If-None-Match": v.ETag}
+	case strongOf(v.ETag) != "":
+		return map[string]string{"If-None-Match": strongOf(v.ETag)}
 	case v.Modified != "":
 		return map[string]string{"If-Modified-Since": v.Modified}
 	}
 	return nil
 }
 
+// strongOf is an ETag fit for an If-Match: a weak one (W/"…") never
+// matches it, so it reads as none and the write goes unconditioned once,
+// the next read past the mtime's second bringing a strong one back
+// (#7218).
+func strongOf(e string) string {
+	e = strings.TrimSpace(e)
+	if strings.HasPrefix(e, "W/") {
+		return ""
+	}
+	return e
+}
+
 // versionOf is the version an answer's headers tell; none when they tell
-// nothing that can be asked about again.
+// nothing that can be asked about again. A weak ETag is none: it never
+// matches an If-Match (RFC 9110 §13.1.1 is strong comparison), so a write
+// over it was refused 412 for good, and the retry's If-None-Match, which
+// compares weakly, read 304 and kept the same dead validator in the state
+// forever — Apache's ap_make_etag says W/"…" for a read in the same
+// second as the file's mtime, uncompressed as this asks it (#1362, #7218).
 func versionOf(h http.Header) version {
-	if e := h.Get("ETag"); e != "" {
+	if e := strongOf(h.Get("ETag")); e != "" {
 		return version{ETag: e}
 	}
 	lm := h.Get("Last-Modified")
@@ -153,6 +170,9 @@ type dav struct {
 	// on it (#4993), so no read of it is sent with one again, this run —
 	// and the version says so, for the runs after
 	noCondRead bool
+	// seenWeak: the last get read an existing file whose ETag was weak
+	// (stripped by versionOf), so put's unconditional overwrite marks Blind
+	seenWeak bool
 }
 
 func newDAV(c Config) (*dav, error) {
@@ -286,6 +306,7 @@ func (d *dav) there(ctx context.Context, u string) bool {
 // W/"…"; either never matches the file in an If-Match, so every write after
 // such a read was refused as changed meanwhile (#1362).
 func (d *dav) get(ctx context.Context, have version) (data []byte, v version, err error) {
+	d.seenWeak = false
 	if have.NoCondRead {
 		d.noCondRead = true
 	}
@@ -353,6 +374,7 @@ func (d *dav) get(ctx context.Context, have version) (data []byte, v version, er
 	// the marking rides on every version read here, so the next sync
 	// doesn't ask this server with a condition again
 	v = versionOf(res.Header)
+	d.seenWeak = strings.HasPrefix(strings.TrimSpace(res.Header.Get("ETag")), "W/")
 	v.NoCondRead = d.noCondRead
 	return data, v, nil
 }
@@ -363,9 +385,14 @@ func (d *dav) get(ctx context.Context, have version) (data []byte, v version, er
 // backup" on every sync after, so what a write kept is read back and
 // compared; a short write is tried again and told as itself in the end.
 func (d *dav) put(ctx context.Context, data []byte, etag string) (version, error) {
+	seenWeak := d.seenWeak
+	d.seenWeak = false
+	raw := strings.TrimSpace(etag)
+	strong := strongOf(raw)
+	blindWeak := seenWeak || (raw != "" && strong == "")
 	h := map[string]string{"Content-Type": "application/octet-stream"}
-	if etag != "" {
-		h["If-Match"] = etag
+	if strong != "" {
+		h["If-Match"] = strong
 	}
 	for try, writes := 0, 0; ; try++ {
 		res, err := d.send(ctx, http.MethodPut, d.url(folder, file), data, h)
@@ -383,9 +410,9 @@ func (d *dav) put(ctx context.Context, data []byte, etag string) (version, error
 					// it — the ETag the PUT answered, else the one the
 					// check read; with neither, the old one goes, for it
 					// can't hold any more
-					if e := res.Header.Get("ETag"); e != "" {
+					if e := strongOf(res.Header.Get("ETag")); e != "" {
 						h["If-Match"] = e
-					} else if he != "" {
+					} else if he = strongOf(he); he != "" {
 						h["If-Match"] = he
 					} else {
 						delete(h, "If-Match")
@@ -395,10 +422,14 @@ func (d *dav) put(ctx context.Context, data []byte, etag string) (version, error
 				return version{}, cerr
 			}
 			// an ETag said here is the version written; with none, the
-			// next sync reads the file in full, as before. noCondRead
-			// rides along: it is the server's, not the version's, and the
-			// write's version is the one the next sync reads with
-			return version{ETag: res.Header.Get("ETag"), NoCondRead: d.noCondRead}, nil
+			// next sync reads the file in full, as before. When put fell
+			// back to an unconditional overwrite over an existing file
+			// because its ETag was weak, mark Blind so concurrent writes
+			// in the same second are merged on the next sync (#7218).
+			// noCondRead rides along: it is the server's, not the version's,
+			// and the write's version is the one the next sync reads with.
+			_, guarded := h["If-Match"]
+			return version{ETag: strongOf(res.Header.Get("ETag")), Blind: !guarded && blindWeak, NoCondRead: d.noCondRead}, nil
 		case res.StatusCode == http.StatusPreconditionFailed:
 			return version{}, errChanged
 		case res.StatusCode == http.StatusForbidden && (try > 0 || d.there(ctx, d.url(folder)+"/")):

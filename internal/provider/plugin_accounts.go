@@ -244,7 +244,17 @@ func pluginLogins(pp plugin.Provider) []pluginLogin {
 					have[l.Home] = true
 					renamed := l.User != labels[l.Home]
 					if renamed {
-						l.User, edit = labels[l.Home], true
+						// A non-own plugin account whose display name changed
+						// keeps its stable ID and per-account settings (proxy,
+						// models, caps, etc.) via renameTo/renameSettled (#5729).
+						if !own[l.Home] && l.User != "" && accountKey(l.User) != accountKey(labels[l.Home]) {
+							if renameDue() {
+								l.renameTo(labels[l.Home])
+								edit = true
+							}
+						} else {
+							l.User, edit = labels[l.Home], true
+						}
 					}
 					// the agent's own, hidden, shows again once the agent signs
 					// in anew: told by its sign-in's mark, else by another account

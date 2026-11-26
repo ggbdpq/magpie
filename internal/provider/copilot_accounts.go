@@ -13,6 +13,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -111,28 +112,35 @@ func renameDue() bool {
 // wrote over it), so what it kept is that account's. One whose old name
 // another account still bears leaves those settings to it.
 func renameSettled(ls []savedLogin) []savedLogin {
-	moves := map[string]string{}
+	movesByID := map[string]map[string]string{}
 	for _, l := range ls {
 		if l.was == "" || slices.ContainsFunc(ls, func(o savedLogin) bool {
 			return o.Agent == l.Agent && o.was == "" && accountKey(o.User) == accountKey(l.was)
 		}) {
 			continue
 		}
-		moves[l.was] = l.User
+		pid := labelProvider(l.Agent)
+		if movesByID[pid] == nil {
+			movesByID[pid] = map[string]string{}
+		}
+		movesByID[pid][l.was] = l.User
 	}
-	err := moveAccountSettings("copilot", moves)
-	if err != nil {
-		log.Printf("copilot accounts renamed with their host (#1220): their settings couldn't be moved (%v); kept under their old names for now", err)
-		renameMu.Lock()
-		renameFailedAt = time.Now()
-		renameMu.Unlock()
+	failed := map[string]bool{}
+	for _, pid := range slices.Sorted(maps.Keys(movesByID)) {
+		if err := moveAccountSettings(pid, movesByID[pid]); err != nil {
+			log.Printf("%s accounts renamed: their settings couldn't be moved (%v); kept under their old names for now", pid, err)
+			failed[pid] = true
+			renameMu.Lock()
+			renameFailedAt = time.Now()
+			renameMu.Unlock()
+		}
 	}
 	disk := slices.Clone(ls)
 	for i := range ls {
 		if ls[i].was == "" {
 			continue
 		}
-		if err != nil {
+		if failed[labelProvider(ls[i].Agent)] {
 			disk[i].User = ls[i].was
 			continue
 		}

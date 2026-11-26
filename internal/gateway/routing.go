@@ -356,7 +356,7 @@ var (
 	// …" (#5111, wuxiaoqiang12) — its "has been" broke the pair, and read
 	// as a plain rate limit the key was asked again every half an hour, the
 	// user's quota-rest never read
-	usedUpWords = lazyre.New(`(?i)quota|usage.?limit|out of budget|budget.{0,32}(exceeded|exhausted)|limit.?reached|(?:hit|reached) your .*limit|limit.{0,24}resets|exceeded.*(plan|limit)|额度|用量|套餐|上限`)
+	usedUpWords = lazyre.New(`(?i)quota|usage.?limit|out of budget|out of extra usage|budget.{0,32}(exceeded|exhausted)|limit.?reached|(?:hit|reached) your .*limit|limit.{0,24}resets|exceeded.*(plan|limit)|额度|用量|套餐|上限`)
 	// rateWords: a 429 that is a short rate limit — requests or tokens per
 	// minute — which usedUpWords took for a used-up plan ("Rate limit
 	// exceeded", "reached"): as magpie words an upstream error, with

@@ -6011,7 +6011,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				continue
 			}
 		}
-		if last && !held && !hw.passing && hw.failed() && quotaStatus(hw.code()) && (c.p.Account == nil || !hw.turnedAway && try.Fail != failPrompt) && (try.Fail == failQuota || try.Fail == failCredit || failure(hw.code(), hw.errBody()) == failQuota || failure(hw.code(), hw.errBody()) == failCredit) {
+		if last && !held && !hw.passing && hw.failed() && (quotaStatus(hw.code()) || hw.code() >= 400 && hw.code() < 500) && (c.p.Account == nil || !hw.turnedAway && try.Fail != failPrompt) && (try.Fail == failQuota || try.Fail == failCredit || failure(hw.code(), hw.errBody()) == failQuota || failure(hw.code(), hw.errBody()) == failCredit) {
 			// the last key left is out of its allowance: it rests as the
 			// ones before it did, for the next request to be answered
 			// from the rests until the first of them is back (#1772). An
@@ -6019,7 +6019,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// of failure went on to, and its 429 the agent's, request
 			// after request, while the relay before it would answer
 			// (dbydd on Discord), once its own refusal is read as out of
-			// quota or credit (not Antigravity's 429 to a prompt).
+			// quota or credit (not Antigravity's 429 to a prompt). A 4xx
+			// quota/credit refusal (such as Claude's 400 "out of extra
+			// usage") on the last candidate rests it too so claude-limits
+			// and staleAllowance update while quotaHeld stays gated on
+			// quotaStatus.
 			// quotaHeld still holds keys alone, and autoReset lifts the
 			// rest of an account it spends a reset of
 			rest := s.restAfterMarked(c, hw.code(), hw.header, hw.errBody(), hw.sharedPool)

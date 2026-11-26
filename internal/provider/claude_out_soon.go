@@ -479,7 +479,7 @@ func claudeOnSince(user string, now time.Time) time.Time {
 // "You've hit your session limit", "… weekly limit", "… Fable limit for
 // this week", "… limit · resets 5pm" (2.1.327 builds it as "You've hit
 // your " and the window's words), and the older "usage limit reached".
-var claudeLimitSaid = lazyre.New(`(?i)(?:hit|reached) your (?:[\w.-]+ ){0,3}limit|\b(?:session|weekly|usage) limit (?:reached|hit)`)
+var claudeLimitSaid = lazyre.New(`(?i)(?:hit|reached) your (?:[\w.-]+ ){0,3}limit|\b(?:session|weekly|usage) limit (?:reached|hit)|\bout of extra usage\b`)
 
 // claudeOutUnread says the account Claude Code is on, user, whose reading
 // q (known: there is one) tells no allowance, is out all the same: the

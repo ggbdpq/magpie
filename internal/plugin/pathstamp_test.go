@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -123,5 +124,97 @@ func TestPathsLookedAtOnceASecond(t *testing.T) {
 	pathsEvery = 0
 	if pathsStamp() == first {
 		t.Fatal("the edit wasn't seen once pathsEvery went by")
+	}
+}
+
+// TestPathOnlyUIPluginReloadDoesNotNotifyCatalog (#7671): swapping or rolling
+// back a UI-only local path plugin must invalidate the host without firing
+// OnChange/OnListed catalog-sync notifications when the provider/model list is
+// unchanged, while a reload that actually changes a plugin's models still
+// notifies OnListed.
+func TestPathOnlyUIPluginReloadDoesNotNotifyCatalog(t *testing.T) {
+	storeSandbox(t)
+	every := pathsEvery
+	pathsEvery = 0
+	t.Cleanup(func() { pathsEvery = every })
+	defer ListInBackground(ListInBackground(false))
+
+	dir := filepath.Join(t.TempDir(), "ui-plugin")
+	if err := os.MkdirAll(filepath.Join(dir, "page"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pageFile := filepath.Join(dir, "page", "app.js")
+	base := time.Now().Add(-time.Hour)
+	writePage := func(body string, at time.Time) {
+		t.Helper()
+		if err := os.WriteFile(pageFile, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(pageFile, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writePage("console.log('build A')", base)
+	b, _ := json.Marshal(List{Plugins: []Entry{{Spec: dir}}})
+	writeList(t, string(b))
+
+	// Seed the baseline provider list (no providers contributed by the UI plugin).
+	commitProviders([]Provider{}, nil)
+	Told()
+	checkList()
+	Told()
+	prevStale := hostStale.Swap(false)
+	t.Cleanup(func() { hostStale.Store(prevStale) })
+
+	var changes, listings atomic.Int32
+	onChangeMu.Lock()
+	oldChange := onChange
+	onChange = append(append([]func(){}, oldChange...), func() { changes.Add(1) })
+	onChangeMu.Unlock()
+	onListedMu.Lock()
+	oldListed := onListed
+	onListed = append(append([]func(){}, oldListed...), func() { listings.Add(1) })
+	onListedMu.Unlock()
+	t.Cleanup(func() {
+		Told()
+		onChangeMu.Lock()
+		onChange = oldChange
+		onChangeMu.Unlock()
+		onListedMu.Lock()
+		onListed = oldListed
+		onListedMu.Unlock()
+	})
+
+	// Swap build A -> build B: host becomes stale, but zero catalog notifications fire.
+	writePage("console.log('build B - longer asset')", base.Add(time.Minute))
+	if !checkList() || !hostStale.Swap(false) {
+		t.Fatal("swap did not invalidate host")
+	}
+	commitProviders([]Provider{}, nil)
+	Told()
+	if got := changes.Load() + listings.Load(); got != 0 {
+		t.Fatalf("UI-only swap scheduled %d catalog notifications (onChange=%d, onListed=%d), want 0", got, changes.Load(), listings.Load())
+	}
+
+	// Roll back build B -> build A: still zero catalog notifications.
+	writePage("console.log('build A')", base.Add(2*time.Minute))
+	if !checkList() || !hostStale.Swap(false) {
+		t.Fatal("rollback did not invalidate host")
+	}
+	commitProviders([]Provider{}, nil)
+	Told()
+	if got := changes.Load() + listings.Load(); got != 0 {
+		t.Fatalf("UI-only rollback scheduled %d catalog notifications (onChange=%d, onListed=%d), want 0", got, changes.Load(), listings.Load())
+	}
+
+	// A reload that actually adds/changes a provider model MUST notify OnListed.
+	writePage("console.log('build C with model')", base.Add(3*time.Minute))
+	if !checkList() || !hostStale.Swap(false) {
+		t.Fatal("provider-changing reload did not invalidate host")
+	}
+	commitProviders([]Provider{{Spec: dir, ID: "demo", Models: []Model{{ID: "m1"}}}}, nil)
+	Told()
+	if listings.Load() != 1 {
+		t.Fatalf("provider/model change fired %d OnListed notifications, want 1", listings.Load())
 	}
 }

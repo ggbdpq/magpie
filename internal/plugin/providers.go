@@ -1265,12 +1265,14 @@ func LoaderOptions(ctx context.Context, provider, account string) (Options, erro
 	return o, nil
 }
 
+func forgetOptions() {
+	optMu.Lock()
+	optCache = map[string]optEntry{}
+	optMu.Unlock()
+}
+
 func init() {
-	OnChange(func() {
-		optMu.Lock()
-		optCache = map[string]optEntry{}
-		optMu.Unlock()
-	})
+	OnChange(forgetOptions)
 }
 
 // Import keeps auth (a plugin-auth.json entry) as one more of provider's

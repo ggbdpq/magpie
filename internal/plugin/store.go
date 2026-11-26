@@ -324,11 +324,25 @@ var hostStale atomic.Bool
 func checkList() bool {
 	st := seenStamp()
 	listSeen.Lock()
-	moved := listSeen.set && listSeen.stamp != st
+	prev := listSeen.stamp
+	moved := listSeen.set && prev != st
 	listSeen.stamp, listSeen.set = st, true
 	listSeen.Unlock()
 	if !moved {
 		return false
+	}
+	prevList, _, _ := strings.Cut(prev, "|")
+	curList, _, _ := strings.Cut(st, "|")
+	if prevList == curList {
+		// Only a local path plugin's files changed: invalidate the host and
+		// refresh providers without firing OnChange, deferring catalog
+		// notifications to OnListed once commitProviders sees an actual
+		// provider/model change (#7671).
+		hostStale.Store(true)
+		forgetOptions()
+		forgetProviders()
+		changedNow()
+		return true
 	}
 	provMu.Lock()
 	provCache = nil

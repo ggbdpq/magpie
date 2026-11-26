@@ -2408,7 +2408,7 @@ var transportWords = lazyre.New(`(?i)dial (tcp|udp)|connectex|wsarecv|wsasend|i/
 // broke off or said nothing.
 func transportFailed(body []byte) bool {
 	return transportWords.Match(body) || bytes.Contains(body, []byte(errEndedShort.Error())) ||
-		bodyHas(body, didNotStream) || magpieSaid(string(body))
+		bodyHas(body, didNotStream) || bodyHas(body, wrongProtocolReply) || magpieSaid(string(body))
 }
 
 // noteHeld keeps n as the most prompt tokens the provider's model has
@@ -2517,7 +2517,7 @@ func passing(status int, header http.Header, body []byte, again int) (time.Durat
 	case wait > longestPause:
 		return 0, false
 	case busyStatus(status):
-		if bodyHas(body, didNotStream) || bodyHas(body, cutVoidWords) {
+		if bodyHas(body, didNotStream) || bodyHas(body, cutVoidWords) || bodyHas(body, wrongProtocolReply) {
 			// a void cut at its length fails the same every ask: the
 			// budget went to reasoning, and mostly would again — the same
 			// one asked again would burn it twice over before the error
@@ -3421,6 +3421,20 @@ func (h *holdWriter) scan() {
 				return
 			}
 		}
+		if h.alive != nil && h.alive.proto != "" {
+			// a 200 event the protocol's reply would never carry (a
+			// security-guard middleware's own API on the client's, #7525):
+			// leads, buffering and thinking are the stream's own to hold,
+			// so only what would be relayed as the reply's content is
+			// judged here
+			if msg, ok := wrongProtocolStream(h.alive.proto, rest[:end]); ok {
+				h.failure, h.failMsg = http.StatusBadGateway, msg
+				if h.stop != nil {
+					h.stop()
+				}
+				return
+			}
+		}
 		h.spoke = true
 		if h.wantWhole {
 			if why, ok := endedIncomplete(rest[:end]); ok {
@@ -3823,6 +3837,12 @@ func (h *holdWriter) settle() {
 			h.failure, h.failMsg = status, msg
 			return
 		}
+		if h.alive != nil && h.alive.proto != "" {
+			if msg, ok := wrongProtocolWhole(h.alive.proto, h.held.Bytes()); ok {
+				h.failure, h.failMsg = http.StatusBadGateway, msg
+				return
+			}
+		}
 	}
 	if h.alive != nil && h.alive.sent && h.status < 400 && wholeEvents(h.alive.proto, h.held.Bytes()) == nil {
 		// a 200 that is no reply of the protocol's, once the agent has a
@@ -4218,6 +4238,146 @@ const (
 // group's agy-cli and google never asked. The last member's goes as it
 // came: a reply meant to be empty ends there, asked of each member once.
 const emptyEnded = emptyReply + ": it ended with nothing in it"
+
+// wrongProtocolReply is in the 502 error for an upstream that answered
+// HTTP 200 with a body or SSE event belonging to a different API protocol
+// than the client's (for example, a security-guard middleware returning a
+// Chat Completions replacement on an Anthropic /v1/messages endpoint,
+// #7525). Failing as 502 lets a routing group fail over to its next member
+// without resting the provider, and gives a lone client a protocol-native
+// error rather than an unparseable 200.
+const wrongProtocolReply = "answered in the wrong API protocol"
+
+func protoLabel(proto provider.Protocol) string {
+	switch proto {
+	case provider.Chat:
+		return "Chat Completions"
+	case provider.Anthropic:
+		return "Messages"
+	case provider.Responses:
+		return "Responses"
+	case provider.Gemini:
+		return "Gemini"
+	default:
+		return string(proto)
+	}
+}
+
+func wrongProtocolMsg(got string, want provider.Protocol) string {
+	return wrongProtocolReply + " (" + got + " instead of " + protoLabel(want) + ")"
+}
+
+func hasJSONValue(raw json.RawMessage) bool {
+	t := bytes.TrimSpace(raw)
+	return len(t) > 0 && string(t) != "null"
+}
+
+func isAnthropicStreamEvent(typ string) bool {
+	switch typ {
+	case "message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop":
+		return true
+	}
+	return false
+}
+
+// wrongProtocolStream reports whether a single SSE event positively belongs
+// to a different API protocol than proto. Error events and comments are
+// left to streamEvent so normal error and refusal handling still applies.
+func wrongProtocolStream(proto provider.Protocol, ev []byte) (string, bool) {
+	if proto == "" {
+		return "", false
+	}
+	var name string
+	var data []byte
+	for _, ln := range bytes.Split(ev, []byte("\n")) {
+		ln = bytes.TrimRight(ln, "\r")
+		switch {
+		case bytes.HasPrefix(ln, []byte("event:")):
+			name = strings.TrimSpace(string(ln[6:]))
+		case bytes.HasPrefix(ln, []byte("data:")):
+			data = append(data, bytes.TrimSpace(ln[5:])...)
+		}
+	}
+	if len(data) == 0 || string(data) == "[DONE]" {
+		return "", false
+	}
+	var v struct {
+		Type       string          `json:"type"`
+		Object     string          `json:"object"`
+		Error      json.RawMessage `json:"error"`
+		Choices    json.RawMessage `json:"choices"`
+		Candidates json.RawMessage `json:"candidates"`
+		Response   struct {
+			Error json.RawMessage `json:"error"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(data, &v) != nil {
+		return "", false
+	}
+	typ := v.Type
+	if typ == "" {
+		typ = name
+	}
+	if typ == "error" || typ == "response.failed" || hasJSONValue(v.Error) || hasJSONValue(v.Response.Error) {
+		return "", false
+	}
+	var got provider.Protocol
+	switch {
+	case (typ == "" && hasJSONValue(v.Choices)) || v.Object == "chat.completion.chunk":
+		got = provider.Chat
+	case isAnthropicStreamEvent(typ):
+		got = provider.Anthropic
+	case strings.HasPrefix(typ, "response."):
+		got = provider.Responses
+	case typ == "" && hasJSONValue(v.Candidates):
+		got = provider.Gemini
+	default:
+		return "", false
+	}
+	if got == proto {
+		return "", false
+	}
+	return wrongProtocolMsg(protoLabel(got), proto), true
+}
+
+// wrongProtocolWhole reports whether a whole 200 JSON body positively
+// belongs to a different API protocol than proto. Error envelopes and
+// minimal unrecognized objects are left untouched.
+func wrongProtocolWhole(proto provider.Protocol, b []byte) (string, bool) {
+	if proto == "" {
+		return "", false
+	}
+	var v struct {
+		Type       string          `json:"type"`
+		Object     string          `json:"object"`
+		Error      json.RawMessage `json:"error"`
+		Choices    json.RawMessage `json:"choices"`
+		Content    json.RawMessage `json:"content"`
+		Output     json.RawMessage `json:"output"`
+		Candidates json.RawMessage `json:"candidates"`
+	}
+	if json.Unmarshal(b, &v) != nil || hasJSONValue(v.Error) {
+		return "", false
+	}
+	if proto == provider.Responses && v.Object == "response.compaction" {
+		return "", false
+	}
+	matched := map[provider.Protocol]bool{
+		provider.Chat:      hasJSONValue(v.Choices) || v.Object == "chat.completion",
+		provider.Anthropic: v.Type == "message" && hasJSONValue(v.Content),
+		provider.Responses: v.Object == "response" || (hasJSONValue(v.Output) && v.Object != "response.compaction" && v.Type == ""),
+		provider.Gemini:    hasJSONValue(v.Candidates),
+	}
+	if matched[proto] {
+		return "", false
+	}
+	for _, other := range []provider.Protocol{provider.Chat, provider.Anthropic, provider.Responses, provider.Gemini} {
+		if matched[other] {
+			return wrongProtocolMsg(protoLabel(other), proto), true
+		}
+	}
+	return "", false
+}
 
 // endsEmptyChat, endsEmptyAnthropic and endsEmptyGemini tell whether a
 // stop reason ends a turn a reply had nothing in (eventEmptyEnd): not one

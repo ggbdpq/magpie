@@ -4993,6 +4993,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		}
 		if hw.failure != 0 { // the stream failed before any of it was sent
 			call.Status, call.Error = hw.failure, c.p.Name+": "+hw.failMsg
+			if strings.Contains(hw.failMsg, wrongProtocolReply) && call.Usage.Served != "" {
+				call.Error += fmt.Sprintf(" (served %q)", call.Usage.Served)
+			}
 			if hw.turnedAway {
 				// Antigravity's refusal said as the stream's error event:
 				// its words, and why, as its 429 is told (#1425)
@@ -5850,7 +5853,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				s.trace.update(tr, func(t *Route) { t.Order, t.Left = askUnlisted(t.Order, t.Left, c, nextW) })
 			}
 		}
-		if !last && hw.failed() && (strings.Contains(call.Error, finishFailed) || strings.Contains(call.Error, emptyCompleted)) {
+		if !last && hw.failed() && (strings.Contains(call.Error, finishFailed) || strings.Contains(call.Error, emptyCompleted) || strings.Contains(call.Error, wrongProtocolReply)) {
 			// a 200 stream the vendor ended with finish_reason "error"
 			// (#2471), or with a response.completed that carried nothing
 			// and counted no token (also #2471): the turn failed, as the
@@ -6145,6 +6148,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		} else if !hw.passing && hw.code() >= 400 && kept.compactsInStream(call.Status, call.Error) {
 			// the vendor said the conversation is past the model's window:
 			// Codex is told in its stream, the one place it compacts on it
+			failTo(w, kept, from, call.Status, call.Error)
+		} else if !hw.passing && hw.failure != 0 && hw.status < 400 && strings.Contains(hw.failMsg, wrongProtocolReply) {
+			// a 200 payload in the wrong API protocol: tell the client as a
+			// 502 in its own protocol instead of forwarding the unparseable 200
 			failTo(w, kept, from, call.Status, call.Error)
 		} else {
 			hw.release()

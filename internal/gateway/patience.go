@@ -72,6 +72,7 @@ func busy(status int, body []byte) bool {
 		return failure(status, body) == failOther && !protectionRefused(status, body) &&
 			!bodyHas(body, didNotStream) &&
 			!bodyHas(body, cutVoidWords) &&
+			!bodyHas(body, wrongProtocolReply) &&
 			!queued(body)
 	case status == 429:
 		return failure(status, body) == failRate && !moneySaid(body) && !walled(body)

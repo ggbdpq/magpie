@@ -135,7 +135,7 @@ func plainUnavailable(c candidate, status int, body []byte) bool {
 	}
 	return failureOf(c, status, body) == failOther && !vendorOverloaded(status, body) &&
 		!modelRefused(status, body) && !codexReset(status, body) && !protectionRefused(status, body) &&
-		!bodyHas(body, didNotStream) && refusalWords(status, body) != ""
+		!bodyHas(body, didNotStream) && !bodyHas(body, wrongProtocolReply) && refusalWords(status, body) != ""
 }
 
 // idRun is a run in an error's words that differs from one try to the

@@ -177,25 +177,28 @@ func (w *Web) Wait() error {
 	return update.Reexec(exe, os.Args[1:], append(os.Environ(), webRunKey+"="+w.key))
 }
 
+// webCloseGrace lets an in-flight response (such as update/install's 204
+// flushing over a slow link or proxy) finish before the page server closes.
+var webCloseGrace = time.Second
+
 // Close stops the web page and waits for this process's gateway to save its sessions.
 func (w *Web) Close() {
 	// a gateway draining (a SIGTERM, gateway.Drain) lets the page port's
 	// requests in flight finish too, the /v1 ones an agent sends through it
 	// included, for as long as the gateway gives its own
-	pageDone := make(chan struct{})
+	grace := webCloseGrace
 	if gw := served.Load(); gw != nil && gw.Draining() {
-		go func() {
-			defer close(pageDone)
-			ctx, cancel := context.WithTimeout(context.Background(), gw.Grace())
-			defer cancel()
-			if w.srv.Shutdown(ctx) != nil {
-				w.srv.Close()
-			}
-		}()
-	} else {
-		w.srv.Close()
-		close(pageDone)
+		grace = gw.Grace()
 	}
+	pageDone := make(chan struct{})
+	go func() {
+		defer close(pageDone)
+		ctx, cancel := context.WithTimeout(context.Background(), grace)
+		defer cancel()
+		if w.srv.Shutdown(ctx) != nil {
+			w.srv.Close()
+		}
+	}()
 	// The gateway keeps idle Claude sessions as it ends. Wait for that
 	// before returning or replacing this process, or the next turn has
 	// to replay the whole conversation instead of resuming its session.

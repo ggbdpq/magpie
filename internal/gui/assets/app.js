@@ -4510,15 +4510,28 @@ for (const k of "pointerdown keydown input wheel".split(" ")) addEventListener(k
 
 async function renderUpdateBadge() {
   const b = $("#update"), label = b.querySelector("span");
+  clearTimeout(b.waitPoll);
+  clearTimeout(b.pullPoll);
   const u = await api(updatePath("update")).catch(() => null);
   if (servedAnew(u)) return;
   if (u) updateLast = u, u.at = Date.now();
-  // pulling: a click is downloading it again, and restarts once it's in
-  const pulling = !!u && !!b.dataset.pulling && ["checking", "downloading", "ready"].includes(u.state);
+  // pulling: a click is downloading it again, or a waiting restart is
+  // rechecking/downloading before restarting
+  const waitPull = !!u && !!u.waiting && ["checking", "downloading"].includes(u.state);
+  if (waitPull) { b.dataset.pulling = "1"; b.classList.add("busy"); }
+  const pulling = waitPull || (!!u && !!b.dataset.pulling && ["checking", "downloading", "ready"].includes(u.state));
+  if (!u && (b.dataset.pulling || b.dataset.waiting)) {
+    delete b.dataset.pulling;
+    delete b.dataset.waiting;
+    b.classList.add("busy");
+    label.textContent = t("Restarting…");
+    return backAsNew(updateLast?.current || pageVersion);
+  }
   if (b.dataset.pulling && !pulling) {
     delete b.dataset.pulling;
     b.classList.remove("busy");
   }
+  if (!u || u.state !== "ready" || !u.waiting) delete b.dataset.waiting;
   // a package manager's magpie: Settings names its command, no pill
   const on = pulling || (!!u && !u.quiet && !updatePillOff(u.latest) && (u.state === "ready" || (u.state === "available" && !u.packaged) || u.state === "found" || (u.state === "error" && u.retry)));
   if (b.hidden !== !on) b.hidden = !on;
@@ -4530,18 +4543,18 @@ async function renderUpdateBadge() {
     skipUpdate(u.latest);
   };
   const restart = async () => {
+    clearTimeout(b.waitPoll);
+    clearTimeout(b.pullPoll);
     b.classList.add("busy");
     label.textContent = t("Updating…");
     // an answer means it didn't: the password prompt dismissed, the swap
     // failed, or a newer version is out and downloading first (dawnmarch7429)
-    const a = await api("update/install", installFrom()).catch(() => ({}));
-    if (!a) return backAsNew(u.current);
-    if (a) {
-      if (["checking", "downloading"].includes(a.state)) b.dataset.pulling = "1";
-      else b.classList.remove("busy");
-      if (a.waiting) b.dataset.armed = String(Date.now());
-      renderUpdateBadge();
-    }
+    const a = await api("update/install", installFrom()).catch(() => null);
+    if (!a) { label.textContent = t("Restarting…"); return backAsNew(u.current); }
+    if (["checking", "downloading"].includes(a.state)) b.dataset.pulling = "1";
+    else b.classList.remove("busy");
+    if (a.waiting) b.dataset.armed = String(Date.now());
+    renderUpdateBadge();
   };
   if (pulling && u.state === "ready") {
     delete b.dataset.pulling;
@@ -4551,7 +4564,7 @@ async function renderUpdateBadge() {
     b.classList.remove("busy");
   } else if (pulling) {
     b.title = label.textContent = downloadingText(u);
-    setTimeout(renderUpdateBadge, 700);
+    b.pullPoll = setTimeout(renderUpdateBadge, 700);
     return;
   }
   if (b.classList.contains("busy")) return;
@@ -4559,23 +4572,24 @@ async function renderUpdateBadge() {
   // at once; one just after the click that armed it is taken as a double
   // click, not as "now"
   if (u.state === "ready" && u.waiting) {
+    b.dataset.waiting = "1";
     label.textContent = t("Waiting to update");
     const a = { v: u.latest, busy: updateBusyText(u.busy, u.using) || "…" };
     b.title = u.handover ? t("magpie restarts to update to {v} once the replies through a Claude subscription have finished: {busy}. Other requests carry on across the restart. Click to restart now.", a) : t("magpie restarts to update to {v} once the agents' requests through the gateway have finished: {busy}. Click to restart now.", a);
     b.onclick = () => {
       if (Date.now() - (+b.dataset.armed || 0) < 1500) return;
+      clearTimeout(b.waitPoll);
       b.classList.add("busy");
       label.textContent = t("Restarting…");
       api("update/install", { ...installFrom(), when: "now" }).then((a) => {
         if (!a) return backAsNew(u.current);
-        b.classList.remove("busy");
+        if (["checking", "downloading"].includes(a.state)) b.dataset.pulling = "1";
+        else b.classList.remove("busy");
+        if (a.waiting) b.dataset.armed = String(Date.now());
         renderUpdateBadge();
       }, () => backAsNew(u.current));
     };
-    clearTimeout(b.waitPoll);
-    b.waitPoll = setTimeout(() => {
-      api(updatePath("update")).then(() => renderUpdateBadge(), () => backAsNew(u.current));
-    }, 1500);
+    b.waitPoll = setTimeout(renderUpdateBadge, 1500);
     return;
   }
   // a swap that failed says so where it was clicked, not only in the tooltip
@@ -4634,13 +4648,19 @@ async function skipUpdate(v) {
 
 // backAsNew waits, in magpie web, for the version the page restarted into
 // to answer in its place, and reloads the page from it (#111).
+let backWaiting = false;
 async function backAsNew(was) {
-  if (!web) return;
+  if (!web || backWaiting) return;
+  backWaiting = true;
   for (let i = 0; i < 180; i++) {
     await new Promise((r) => setTimeout(r, 1000));
     const u = await fetch("/api/update").then((r) => (r.ok ? r.json() : null)).catch(() => null);
-    if (u && u.current !== was) return location.reload();
+    if (u && u.current !== was) {
+      if (!reloadingAnew) { reloadingAnew = true; location.reload(); }
+      return;
+    }
   }
+  backWaiting = false;
 }
 
 // servedAnew reloads, once, a page another magpie version now answers for
@@ -22690,7 +22710,7 @@ async function renderUpdate(r, u) {
     if (servedAnew(u)) return;
     if (!u || !r.isConnected || seqOf(r) !== seq) return;
     if (early) updateSeq.set(r, seq + 1); // stops timers
-  } else if (!r.isConnected) return;
+  } else if (servedAnew(u) || !r.isConnected) return;
   updateLast = u, u.at ??= Date.now();
   const who = r.querySelector(".who"), val = r.querySelector(".val");
   const sub = who.querySelector(".sub") || who.appendChild(el("div", "sub"));
@@ -22762,8 +22782,16 @@ async function renderUpdate(r, u) {
       if (u.error) sub.classList.add("wraps");
       // back with an answer only when it didn't restart: a busy gateway
       // has the restart wait for it to be idle (#577)
+      let installing = false;
       const install = async (when) => {
-        const a = await api("update/install", { ...installFrom(), ...(when ? { when } : {}) }).catch(() => ({ state: "error" }));
+        if (installing) return;
+        installing = true;
+        const mine = seqOf(r) + 1;
+        updateSeq.set(r, mine);
+        dim();
+        if (when === "now") sub.textContent = t("Restarting…");
+        const a = await api("update/install", { ...installFrom(), ...(when ? { when } : {}) }).catch(() => (when === "cancel" ? {} : null));
+        if (!r.isConnected || seqOf(r) !== mine) return;
         if (a) return renderUpdate(r, a.current ? a : undefined);
         sub.textContent = t("Restarting…");
         backAsNew(u.current);

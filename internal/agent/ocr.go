@@ -22,6 +22,8 @@ package agent
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -201,15 +203,46 @@ func ocrIn(at place) *Agent {
 }
 
 // ocrNotOurs turns away an `ocr` command that isn't Open Code Review's:
-// one under no folder named for it.
+// accepts paths under an open-code-review / opencodereview folder (including
+// symlink targets), wrapper/shim scripts (such as Windows npm's ocr.cmd)
+// referencing the package in their first 8 KB, or a binary sitting beside
+// node_modules/@alibaba-group/open-code-review (such as nvm-windows shims).
 func ocrNotOurs(bin string) bool {
-	for _, p := range []string{bin, evalLink(bin)} {
-		s := strings.ToLower(filepath.ToSlash(p))
-		if strings.Contains(s, "open-code-review") || strings.Contains(s, "opencodereview") {
+	real := evalLink(bin)
+	for _, p := range []string{bin, real} {
+		if ocrNamed(p) {
 			return false
 		}
 	}
+	if ocrFileNamesUs(real) {
+		return false
+	}
+	dir := filepath.Dir(real)
+	if isDir(filepath.Join(dir, "node_modules", "@alibaba-group", "open-code-review")) {
+		return false
+	}
+	if cmd := filepath.Join(dir, "ocr.cmd"); cmd != real && ocrFileNamesUs(cmd) {
+		return false
+	}
 	return true
+}
+
+func ocrNamed(s string) bool {
+	low := strings.ToLower(filepath.ToSlash(s))
+	return strings.Contains(low, "open-code-review") || strings.Contains(low, "opencodereview")
+}
+
+func ocrFileNamesUs(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head, err := io.ReadAll(io.LimitReader(f, 8<<10))
+	if err != nil {
+		return false
+	}
+	return ocrNamed(string(head))
 }
 
 // ocrOwnModels is the provider/model pairs OCR's config.json sets up of

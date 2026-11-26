@@ -422,6 +422,26 @@ func (a *Agent) binsOwn(bin string) bool {
 	return bin != "" && (a.binNot == nil || !a.binNot(bin))
 }
 
+// ownBin returns the first installed command for a.Bin accepted by binsOwn:
+// binAt first, then proc.FindTools when binNot rejected the first hit (e.g.
+// another tool named `ocr`, `mu`, or `vibe` earlier on PATH).
+func (a *Agent) ownBin() string {
+	if a.Bin == "" {
+		return ""
+	}
+	if p := binAt(a.Bin); a.binsOwn(p) {
+		return p
+	}
+	if a.binNot != nil {
+		for _, p := range proc.FindTools(a.Bin) {
+			if a.binsOwn(p) {
+				return p
+			}
+		}
+	}
+	return ""
+}
+
 // Running reports whether a process whose command line matches any pattern
 // (an extended regexp, as for pgrep -f) is alive. Windows can't be asked
 // what runs, so anything may be: every caller is the advice an agent's own
@@ -491,7 +511,7 @@ func (a *Agent) Detected() bool {
 	if a.sign != nil && a.sign() {
 		return true
 	}
-	if a.Bin != "" && a.binsOwn(binAt(a.Bin)) {
+	if a.ownBin() != "" {
 		return true
 	}
 	// one with no Bin, as its command's name is other tools' too, that

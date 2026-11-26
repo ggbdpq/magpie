@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 
@@ -172,4 +173,74 @@ func TestOCRNotOurs(t *testing.T) {
 			t.Errorf("%s: ours %v, want %v", bin, got, ours)
 		}
 	}
+}
+
+// #7043: on Windows, npm installs ocr.cmd (and nvm-windows installs ocr.exe
+// beside node_modules/@alibaba-group/open-code-review) whose own path does not
+// contain "open-code-review". Also, when an unrelated `ocr` appears earlier on
+// PATH, Detected/BinPath must continue to the next candidate via FindTools.
+func TestOCRWindowsShimAndNextCandidate(t *testing.T) {
+	t.Run("npm-cmd-shim", func(t *testing.T) {
+		home := syncHome(t)
+		shim := filepath.Join(home, "AppData", "Roaming", "npm", "ocr.cmd")
+		writeFile(t, shim, "@ECHO off\r\nnode \"%dp0%\\node_modules\\@alibaba-group\\open-code-review\\bin\\ocr.js\" %*\r\n")
+		if ocrNotOurs(shim) {
+			t.Fatalf("npm ocr.cmd shim rejected: %s", shim)
+		}
+		other := filepath.Join(home, "other", "ocr.cmd")
+		writeFile(t, other, "@ECHO off\r\ntesseract %*\r\n")
+		if !ocrNotOurs(other) {
+			t.Fatalf("unrelated ocr.cmd accepted: %s", other)
+		}
+		if !ocrNotOurs(filepath.Join(home, "missing", "ocr.cmd")) {
+			t.Fatal("missing ocr.cmd accepted")
+		}
+	})
+
+	t.Run("nvm-windows-exe-shim", func(t *testing.T) {
+		home := syncHome(t)
+		nvmDir := filepath.Join(home, "nvm", ".nodejs")
+		shim := filepath.Join(nvmDir, "ocr.exe")
+		writeFile(t, shim, "MZ\x90\x00compiled-shim")
+		if err := os.MkdirAll(filepath.Join(nvmDir, "node_modules", "@alibaba-group", "open-code-review"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if ocrNotOurs(shim) {
+			t.Fatalf("nvm-windows ocr.exe shim beside package rejected: %s", shim)
+		}
+	})
+
+	t.Run("next-candidate-after-foreign-ocr", func(t *testing.T) {
+		home := syncHome(t)
+		firstDir := filepath.Join(home, "first")
+		secondDir := filepath.Join(home, "second", "open-code-review")
+		name := "ocr"
+		body := "#!/bin/sh\necho ok\n"
+		if runtime.GOOS == "windows" {
+			name = "ocr.cmd"
+			body = "@ECHO off\r\necho ok\r\n"
+		}
+		firstBin := filepath.Join(firstDir, name)
+		secondBin := filepath.Join(secondDir, name)
+		if err := os.MkdirAll(firstDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(secondDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(firstBin, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(secondBin, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", firstDir+string(os.PathListSeparator)+secondDir)
+		a := ocrIn(here(home))
+		if !a.Detected() {
+			t.Fatalf("Detected() = false when valid ocr is second on PATH (%s after %s)", secondBin, firstBin)
+		}
+		if got := a.BinPath(); got != secondBin {
+			t.Fatalf("BinPath() = %q, want %q", got, secondBin)
+		}
+	})
 }

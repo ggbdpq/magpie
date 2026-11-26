@@ -886,15 +886,9 @@ func (a *Agent) cliBin() (string, cliSpec) {
 		}
 		return "", spec
 	}
-	bin := binAt(a.Bin)
-	if !a.binsOwn(bin) {
-		// a launcher of another program's is not the CLI: where else a
-		// user's tools are installed, then (VS Code's copilot shim, #3269)
-		if at := proc.FindTool(a.Bin); a.binsOwn(at) {
-			bin = at
-		} else {
-			return "", spec
-		}
+	bin := a.ownBin()
+	if bin == "" {
+		return "", spec
 	}
 	if abs, err := filepath.Abs(bin); err == nil {
 		bin = abs
@@ -913,13 +907,7 @@ func (a *Agent) BinPath() string {
 		bin, _ := a.cliBin()
 		return bin
 	}
-	if bin := binAt(a.Bin); a.binsOwn(bin) {
-		return bin
-	}
-	if bin := proc.FindTool(a.Bin); a.binsOwn(bin) {
-		return bin
-	}
-	return ""
+	return a.ownBin()
 }
 
 // CLI is the agent's CLI: its version, the newest, and whether magpie can

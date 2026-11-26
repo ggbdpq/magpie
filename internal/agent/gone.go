@@ -33,7 +33,7 @@ var goneOS = runtime.GOOS
 // folder as the agent does, so the folder is no leftover; known is false
 // when magpie can't tell, which never counts as gone.
 func (a *Agent) cliHeld() (held, known bool) {
-	if a.Bin != "" && (a.binsOwn(binAt(a.Bin)) || a.binsOwn(proc.FindTool(a.Bin))) {
+	if a.ownBin() != "" {
 		if a.ID != "goose" {
 			return true, true
 		}

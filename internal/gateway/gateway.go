@@ -9939,23 +9939,73 @@ func (s *Server) withoutRefused(providerID string, proto provider.Protocol, body
 	if proto != provider.Chat {
 		return body
 	}
-	var ms []string
-	for _, f := range messageReasoning {
-		if !s.fits(providerID, messageField(f), proto) {
-			ms = append(ms, f)
-		}
+	ms := s.refusedMessageFields(providerID, proto)
+	if len(ms) == 0 {
+		return body
 	}
 	return withoutMessageReasoning(body, ms)
+}
+
+// refusedMessageFields lists the message-level fields the provider has
+// refused on proto (remembered in unfit under messageField(f)).
+func (s *Server) refusedMessageFields(providerID string, proto provider.Protocol) []string {
+	prefix := providerID + "\x00messages[]."
+	suffix := "\x00" + string(proto)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.unfit) == 0 {
+		return nil
+	}
+	var out []string
+	for k := range s.unfit {
+		if strings.HasPrefix(k, prefix) && strings.HasSuffix(k, suffix) {
+			if f := k[len(prefix) : len(k)-len(suffix)]; f != "" {
+				out = append(out, f)
+			}
+		}
+	}
+	return out
 }
 
 // messageField is the name a field of a request's messages is remembered
 // under in unfit once a provider has refused it.
 func messageField(f string) string { return "messages[]." + f }
 
-// refusedInMessages lists the thinking fields (messageReasoning) an
-// upstream turned a Chat request away for where its messages carry them:
-// extra_forbidden located in the messages, as Mistral's loc ["body",
-// "messages",2,"assistant","reasoning_content"] (#494), or one named at a
+// coreMessageField reports whether f is a standard Chat Completions message
+// field that must never be dropped on an upstream extra_forbidden refusal.
+func coreMessageField(f string) bool {
+	switch f {
+	case "", "role", "content", "tool_calls", "tool_call_id", "name",
+		"function_call", "audio", "refusal", "prefix", "partial":
+		return true
+	}
+	return false
+}
+
+// messageExtraLoc reports whether a validation error's loc points to a
+// message-level field: ["messages", <idx>, <field>] or
+// ["messages", <idx>, <role>, <field>] (as Mistral's tagged union reports).
+func messageExtraLoc(loc []any) bool {
+	if len(loc) == 3 {
+		_, isIdx := loc[1].(float64)
+		return loc[0] == "messages" && isIdx
+	}
+	if len(loc) == 4 {
+		_, isIdx := loc[1].(float64)
+		role, _ := loc[2].(string)
+		switch role {
+		case "user", "assistant", "system", "developer", "tool":
+			return loc[0] == "messages" && isIdx
+		}
+	}
+	return false
+}
+
+// refusedInMessages lists the non-core message-level fields an upstream
+// turned a Chat request away for where its messages carry them:
+// extra_forbidden located on a message, as Mistral's loc ["body",
+// "messages",2,"assistant","reasoning_content"] (#494) or ["body",
+// "messages",1,"user","skipRun"] (#7639), or a thinking field named at a
 // message's position, as Kimi's validator (and a relay in front of it)
 // names it: "the reasoning_details at position 2 entry 0 must not contain
 // streaming index" (#1765).
@@ -9986,7 +10036,7 @@ func refusedInMessages(status int, msg, body []byte) []string {
 					loc = loc[1:]
 				}
 				f, _ := loc[len(loc)-1].(string)
-				if loc[0] == "messages" && slices.Contains(messageReasoning, f) && !slices.Contains(out, f) &&
+				if messageExtraLoc(loc) && !coreMessageField(f) && !slices.Contains(out, f) &&
 					bodyHas(body, `"`+f+`"`) {
 					out = append(out, f)
 				}

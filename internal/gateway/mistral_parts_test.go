@@ -2,8 +2,11 @@ package gateway
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/yetone/magpie/internal/provider"
@@ -146,5 +149,171 @@ func TestMistralPartsTranslated(t *testing.T) {
 		if i, j := strings.Index(body, "The user has"), strings.Index(body, `"o"`); i > j {
 			t.Fatalf("%s: text before thinking: %s", c.path, body)
 		}
+	}
+}
+
+// #7639: CodeBuddy injects history turns carrying a message-level skipRun
+// field and untyped assistant content parts ({"thinking":[{"text":...}]}).
+// Mistral answers both with 422: extra_forbidden on skipRun and
+// union_tag_not_found on the untyped parts. A message-level extra_forbidden
+// field is now dropped, retried, and remembered per provider; untyped
+// assistant parts sent to Mistral get the type tags Mistral requires.
+func TestMistralCodeBuddySkipRunAndUntypedParts(t *testing.T) {
+	// Guard: refusedInMessages never drops core fields or nested content fields.
+	if got := refusedInMessages(422, []byte(`{"detail":[{"type":"extra_forbidden","loc":["body","messages",0,"user","content"]}]}`), []byte(`{"messages":[{"role":"user","content":"hi"}]}`)); len(got) != 0 {
+		t.Fatalf("refusedInMessages matched core field: %v", got)
+	}
+	if got := refusedInMessages(422, []byte(`{"detail":[{"type":"extra_forbidden","loc":["body","messages",0,"assistant","content",0,"foo"]}]}`), []byte(`{"messages":[{"role":"assistant","content":[{"foo":"bar"}]}]}`)); len(got) != 0 {
+		t.Fatalf("refusedInMessages matched nested content field: %v", got)
+	}
+	// Already-typed Mistral parts pass byte for byte.
+	alreadyTyped := `{"model":"m","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"ok"}]},{"type":"text","text":"hi"}]}]}`
+	if got := string(mistralThinking([]byte(alreadyTyped))); got != alreadyTyped {
+		t.Fatalf("already-typed parts altered: %s", got)
+	}
+
+	fresh(t)
+	var mu sync.Mutex
+	var sent []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		sent = append(sent, string(b))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		var q struct {
+			Messages []map[string]json.RawMessage `json:"messages"`
+		}
+		if err := json.Unmarshal(b, &q); err != nil {
+			w.WriteHeader(400)
+			return
+		}
+		var detail []map[string]any
+		for i, m := range q.Messages {
+			var role string
+			json.Unmarshal(m["role"], &role)
+			if _, ok := m["skipRun"]; ok {
+				detail = append(detail, map[string]any{
+					"type":  "extra_forbidden",
+					"loc":   []any{"body", "messages", i, role, "skipRun"},
+					"msg":   "Extra inputs are not permitted",
+					"input": true,
+				})
+			}
+			if role == "assistant" {
+				var parts []map[string]json.RawMessage
+				if json.Unmarshal(m["content"], &parts) == nil {
+					for j, p := range parts {
+						var typ string
+						json.Unmarshal(p["type"], &typ)
+						if typ == "" {
+							detail = append(detail, map[string]any{
+								"type": "union_tag_not_found",
+								"loc":  []any{"body", "messages", i, "assistant", "content", "list[tagged-union]", j},
+								"msg":  "Unable to extract tag using discriminator 'type'",
+							})
+						}
+						if typ == "thinking" {
+							var inner []map[string]json.RawMessage
+							if json.Unmarshal(p["thinking"], &inner) != nil {
+								detail = append(detail, map[string]any{"type": "list_type", "loc": []any{"body", "messages", i, "assistant", "content", j, "thinking"}})
+							} else {
+								for k, in := range inner {
+									var it string
+									json.Unmarshal(in["type"], &it)
+									if it == "" {
+										detail = append(detail, map[string]any{
+											"type": "union_tag_not_found",
+											"loc":  []any{"body", "messages", i, "assistant", "content", j, "thinking", k},
+										})
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		if len(detail) > 0 {
+			w.WriteHeader(422)
+			json.NewEncoder(w).Encode(map[string]any{"detail": detail})
+			return
+		}
+		io.WriteString(w, `{"id":"c1","object":"chat.completion","model":"deepseek-v4-1-flash-1017","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`)
+	}))
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{
+		ID:     "mistral",
+		Name:   "Mistral",
+		Preset: "mistral",
+		Key:    "k",
+		Chat:   up.URL + "/v1",
+		Models: []string{"deepseek-v4-1-flash-1017"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := New().Handler()
+
+	// Combined CodeBuddy turn: skipRun on user + untyped thinking & text parts on assistant.
+	combined := `{"model":"mistral/deepseek-v4-1-flash-1017","max_tokens":8,"messages":[` +
+		`{"role":"user","content":"hi","skipRun":true},` +
+		`{"role":"assistant","content":[{"thinking":[{"text":"the user greets"}]},{"text":"hello"}]},` +
+		`{"role":"user","content":"next"}]}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(combined)))
+	mu.Lock()
+	got := append([]string(nil), sent...)
+	mu.Unlock()
+	if rec.Code != 200 {
+		t.Fatalf("combined turn status %d (calls %d): %s\nlast sent: %s", rec.Code, len(got), rec.Body.String(), got[len(got)-1])
+	}
+	if len(got) != 2 {
+		t.Fatalf("combined turn made %d upstream calls, want 2 (initial 422 on skipRun + retry without it)", len(got))
+	}
+	if strings.Contains(got[1], `"skipRun"`) {
+		t.Errorf("retry still sent skipRun: %s", got[1])
+	}
+	var parsed struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(got[1]), &parsed); err != nil || len(parsed.Messages) != 3 {
+		t.Fatalf("parse retry body: %v (%s)", err, got[1])
+	}
+	var parts []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Thinking []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"thinking"`
+	}
+	if err := json.Unmarshal(parsed.Messages[1].Content, &parts); err != nil || len(parts) != 2 ||
+		parts[0].Type != "thinking" || len(parts[0].Thinking) != 1 || parts[0].Thinking[0].Type != "text" || parts[0].Thinking[0].Text != "the user greets" ||
+		parts[1].Type != "text" || parts[1].Text != "hello" {
+		t.Errorf("untyped parts were not tagged for Mistral: %s", got[1])
+	}
+
+	// Subsequent turn on same server: skipRun is remembered and stripped up front (1 call).
+	before := len(got)
+	next := `{"model":"mistral/deepseek-v4-1-flash-1017","max_tokens":8,"messages":[` +
+		`{"role":"user","content":"hi","skipRun":true},` +
+		`{"role":"assistant","content":[{"thinking":[{"text":"thinking only"}]}]},` +
+		`{"role":"user","content":"again"}]}`
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(next)))
+	if rec.Code != 200 {
+		t.Fatalf("second turn status %d: %s", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	got = append([]string(nil), sent...)
+	mu.Unlock()
+	if len(got)-before != 1 {
+		t.Fatalf("second turn made %d calls, want 1 (skipRun remembered unfit)", len(got)-before)
+	}
+	if strings.Contains(got[len(got)-1], `"skipRun"`) {
+		t.Errorf("second turn still sent skipRun: %s", got[len(got)-1])
 	}
 }

@@ -1090,36 +1090,59 @@ func withoutMessageFields(body []byte, fields ...string) []byte {
 // turn's content: Mistral turns those fields away with 422 extra_forbidden
 // (#494) and takes the part, so the thinking stays in context. A turn
 // with tool calls and no text has the thinking part alone for content.
+// It also adds the missing "type" tag to untyped assistant content parts
+// such as CodeBuddy's {"thinking":[{"text":...}]} and {"text":...} (#7639),
+// which Mistral rejects with 422 union_tag_not_found.
 func mistralThinking(body []byte) []byte {
-	return editMessages(body, messageReasoning, func(m map[string]json.RawMessage) bool {
+	hasReasoning := false
+	for _, f := range messageReasoning {
+		hasReasoning = hasReasoning || bodyHas(body, `"`+f+`"`)
+	}
+	hasParts := bodyHasBytes(body, contentParts) || bodyHasBytes(body, contentPartsSpace)
+	if !hasReasoning && !hasParts {
+		return body
+	}
+	return editMessages(body, []string{"messages"}, func(m map[string]json.RawMessage) bool {
 		had := false
 		for _, f := range messageReasoning {
 			_, ok := m[f]
 			had = had || ok
 		}
+		var role string
+		decodeJSON(m["role"], &role)
+		c := bytes.TrimSpace(m["content"])
+		var list []json.RawMessage
+		isList := len(c) > 0 && c[0] == '[' && decodeJSON(c, &list) == nil
+		partsChanged := false
+		if role == "assistant" && isList {
+			list, partsChanged = mistralTypedParts(list)
+		}
 		if !had {
-			return false
+			if !partsChanged {
+				return false
+			}
+			m["content"], _ = marshalPlain(list)
+			return true
 		}
 		think := reasoningText(m)
 		for _, f := range messageReasoning {
 			delete(m, f)
 		}
-		var role string
-		decodeJSON(m["role"], &role)
 		// a whitespace-only thinking is the placeholder a DeepSeek
 		// replay puts on a tool turn that had none (#1462): dropped, not
 		// sent as a blank thinking part (#4906)
 		if strings.TrimSpace(think) == "" || role != "assistant" {
+			if partsChanged {
+				m["content"], _ = marshalPlain(list)
+			}
 			return true
 		}
 		thinking, _ := marshalPlain(map[string]any{"type": "thinking",
 			"thinking": []map[string]string{{"type": "text", "text": think}}})
 		parts := []json.RawMessage{thinking}
-		c := bytes.TrimSpace(m["content"])
-		var list []json.RawMessage
 		var s string
 		switch {
-		case len(c) > 0 && c[0] == '[' && decodeJSON(c, &list) == nil:
+		case isList:
 			parts = append(parts, list...)
 		case decodeJSON(c, &s) == nil && s != "":
 			text, _ := marshalPlain(map[string]string{"type": "text", "text": s})
@@ -1128,6 +1151,96 @@ func mistralThinking(body []byte) []byte {
 		m["content"], _ = marshalPlain(parts)
 		return true
 	})
+}
+
+// mistralTypedParts ensures untyped assistant content parts ({"thinking":...}
+// or {"text":...} with no "type" tag, as CodeBuddy injects in #7639) carry
+// the discriminator tag Mistral requires, including inner {"type":"text"}
+// tags inside a thinking part's list. Already-typed parts pass untouched.
+func mistralTypedParts(list []json.RawMessage) ([]json.RawMessage, bool) {
+	changed := false
+	out := make([]json.RawMessage, len(list))
+	for i, raw := range list {
+		out[i] = raw
+		var part map[string]json.RawMessage
+		if decodeJSON(raw, &part) != nil || part == nil {
+			continue
+		}
+		partChanged := false
+		var typ string
+		hasType := false
+		if tr, ok := part["type"]; ok && decodeJSON(tr, &typ) == nil && typ != "" {
+			hasType = true
+		}
+		if !hasType {
+			if _, ok := part["thinking"]; ok {
+				part["type"] = json.RawMessage(`"thinking"`)
+				typ = "thinking"
+				partChanged = true
+			} else if _, ok := part["text"]; ok {
+				part["type"] = json.RawMessage(`"text"`)
+				typ = "text"
+				partChanged = true
+			}
+		}
+		if typ == "thinking" {
+			if th, ok := part["thinking"]; ok {
+				if fixed, ch := mistralThinkingChunks(th); ch {
+					part["thinking"] = fixed
+					partChanged = true
+				}
+			}
+		}
+		if partChanged {
+			if nb, err := marshalPlain(part); err == nil {
+				out[i], changed = nb, true
+			}
+		}
+	}
+	return out, changed
+}
+
+// mistralThinkingChunks normalizes a thinking part's inner "thinking" value
+// into Mistral's list of typed text chunks when untyped items or a plain
+// string are given.
+func mistralThinkingChunks(raw json.RawMessage) (json.RawMessage, bool) {
+	var s string
+	if decodeJSON(raw, &s) == nil {
+		nb, err := marshalPlain([]map[string]string{{"type": "text", "text": s}})
+		if err != nil {
+			return raw, false
+		}
+		return nb, true
+	}
+	var items []json.RawMessage
+	if decodeJSON(raw, &items) != nil {
+		return raw, false
+	}
+	changed := false
+	for i, item := range items {
+		var m map[string]json.RawMessage
+		if decodeJSON(item, &m) != nil || m == nil {
+			continue
+		}
+		var typ string
+		if tr, ok := m["type"]; ok && decodeJSON(tr, &typ) == nil && typ != "" {
+			continue
+		}
+		if _, ok := m["text"]; ok {
+			m["type"] = json.RawMessage(`"text"`)
+			if nb, err := marshalPlain(m); err == nil {
+				items[i], changed = nb, true
+			}
+		}
+	}
+	if !changed {
+		return raw, false
+	}
+	nb, err := marshalPlain(items)
+	if err != nil {
+		return raw, false
+	}
+	return nb, true
 }
 
 // toolPairsOut is pairToolMessages for a Chat request relayed as the

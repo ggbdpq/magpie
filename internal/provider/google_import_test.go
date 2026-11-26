@@ -8,9 +8,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/yetone/magpie/internal/plugin"
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 func TestParseGoogleImportFormats(t *testing.T) {
@@ -228,5 +233,103 @@ func TestImportGoogleAccounts(t *testing.T) {
 	res, err = ImportGoogleAccounts(context.Background(), "antigravity", []string{cockpit, "{broken"})
 	if err != nil || len(res) != 4 || res[3].File != 2 || res[3].User != "" || res[3].Status != "failed" || res[3].Error == "" {
 		t.Errorf("a broken file among several = %+v, %v", res, err)
+	}
+}
+
+// A moved Antigravity's imported accounts go to its plugin, and deduplication
+// checks the plugin's own sign-ins rather than stale legacy logins.json entries
+// (#6152).
+func TestImportGoogleAccountsMoved(t *testing.T) {
+	signIn(t)
+	t.Setenv("MAGPIE_BUN", testenv.Bun(t))
+	t.Setenv("FAKE_ID", "antigravity")
+	t.Cleanup(plugin.Settle)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	abs, _ := filepath.Abs("../plugin/testdata/fake/index.js")
+	if _, err := plugin.Add(ctx, abs); err != nil {
+		t.Fatal(err)
+	}
+	if err := setMigration("antigravity", func(m *Migration) { m.State, m.Package = MovePlugin, abs }); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &fakeGoogleImport{users: map[string]string{"1//a": "a@x.com", "1//a2": "a@x.com", "1//b": "b@x.com", "1//c": "c@x.com"}}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	oldToken, oldProd, oldDaily, oldWho, oldVer := googleTokenURL, codeAssistProd, codeAssistDaily, googleUserInfoURL, antigravityVersionURL
+	googleTokenURL, codeAssistProd, codeAssistDaily, googleUserInfoURL, antigravityVersionURL = srv.URL+"/token", srv.URL+"/prod", srv.URL+"/daily", srv.URL+"/userinfo", srv.URL+"/latest-arm64-mac.yml"
+	resetGoogleState()
+	t.Cleanup(func() {
+		googleTokenURL, codeAssistProd, codeAssistDaily, googleUserInfoURL, antigravityVersionURL = oldToken, oldProd, oldDaily, oldWho, oldVer
+		resetGoogleState()
+	})
+
+	// a is already in the plugin; b exists only as a stale legacy logins.json entry.
+	if _, err := plugin.Import(ctx, "antigravity", map[string]any{
+		"type":      "oauth",
+		"refresh":   "1//a|pa",
+		"access":    "at-old",
+		"expires":   time.Now().Add(time.Hour).UnixMilli(),
+		"accountId": "a@x.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := addGoogleLogin("antigravity", "b@x.com", "", googleAuth{RefreshToken: "1//b", Project: "pb"}); err != nil {
+		t.Fatal(err)
+	}
+
+	batch := `[{"email":"a@x.com","refresh_token":"1//a"},{"email":"b@x.com","refresh_token":"1//b"},{"email":"c@x.com","refresh_token":"1//c"}]`
+	res, err := ImportGoogleAccounts(ctx, "antigravity", []string{batch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ImportedAccount{
+		{User: "a@x.com", Status: "exists"},
+		{User: "b@x.com", Status: "added", Plan: "Google AI Pro"},
+		{User: "c@x.com", Status: "added", Plan: "Google AI Pro"},
+	}
+	if len(res) != len(want) {
+		t.Fatalf("results = %+v", res)
+	}
+	for i, r := range res {
+		if r.User != want[i].User || r.Status != want[i].Status || r.Plan != want[i].Plan {
+			t.Errorf("result %d = %+v, want %+v", i, r, want[i])
+		}
+	}
+	for _, rt := range f.refreshed {
+		if rt == "1//a" {
+			t.Error("account already in the plugin was refreshed")
+		}
+	}
+	gotPlugin := map[string]string{}
+	for _, a := range plugin.Auths("antigravity") {
+		if a["type"] != "oauth" {
+			t.Errorf("plugin auth type = %v", a["type"])
+		}
+		gotPlugin[str(a["accountId"])] = str(a["refresh"])
+	}
+	if len(gotPlugin) != 3 || gotPlugin["a@x.com"] != "1//a|pa" || gotPlugin["b@x.com"] != "1//b|found-proj" || gotPlugin["c@x.com"] != "1//c|found-proj" {
+		t.Fatalf("plugin auths = %v", gotPlugin)
+	}
+	// c must not have been written to legacy logins.json
+	if raw, _ := os.ReadFile(loginsPath()); strings.Contains(string(raw), `"1//c"`) {
+		t.Error("c was written to legacy logins.json instead of the plugin")
+	}
+
+	// Re-importing b reports exists from plugin auths; a with a new token updates in place.
+	res, err = ImportGoogleAccounts(ctx, "antigravity", []string{`[{"email":"b@x.com","refresh_token":"1//b"},{"email":"a@x.com","refresh_token":"1//a2"}]`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 2 || res[0].Status != "exists" || res[0].User != "b@x.com" || res[1].Status != "updated" || res[1].User != "a@x.com" {
+		t.Fatalf("second import = %+v", res)
+	}
+	gotPlugin = map[string]string{}
+	for _, a := range plugin.Auths("antigravity") {
+		gotPlugin[str(a["accountId"])] = str(a["refresh"])
+	}
+	if len(gotPlugin) != 3 || gotPlugin["a@x.com"] != "1//a2|found-proj" {
+		t.Fatalf("after update plugin auths = %v", gotPlugin)
 	}
 }

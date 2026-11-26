@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -202,21 +203,37 @@ func ImportGoogleAccounts(ctx context.Context, agent string, files []string) ([]
 	if len(all) > maxGoogleImport {
 		return nil, fmt.Errorf("%d accounts; at most %d at a time", len(all), maxGoogleImport)
 	}
-	// what magpie has already: refresh token and user of each account
+	// what magpie has already: refresh token and user of each account.
+	// Once Antigravity has moved onto its plugin, the plugin's sign-ins are
+	// the accounts shown and served, not stale entries left in logins.json.
+	moved := Moved(agent)
 	haveTok, haveUser := map[string]string{}, map[string]string{}
-	loginsMu.Lock()
-	for _, l := range readLogins() {
-		if l.Agent != agent {
-			continue
+	if moved {
+		for _, a := range plugin.Auths(agent) {
+			rt, _, _ := strings.Cut(str(a["refresh"]), "|")
+			who := googlePluginUser(a)
+			if who != "" {
+				haveUser[strings.ToLower(who)] = rt
+			}
+			if rt != "" {
+				haveTok[rt] = who
+			}
 		}
-		var a googleAuth
-		_ = json.Unmarshal(l.Auth, &a)
-		haveUser[strings.ToLower(l.User)] = a.RefreshToken
-		if a.RefreshToken != "" {
-			haveTok[a.RefreshToken] = l.User
+	} else {
+		loginsMu.Lock()
+		for _, l := range readLogins() {
+			if l.Agent != agent {
+				continue
+			}
+			var a googleAuth
+			_ = json.Unmarshal(l.Auth, &a)
+			haveUser[strings.ToLower(l.User)] = a.RefreshToken
+			if a.RefreshToken != "" {
+				haveTok[a.RefreshToken] = l.User
+			}
 		}
+		loginsMu.Unlock()
 	}
-	loginsMu.Unlock()
 
 	out := make([]ImportedAccount, len(all))
 	var wg sync.WaitGroup
@@ -226,12 +243,15 @@ func ImportGoogleAccounts(ctx context.Context, agent string, files []string) ([]
 		if name == "" && e.file == 0 {
 			name = fmt.Sprintf("#%d", i+1)
 		}
-		switch {
-		case e.err != "":
+		if e.err != "" {
 			out[i] = ImportedAccount{User: name, File: e.file, Status: "failed", Error: e.err}
 			continue
-		case haveTok[e.refreshToken] != "":
-			out[i] = ImportedAccount{User: haveTok[e.refreshToken], Status: "exists"}
+		}
+		if existing, ok := haveTok[e.refreshToken]; ok {
+			if existing == "" {
+				existing = name
+			}
+			out[i] = ImportedAccount{User: existing, Status: "exists"}
 			continue
 		}
 		wg.Add(1)
@@ -241,24 +261,43 @@ func ImportGoogleAccounts(ctx context.Context, agent string, files []string) ([]
 			defer func() { <-sem }()
 			c, cancel := context.WithTimeout(ctx, 45*time.Second)
 			defer cancel()
-			out[i] = importGoogleAccount(c, app, e, name, haveUser)
+			out[i] = importGoogleAccount(c, app, e, name, haveUser, moved)
 		}()
 	}
 	wg.Wait()
 	for _, r := range out {
 		if r.Status == "added" || r.Status == "updated" {
-			// an import brings back an account removed from magpie, as
-			// signing in does
-			_ = ShowAccount(agent)
+			if moved {
+				forgetAccountCaches()
+			} else {
+				// an import brings back an account removed from magpie, as
+				// signing in does
+				_ = ShowAccount(agent)
+			}
 			break
 		}
 	}
 	return out, nil
 }
 
+// googlePluginUser is the email an Antigravity plugin sign-in keeps
+// (accountId, metadata.email, or email), preserving case for display.
+func googlePluginUser(a map[string]any) string {
+	who := str(a["accountId"])
+	if who == "" {
+		if md, ok := a["metadata"].(map[string]any); ok {
+			who = str(md["email"])
+		}
+	}
+	if who == "" {
+		who = str(a["email"])
+	}
+	return strings.TrimSpace(who)
+}
+
 // importGoogleAccount checks one account as a sign-in is finished and
 // keeps it.
-func importGoogleAccount(ctx context.Context, app googleApp, e googleImport, name string, haveUser map[string]string) ImportedAccount {
+func importGoogleAccount(ctx context.Context, app googleApp, e googleImport, name string, haveUser map[string]string, moved bool) ImportedAccount {
 	fail := func(msg string) ImportedAccount {
 		return ImportedAccount{User: name, Status: "failed", Error: msg}
 	}
@@ -306,6 +345,21 @@ func importGoogleAccount(ctx context.Context, app googleApp, e googleImport, nam
 		g.auth.Project, plan = p.id, p.plan
 	} else if e.project != "" {
 		g.auth.Project = e.project
+	}
+	if moved {
+		auth := map[string]any{
+			"type":      "oauth",
+			"refresh":   g.auth.RefreshToken + "|" + g.auth.Project,
+			"access":    g.auth.AccessToken,
+			"expires":   g.auth.Expiry,
+			"accountId": g.user,
+		}
+		acct, err := importAuth(ctx, app.agent, auth)
+		if err != nil {
+			return fail(err.Error())
+		}
+		PluginSignedIn(plugin.Saved{Provider: app.agent, Account: acct})
+		return ImportedAccount{User: g.user, Status: status, Plan: plan}
 	}
 	if err := addGoogleLogin(app.agent, g.user, plan, g.auth); err != nil {
 		return fail(err.Error())

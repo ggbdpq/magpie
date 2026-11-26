@@ -330,8 +330,18 @@ func checkList() bool {
 	if !moved {
 		return false
 	}
+	saved := savedProviders()
 	provMu.Lock()
-	provCache = nil
+	if len(saved) > 0 {
+		// Pick up providers another magpie wrote to plugin-providers.json
+		// while preserving last-known-good providers and models from
+		// provCache during host reloads (#7863).
+		cloned := slices.Clone(saved)
+		for i := range cloned {
+			cloned[i].Accounts = slices.Clone(cloned[i].Accounts)
+		}
+		provCache = keepUnloaded(keepListed(cloned, provCache), provCache)
+	}
 	provMu.Unlock()
 	hostStale.Store(true)
 	changed()

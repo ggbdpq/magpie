@@ -862,10 +862,10 @@ func Restart() {
 	hostMu.Lock()
 	h := current
 	current = nil
-	hostMu.Unlock()
 	if h != nil {
-		h.retire()
+		retireLocked(h)
 	}
+	hostMu.Unlock()
 	changed()
 }
 
@@ -875,16 +875,16 @@ var retireWait = 10 * time.Minute
 // retiring are the hosts finishing their calls before they stop.
 var retiring = map[*host]bool{}
 
-// retire stops h now when it answers no call, else once it has answered
-// them (retireWait at most), in the background.
-func (h *host) retire() {
+// retireLocked retires h while hostMu is held: an idle host is stopped
+// synchronously (bounded by stopWait) so it runs shutdown hooks and releases
+// loopback ports/lockfiles before a replacement host starts (#7860); a busy
+// host drains in the background so active calls are never cut off.
+func retireLocked(h *host) {
 	if !h.busy() {
 		h.stop()
 		return
 	}
-	hostMu.Lock()
 	retiring[h] = true
-	hostMu.Unlock()
 	go func() {
 		defer func() {
 			hostMu.Lock()
@@ -971,6 +971,12 @@ func (h *host) stop() {
 		}
 	}
 	h.kill()
+	reap := time.NewTimer(500 * time.Millisecond)
+	defer reap.Stop()
+	select {
+	case <-h.dead:
+	case <-reap.C:
+	}
 }
 
 // kill ends the host's child and every process it started: a plugin's
@@ -1028,12 +1034,14 @@ func get(ctx context.Context) (*host, error) {
 // startup with their request-hook budget.
 func getLocked(ctx context.Context) (*host, error) {
 	if hostStale.Swap(false) && current != nil {
-		go current.retire()
+		h := current
 		current = nil
+		retireLocked(h)
 	}
 	if current != nil && current.alive() && current.proxyMoved() {
-		go current.retire()
+		h := current
 		current = nil
+		retireLocked(h)
 	}
 	if current != nil && current.alive() {
 		return current, nil
@@ -1344,9 +1352,9 @@ func (h *host) recycle() {
 		return
 	}
 	current = nil
+	retireLocked(h)
 	hostMu.Unlock()
 	recycles.Add(1)
-	h.retire()
 	changed()
 }
 

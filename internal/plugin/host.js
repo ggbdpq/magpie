@@ -348,6 +348,7 @@ let prefer = {}
 // provider id → key → true/false (settings.json's pluginOptions, #2038)
 let chosen = {}
 const hooks = [] // {spec, hooks}
+const shutdownHooks = [] // optional stop()/shutdown() hooks run before host exit (#7860)
 const gatewayHooks = [] // {spec, options, onRequest}
 const loaded = [] // {spec, id, error}
 const loaders = new Map() // account → options the auth loader returned
@@ -1529,11 +1530,32 @@ function servers(mod) {
   }
   const seen = new Set()
   const out = []
-  for (const v of Object.values(mod)) {
+  for (const [k, v] of Object.entries(mod)) {
+    if (k === "stop" || k === "shutdown") continue
     if (seen.has(v)) continue
     seen.add(v)
     if (typeof v === "function") out.push(v)
     else if (v && typeof v === "object" && typeof v.server === "function") out.push(v.server)
+  }
+  return out
+}
+
+function stoppers(mod) {
+  const seen = new Set()
+  const out = []
+  const add = (fn) => {
+    if (typeof fn === "function" && !seen.has(fn)) {
+      seen.add(fn)
+      out.push(fn)
+    }
+  }
+  add(mod?.stop)
+  add(mod?.shutdown)
+  for (const v of Object.values(mod)) {
+    if (v && typeof v === "object" && ("server" in v || "id" in v || "tui" in v)) {
+      add(v.stop)
+      add(v.shutdown)
+    }
   }
   return out
 }
@@ -1581,18 +1603,23 @@ async function loadPlugins(list) {
       if (typeof gateway.onRequest !== "function" && typeof gateway.onSignIn !== "function") throw new Error("magpie.hooks exports no onRequest")
     }
     let fns = []
+    let stops = []
     // A gateway-only package needs no OpenCode entry. Mixed packages
     // still load their provider hooks through the usual entry rules.
     const pkg = readJSON(path.join(p.target, "package.json"))
     const onlyGateway = isPi || (p.gateway && (p.gateway === p.target || (!pkg?.main && !pkg?.exports && !INDEX_FILES.some((f) => fs.existsSync(path.join(p.target, f))))))
     for (const file of onlyGateway ? [] : entries(p.target)) {
-      fns = servers(await import(pathToFileURL(file).href))
-      if (fns.length) break
+      const mod = await import(pathToFileURL(file).href)
+      fns = servers(mod)
+      if (fns.length) {
+        stops = stoppers(mod)
+        break
+      }
     }
     if (fns.length === 0 && !gateway) throw new Error("exports no OpenCode plugin function")
     const got = []
     for (const fn of fns) got.push({ spec: p.spec, target: p.target, hooks: (await fn(input, p.options)) ?? {} })
-    return { got, gateway }
+    return { got, stops, gateway }
   }
   const results = await Promise.all(list.map((p) => {
     const isPi = pis.includes(p)
@@ -1610,6 +1637,7 @@ async function loadPlugins(list) {
       continue
     }
     for (const x of r.got) hooks.push(x)
+    for (const fn of r.stops ?? []) shutdownHooks.push(fn)
     if (r.gateway) gatewayHooks.push({ spec: p.spec, options: p.options ?? {}, onRequest: r.gateway.onRequest,
       onResponse: r.gateway.onResponse, onSignIn: r.gateway.onSignIn,
       state: { calls: 0, failures: 0, totalMillis: 0, lastOutcome: "idle", lastBytes: 0 } })
@@ -3924,8 +3952,24 @@ function waitForReady(record) {
 }
 let pending = 0
 let closed = false
+let exiting = null
+function shutdownAndExit(code) {
+  if (exiting) return exiting
+  const fns = [
+    ...new Set([
+      ...shutdownHooks,
+      ...hooks.flatMap((h) => [h.hooks?.stop, h.hooks?.shutdown]).filter((f) => typeof f === "function"),
+    ]),
+  ]
+  if (!fns.length) process.exit(code)
+  exiting = Promise.race([
+    Promise.allSettled(fns.map((fn) => Promise.resolve().then(() => fn()))),
+    new Promise((r) => setTimeout(r, 1500)),
+  ]).finally(() => process.exit(code))
+  return exiting
+}
 const done = () => {
-  if (--pending === 0 && closed) process.exit(0)
+  if (--pending === 0 && closed) shutdownAndExit(0)
 }
 
 const gatewayInflight = new Map() // RPC id -> AbortController
@@ -4071,5 +4115,5 @@ rl.on("line", (line) => {
 })
 rl.on("close", () => {
   closed = true
-  if (pending === 0) process.exit(0)
+  if (pending === 0) shutdownAndExit(0)
 })

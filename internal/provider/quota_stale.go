@@ -1,6 +1,9 @@
 package provider
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // Google's Code Assist quota (the agy CLI's /usage, and the Antigravity
 // app's) answers from replicas that disagree for days after a reset: one
@@ -46,13 +49,13 @@ func withoutStale(provider string, pts []QuotaPoint) []QuotaPoint {
 	var out []QuotaPoint
 	for i, p := range pts {
 		if out == nil {
-			if i == 0 || !staleAfter(pts[i-1], p) {
+			if i == 0 || p.Moved || !staleAfter(pts[i-1], p) {
 				continue
 			}
 			out = append(make([]QuotaPoint, 0, len(pts)), pts[:i]...)
 			continue
 		}
-		if !staleAfter(out[len(out)-1], p) {
+		if p.Moved || !staleAfter(out[len(out)-1], p) {
 			out = append(out, p)
 		}
 	}
@@ -84,4 +87,70 @@ func sameBucket(f, w QuotaWindow) bool {
 
 func sameReset(a, b *time.Time) bool {
 	return a == nil && b == nil || a != nil && b != nil && a.Equal(*b)
+}
+
+// A window a reset replaced can also move the other way for good: a
+// bucket switch or a plan change starts an earlier window while the one
+// on file still runs, and every honest reading of it then reads as a
+// stale replica's — dropped, the card frozen at the old window's last
+// share until its reset, with the gateway answering 200s all along (the
+// reporter's #7976: 31 readings dropped, the card at 100% for days,
+// until the history file was cleaned by hand). The vendor's own sign is
+// repetition: the same earlier window read again and again, its share
+// growing as a window's does, is no replica flip (flips alternate) but
+// the authority having moved. Three such readings in a row accept it, and
+// the accepted reading is marked, so the history file reads it back as
+// kept.
+const staleMoveReads = 3
+
+// staleMovedRun counts a window line's consecutive stale-looking readings
+// of one earlier window, and the share each saw.
+type staleMovedRun struct {
+	start, reset time.Time
+	left         float64
+	at           time.Time
+	count        int
+}
+
+var (
+	staleMovedMu sync.Mutex
+	staleMoved   = map[string]*staleMovedRun{}
+)
+
+// resetStaleMoved clears the move counts (tests).
+func resetStaleMoved() {
+	staleMovedMu.Lock()
+	staleMoved = map[string]*staleMovedRun{}
+	staleMovedMu.Unlock()
+}
+
+// staleRead says a reading p of the line, read after the window newest
+// that still runs, is a stale replica's — unless the same earlier window
+// has now been read staleMoveReads times in a row, its share growing
+// each time: the vendor has moved the window back, and p is current.
+// Anything else — a reading of the later window, a first or second
+// reading of an earlier one, one whose share didn't grow — counts the
+// run from it (or leaves it stale) as before.
+func staleRead(line string, newest, p QuotaPoint) (stale, moved bool) {
+	if !staleAfter(newest, p) {
+		staleMovedMu.Lock()
+		delete(staleMoved, line)
+		staleMovedMu.Unlock()
+		return false, false
+	}
+	staleMovedMu.Lock()
+	defer staleMovedMu.Unlock()
+	run := staleMoved[line]
+	if run != nil && run.start.Equal(*p.Start) && run.reset.Equal(*p.ResetsAt) &&
+		!p.At.Before(run.at) && p.At.Sub(run.at) < time.Hour && p.Left < run.left {
+		run.count, run.left, run.at = run.count+1, p.Left, p.At
+	} else {
+		run = &staleMovedRun{start: *p.Start, reset: *p.ResetsAt, left: p.Left, at: p.At, count: 1}
+	}
+	staleMoved[line] = run
+	if run.count >= staleMoveReads {
+		delete(staleMoved, line)
+		return false, true
+	}
+	return true, false
 }

@@ -88,6 +88,9 @@ func appendQuotaPoint(b []byte, p QuotaPoint) ([]byte, bool) {
 			return b, false
 		}
 	}
+	if p.Moved {
+		b = append(b, `,"moved":true`...)
+	}
 	return append(b, '}'), true
 }
 

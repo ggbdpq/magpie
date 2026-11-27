@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -164,4 +165,76 @@ func TestQuotaStaleOnlyGoogle(t *testing.T) {
 	if q := note("agy-cli", 40, 98, t0.Add(30*time.Minute+7*24*time.Hour)); q.Windows[1].Used != 2 {
 		t.Errorf("first use after a rolling reset taken for stale: %+v", q.Windows[1])
 	}
+}
+
+// TestQuotaWindowMovesBackAndConverges: a bucket switch or plan change
+// starts an earlier window while the one on file still runs (#7976), and
+// every honest reading of it then reads as a stale replica's — dropped,
+// the card frozen at 100% until the old reset, with the gateway answering
+// 200s all along. The same earlier window read three times in a row, its
+// share growing as a window's does, is the vendor having moved: from the
+// third reading on it is current, its points kept and its card its own.
+func TestQuotaWindowMovesBackAndConverges(t *testing.T) {
+	testenv.SetHome(t, t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	resetStaleMoved()
+	heldReset := mustTime(t, "2026-12-03T17:41:05Z")
+	movedReset := mustTime(t, "2026-12-03T07:02:44Z")
+	// the window the card holds: read at 100% used
+	at := mustTime(t, "2026-11-27T07:00:00Z")
+	held := []SubscriptionQuota{agyCard("agy-cli", 0, heldReset)}
+	held[0].ReadAt = &at
+	noteQuotaHistory(held, at)
+	line := func() []QuotaPoint {
+		return lineOf(t, QuotaHistories(at, "", ""), "a@x.com", "Gemini · 7 days")
+	}
+	if n := len(line()); n != 1 {
+		t.Fatalf("%d points after the held window's read, want 1: %+v", n, line())
+	}
+	read := func(atS string, left float64) []SubscriptionQuota {
+		at := mustTime(t, atS)
+		qs := []SubscriptionQuota{agyCard("agy-cli", left, movedReset)}
+		qs[0].ReadAt = &at
+		noteQuotaHistory(qs, at)
+		return qs
+	}
+	// two honest readings of the moved window: a replica flip could say
+	// either, so they are dropped and the card holds the old window
+	for _, r := range []struct{ at, left string }{
+		{"2026-11-27T07:05:00Z", "62.80"},
+		{"2026-11-27T07:10:00Z", "62.78"},
+	} {
+		qs := read(r.at, mustFloat(t, r.left))
+		if pts := line(); len(pts) != 1 || pts[len(pts)-1].Left != 0 {
+			t.Fatalf("%s: %d points, last %+v; want the held window alone", r.at, len(pts), pts[len(pts)-1])
+		}
+		w := qs[0].Windows[1]
+		if w.Used != 100 || w.ResetsAt == nil || !w.ResetsAt.Equal(heldReset) {
+			t.Errorf("%s: the card shows used %v reset %v; want the held window's", r.at, w.Used, w.ResetsAt)
+		}
+	}
+	// the third reading, the share grown again: the vendor has moved, and
+	// the reading is current — kept, and the card its own
+	qs := read("2026-11-27T07:15:00Z", 62.77)
+	pts := line()
+	if len(pts) != 2 || pts[len(pts)-1].Left != 62.77 || !pts[len(pts)-1].ResetsAt.Equal(movedReset) {
+		t.Fatalf("after the third reading: %d points, last %+v; want the moved window's kept", len(pts), pts)
+	}
+	if w := qs[0].Windows[1]; w.Used != 37.23 || w.ResetsAt == nil || !w.ResetsAt.Equal(movedReset) {
+		t.Errorf("the card shows used %v reset %v; want the moved window's", w.Used, w.ResetsAt)
+	}
+	// and the window reads on as current, with no re-litigation
+	read("2026-11-27T07:20:00Z", 62.70)
+	if pts := line(); len(pts) != 3 || pts[len(pts)-1].Left != 62.70 {
+		t.Fatalf("after the fourth reading: %d points, last %+v", len(pts), pts)
+	}
+}
+
+func mustFloat(t *testing.T, s string) float64 {
+	t.Helper()
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
 }

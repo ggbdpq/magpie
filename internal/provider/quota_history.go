@@ -57,6 +57,10 @@ type QuotaPoint struct {
 	Left     float64    `json:"left"`
 	Start    *time.Time `json:"start,omitempty"`
 	ResetsAt *time.Time `json:"resetsAt,omitempty"`
+	// Moved marks a point of a window that began before the one on file
+	// and was taken anyway (staleRead): the vendor moved the window back,
+	// so a reader's own stale check (withoutStale) holds it as current.
+	Moved bool `json:"moved,omitempty"`
 }
 
 // StartsCycleAfter uses the same observed reset boundaries that history
@@ -357,17 +361,23 @@ func noteQuotaHistory(qs []SubscriptionQuota, now time.Time) {
 			name := w.LineName() // Antigravity's pools each have a 5-hour window
 			before := h[key][name]
 			if kept := withoutStale(q.Provider, before); staleWindowVendors[q.Provider] && len(kept) > 0 {
-				if cw, stale := currentWindow(w, p, kept[len(kept)-1]); stale {
-					if current == nil {
-						current = slices.Clone(q.Windows)
-					}
-					current[j] = cw
-					for m, f := range q.Windows {
-						if sameBucket(f, w) {
-							current[m].Used, current[m].ResetsAt, current[m].ResetSecs, current[m].StartsAt = cw.Used, cw.ResetsAt, 0, nil
+				stale, moved := staleRead(key+"/"+name, kept[len(kept)-1], p)
+				if moved {
+					p.Moved = true
+				}
+				if stale {
+					if cw, cur := currentWindow(w, p, kept[len(kept)-1]); cur {
+						if current == nil {
+							current = slices.Clone(q.Windows)
 						}
+						current[j] = cw
+						for m, f := range q.Windows {
+							if sameBucket(f, w) {
+								current[m].Used, current[m].ResetsAt, current[m].ResetSecs, current[m].StartsAt = cw.Used, cw.ResetsAt, 0, nil
+							}
+						}
+						continue // not kept: a window already replaced
 					}
-					continue // not kept: a window already replaced
 				}
 			}
 			k := len(before)

@@ -3501,7 +3501,7 @@ async function usageOf(provider, account, signal) {
 // checkin presses the vendor's daily check-in (签到) for the account at key,
 // as the plugin's auth.checkin does it (magpie's own hook, which OpenCode
 // ignores; Lemon on Discord: 签到 belongs in the plugins):
-//   auth.checkin(getAuth, provider) → {
+//   auth.checkin(getAuth, provider, { signal }) → {
 //     outcome: "claimed" (checked in now) | "done" (in already today) |
 //       "ineligible" (the account can't take part) | "inactive" (no
 //       check-in running) | "captcha" (the vendor asks for a captcha: the
@@ -3514,20 +3514,24 @@ async function usageOf(provider, account, signal) {
 // again later that day after a failure, or at until; a hook that throws is
 // a failure.
 // Run in the account's scope, a token it renews is saved to that account.
-async function checkin({ provider, account, proxy }) {
-  return via.run(proxy ?? "", () => checkinOf(provider, account))
+async function checkin({ provider, account, proxy }, signal) {
+  return via.run(proxy ?? "", () => checkinOf(provider, account, signal))
 }
 
 const checkinOutcomes = ["claimed", "done", "ineligible", "inactive", "captcha", "failed"]
 
-async function checkinOf(provider, account) {
+// checkinOf carries the RPC's signal down to the hook as { signal }, like
+// usage's does: a check-in is the one hook that writes on the user's
+// behalf, and a plugin that bounds its own work still cannot tell "the
+// vendor is slow" from "magpie gave this RPC up" without it (#7953).
+async function checkinOf(provider, account, signal) {
   const a = auths().get(provider)?.auth
   if (typeof a?.checkin !== "function") throw new Error(`${provider}'s plugin doesn't check in`)
   const key = accountKey(provider, account)
   if (!readAuth()[key]) throw new Error("not signed in")
   await fresh(provider, key)
   const p = await infoOf(provider, key)
-  const r = (await inScope(provider, key, () => a.checkin(async () => authCopy(key), JSON.parse(JSON.stringify(p))))) ?? {}
+  const r = (await inScope(provider, key, () => a.checkin(async () => authCopy(key), JSON.parse(JSON.stringify(p)), signal === undefined ? undefined : { signal }))) ?? {}
   const num = (v) => (typeof v === "number" && isFinite(v) ? Math.max(0, v) : 0)
   const message = typeof r.message === "string" ? r.message : ""
   // a time that doesn't read is not told

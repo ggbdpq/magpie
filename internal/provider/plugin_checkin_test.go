@@ -232,6 +232,65 @@ func TestPluginCheckinTakesOverTheVendors(t *testing.T) {
 	}
 }
 
+// #7953 (MisonL): a plugin's auth.checkin got no cancellation signal, so
+// it cannot tell "the vendor is slow" from "magpie cancelled this RPC" and
+// cannot stop a claim nobody waits for any more — auth.usage, called a few
+// lines earlier in the same file, does get one. The hook says what it was
+// handed to $FAKE_CHECKIN_SIGNAL and, with a signal, whether its abort came.
+func TestPluginCheckinHookGetsTheCancelSignal(t *testing.T) {
+	bun := testenv.Bun(t)
+	home := claudeHome(t)
+	t.Setenv("MAGPIE_BUN", bun)
+	said := filepath.Join(home, "signal")
+	t.Setenv("FAKE_CHECKIN_SIGNAL", said)
+	presses := filepath.Join(home, "presses")
+	t.Setenv("FAKE_CHECKIN", presses)
+	t.Cleanup(plugin.Settle)
+	setup, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	abs, _ := filepath.Abs("../plugin/testdata/fake/index.js")
+	if _, err := plugin.Add(setup, abs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plugin.Providers(setup); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PluginAPIKey(setup, "fakeco", 0, nil, "ck-hold"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = plugin.AccountCheckin(ctx, "fakeco", "ck-hold")
+	}()
+	go func() {
+		time.Sleep(2 * time.Second)
+		cancel()
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the check-in didn't come back when magpie gave up on it")
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		b, err := os.ReadFile(said)
+		if err == nil && strings.Contains(string(b), "aborted") {
+			if !strings.Contains(string(b), "signal aborted") {
+				t.Fatalf("the check-in hook said %q, want the signal aborted", b)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the check-in hook never saw the cancel signal it needed to stop its write (said %.100q)", b)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // pluginCheckinTeams is the fake plugin with its own check-in, signed in
 // through its browser sign-in as each team (name/uid): the reporter's case
 // in plugins#254 is two AutoClaw display names with two sign-ins each,

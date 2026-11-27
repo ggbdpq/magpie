@@ -412,10 +412,29 @@ export const FakePlugin = async ({ client }) => ({
     // answers what the test wrote to <FAKE_CHECKIN>.until ({outcome, until})
     ...(process.env.FAKE_CHECKIN
       ? {
-          checkin: async (getAuth) => {
+          checkin: async (getAuth, provider, opts) => {
             const a = await getAuth()
             const fs = await import("node:fs")
             fs.appendFileSync(process.env.FAKE_CHECKIN, (a.key ?? (a.uid ? a.accountId + "/" + a.uid : a.accountId) ?? "") + "\n")
+            // $FAKE_CHECKIN_SIGNAL: say what the hook was handed (the
+            // cancel signal or nothing) to that file, and with a signal,
+            // wait for its abort (30s at most) and say whether it came,
+            // then answer inactive: what magpie gave up on, the hook can
+            // stop its write (#7953)
+            if (process.env.FAKE_CHECKIN_SIGNAL) {
+              const sig = opts?.signal
+              if (!sig) {
+                fs.appendFileSync(process.env.FAKE_CHECKIN_SIGNAL, "none\n")
+              } else {
+                await new Promise((ok) => {
+                  if (sig.aborted) return ok()
+                  const t = setTimeout(ok, 30000)
+                  sig.addEventListener("abort", () => (clearTimeout(t), ok()), { once: true })
+                })
+                fs.appendFileSync(process.env.FAKE_CHECKIN_SIGNAL, sig.aborted ? "signal aborted\n" : "signal idle\n")
+                return { outcome: "inactive" }
+              }
+            }
             // $FAKE_CHECKIN_URL: the vendor's check-in, asked at
             // <url>/<key>; a press it doesn't answer 200 failed (#2777)
             if (process.env.FAKE_CHECKIN_URL) {

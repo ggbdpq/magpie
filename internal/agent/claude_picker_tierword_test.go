@@ -75,3 +75,47 @@ func TestClaudePickerKeepsTierWordsWithLineupReplaced(t *testing.T) {
 		t.Errorf("the picker no longer reads as magpie's\n%s", raw)
 	}
 }
+
+// One model on every tier listed /model as its label three times over
+// (DeepSeek-Flash as Opus, Sonnet and Haiku, github345762034, #7874):
+// three rows of one name, hard to scan. The rows stay — Claude Code
+// matches a tier's word against them — and the first keeps the model's
+// name; the rest say the tier they stand for beside it.
+func TestClaudePickerTiersOfOneModelNameThemselves(t *testing.T) {
+	home := syncHome(t)
+	if err := provider.Save(provider.Provider{ID: "ds", Name: "DeepSeek", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"deepseek-v4"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SetOwnModelsHidden("claude", true); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".claude", "settings.json")
+	writeFile(t, path, `{}`)
+	a := claude(home)
+	for _, kv := range [][2]string{{"model", "ds/deepseek-v4"}, {"opus", "ds/deepseek-v4"}, {"sonnet", "ds/deepseek-v4"}, {"haiku", "ds/deepseek-v4"}} {
+		if err := a.Field(kv[0]).Set(kv[1]); err != nil {
+			t.Fatalf("%s=%s: %v", kv[0], kv[1], err)
+		}
+	}
+	raw, _ := edit.GetJSON(path, "modelPicker")
+	var p struct {
+		Options []map[string]string `json:"options"`
+	}
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		t.Fatalf("modelPicker: %v\n%s", err, readFile(path))
+	}
+	rows := map[string]map[string]string{}
+	for _, o := range p.Options {
+		rows[o["model"]] = o
+	}
+	seen := map[string]bool{}
+	for _, w := range []string{"opus", "sonnet", "haiku"} {
+		if rows[w] == nil {
+			t.Fatalf("no %q row\n%s", w, raw)
+		}
+		if seen[rows[w]["label"]] {
+			t.Errorf("%s row labelled %q as an earlier tier's is: /model lists one name over and over\n%s", w, rows[w]["label"], raw)
+		}
+		seen[rows[w]["label"]] = true
+	}
+}

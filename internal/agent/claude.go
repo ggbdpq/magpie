@@ -1317,12 +1317,23 @@ func claudeIn(at place) *Agent {
 		}
 		via := viaMagpieShared("claude", "")
 		// a tier's row is named as its model's would be, the tier first
+		said := map[string]bool{}
 		for _, t := range tierWords {
 			v := env(tierEnv(t))
 			label, note := v, "via magpie"
 			if i := slices.IndexFunc(via, func(o Option) bool { return sameAs(v, o) }); i >= 0 {
 				label, note = named(via[i])
 			}
+			// one model on several tiers said its name once for each
+			// (/model listed DeepSeek-Flash as Opus, Sonnet and Haiku
+			// alike, github345762034 on X, #7874): the first keeps it, the
+			// rest say the tier they stand for, and stay matched by their
+			// model word as before
+			if said[label] {
+				label = label + " · " + strings.ToUpper(t[:1]) + t[1:]
+				note = "via magpie"
+			}
+			said[label] = true
 			rows = append(rows, map[string]any{"model": t, "label": label, "description": strings.ToUpper(t[:1]) + t[1:] + " · " + note})
 		}
 		for _, o := range via {

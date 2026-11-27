@@ -4289,7 +4289,9 @@ func summaryEndedShort(rec *recorder) bool {
 // the request away, without saying why: "flyapi: Upstream request failed"
 // came as a 404 (#866), "apex: Upstream request failed" as a 400
 // invalid_request_error (#1511), Open Design's "[code=upstream_error]
-// Provider returned error" as a 400 (vendorUnsaidWords). Codex asking the
+// Provider returned error" as a 400 (vendorUnsaidWords), and a relay's
+// own code upstream_request_rejected — the same refusal worded as one
+// code, with underscores (#7942). Codex asking the
 // same relay itself compacts, so the summary request is asked again as
 // text, and compacted without a model when that fails too.
 func upstreamFailed(rec *recorder) bool {
@@ -4298,7 +4300,7 @@ func upstreamFailed(rec *recorder) bool {
 		(upstreamFailedWords.Match(rec.body.Bytes()) || vendorUnsaidWords.Match(rec.body.Bytes()))
 }
 
-var upstreamFailedWords = lazyre.New(`(?i)upstream request failed`)
+var upstreamFailedWords = lazyre.New(`(?i)upstream[_ ]request[_ ](?:failed|rejected)`)
 
 // roleRefused is a summary ask a relay turned away in words that may be
 // the role the swap gave it: a relay of the ChatGPT backend takes

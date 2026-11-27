@@ -4073,7 +4073,7 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
 		local = lateSummary()
 		rec, res, err = &recorder{header: http.Header{}, status: 200}, compactResult{}, nil
 	} else if first := rec.status; lacksEndpoint(first) || itemNotFound(rec) || inputKindRefused(rec, err) || roleRefused(rec, err) || protectionRefused(first, rec.body.Bytes()) ||
-		summaryTooLarge(rec) || err != nil && protectionWords.MatchString(err.Error()) {
+		summaryTooLarge(rec) || streamOverflowed(err) || err != nil && protectionWords.MatchString(err.Error()) {
 		who, msg := compactFailure(body, rec)
 		if err != nil {
 			msg = "broken off: " + err.Error()
@@ -4330,6 +4330,18 @@ var systemRefusedWords = lazyre.New(`(?i)system messages are not allowed`)
 // too.
 func summaryTooLarge(rec *recorder) bool {
 	return rec.status == http.StatusRequestEntityTooLarge || overflowed(rec.status, rec.body.Bytes())
+}
+
+// streamOverflowed is a summary ask refused for the thread's size in its
+// own stream, a response.failed or an error event, with no status saying
+// 4xx: the recorder's status is the 200 the reply's headers began with,
+// and summaryTooLarge's reads that alone (#5134, Kesuan; 1007cordon-ux:
+// an overflow never succeeds on retry, so the thread sat in compactFails
+// for good). The message alone asks the summary again as text, with the
+// same max_tokens and rate-limit exclusions tooLong keeps for the
+// refusals that carry a status (quotaSaid reads them the same way).
+func streamOverflowed(err error) bool {
+	return err != nil && tooLong(http.StatusBadRequest, err.Error())
 }
 
 // itemNotFound is a 400 refusing an item of the input by its id, as Azure

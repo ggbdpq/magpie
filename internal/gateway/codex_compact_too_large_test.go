@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -216,5 +217,101 @@ func TestDeepSeekByteCapTurn(t *testing.T) {
 				t.Fatalf("another client's 413: %d %s", code, body)
 			}
 		})
+	}
+}
+
+// inStreamOn saves provider "fake" (model m1, Responses) on f, as cappedOn
+// does.
+func inStreamOn(t *testing.T, f *inStream) {
+	t.Helper()
+	noRests()
+	t.Cleanup(noRests)
+	unknownLimit(t, 10*time.Minute)
+	unroutedLimits(t, unroutedShow, 10*time.Minute)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	up := httptest.NewServer(f)
+	t.Cleanup(up.Close)
+	p := provider.Provider{ID: "fake", Name: "1017dp", Key: "k", Models: []string{"m1"}}
+	p.Responses = up.URL + "/v1"
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// compactionOverflow is the member's overflow refusal 1007cordon-ux
+// reproduced (#5134): a summary request for a long thread refused in the
+// reply's own stream, a response.failed, with no status saying 4xx.
+const compactionOverflow = "Your input exceeds the context window of this model. Please adjust your input and try again."
+
+// inStream refuses the summary ask as its own stream's response.failed
+// saying why (message): what the recorder holds when the last candidate
+// left began a 200 stream and failed inside it. The conversation as text
+// is answered with a summary at once.
+type inStream struct {
+	message string
+	mu      sync.Mutex
+	got     [][]byte
+}
+
+func (f *inStream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	b, _ := io.ReadAll(r.Body)
+	f.mu.Lock()
+	f.got = append(f.got, b)
+	f.mu.Unlock()
+	w.Header().Set("Content-Type", "text/event-stream")
+	if bytes.Contains(b, []byte("This is the conversation so far")) {
+		io.WriteString(w, sse(
+			`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"SUMMARY"}]}}`,
+			`data: {"type":"response.completed","response":{"id":"resp_s","status":"completed","output":[]}}`))
+		return
+	}
+	io.WriteString(w, sse(
+		`event: response.created`+"\n"+`data: {"type":"response.created","response":{"id":"resp_f","status":"in_progress"}}`,
+		`event: response.failed`+"\n"+`data: {"type":"response.failed","response":{"id":"resp_f","status":"failed","error":{"code":"invalid_request_error","message":"`+f.message+`"}}}`))
+}
+
+func (f *inStream) calls() [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]byte(nil), f.got...)
+}
+
+// A summary ask refused for the thread's size in its own stream — a
+// response.failed, the recorder's status the 200 its headers began with —
+// was no cue to ask the conversation as text: summaryTooLarge reads the
+// status alone, and the overflow's words match no predicate of the
+// in-stream refusals asked again (#5134, Kesuan; 1007cordon-ux: an
+// overflow never succeeds on retry, so the thread sat in compactFails for
+// good). The message alone asks the summary again as text.
+func TestCodexCompactOverflowInStreamAsksAsText(t *testing.T) {
+	up := &inStream{message: compactionOverflow}
+	inStreamOn(t, up)
+	code, body := codexPost(t, bigCompaction())
+	if code != 200 {
+		t.Fatalf("Codex's compaction failed: %d %s", code, body)
+	}
+	if got := compactedText(t, body); got != "SUMMARY" {
+		t.Fatalf("summary %q", got)
+	}
+	calls := up.calls()
+	if len(calls) < 2 || !strings.Contains(string(calls[len(calls)-1]), "This is the conversation so far") {
+		t.Fatalf("asked %d times, the last not as text", len(calls))
+	}
+}
+
+// An in-stream refusal that says nothing of the thread's size is no cue
+// to ask as text, as before: only an overflow is asked again smaller.
+func TestCodexCompactInStreamOtherRefusalStays(t *testing.T) {
+	up := &inStream{message: "Invalid tool schema"}
+	inStreamOn(t, up)
+	code, body := codexPost(t, bigCompaction())
+	if code != 502 || !strings.Contains(body, "Invalid tool schema") {
+		t.Fatalf("%d %s", code, body)
+	}
+	for _, b := range up.calls() {
+		if strings.Contains(string(b), "This is the conversation so far") {
+			t.Fatalf("asked again as text: %.200s", b)
+		}
 	}
 }

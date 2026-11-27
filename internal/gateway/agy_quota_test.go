@@ -238,12 +238,21 @@ func TestAgyThirdPartyQuotaRestsTheModelUntilItsReset(t *testing.T) {
 // Through the gateway and the plugin host: the Claude model refused with
 // agy's third-party notice is answered a 429 whose Retry-After is the
 // notice's reset, is not asked again before it, and the account's other
-// model is asked and answers.
+// model is asked and answers. The community bridge plugin relays the
+// same Antigravity pools, so its refusals read the same (#7972).
 func TestAgyThirdPartyQuotaThroughThePlugin(t *testing.T) {
+	testAgyThirdPartyQuotaThroughThePlugin(t, "agy-cli")
+}
+
+func TestAntigravityBridgeThirdPartyQuotaThroughThePlugin(t *testing.T) {
+	testAgyThirdPartyQuotaThroughThePlugin(t, "antigravity-bridge")
+}
+
+func testAgyThirdPartyQuotaThroughThePlugin(t *testing.T, plugin string) {
 	var mu sync.Mutex
 	var claude, other int
 	t.Setenv("FAKE_NO_FREE", "1")
-	pid := besideFake(t, "agy-cli", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	pid := besideFake(t, plugin, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		mu.Lock()
 		defer mu.Unlock()

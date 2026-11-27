@@ -2145,10 +2145,14 @@ var antigravityPoolQuota = lazyre.New(`(?i)\b(?:individual|third-party) quota re
 // The retired built-in's readings told the pools apart (Pooled); agy-cli's
 // windows are display only (aside), so routing has no reading to narrow
 // the rest by, and the refusal's own words are what tell it. Only a
-// Google sign-in's (googleSignIn): another vendor's "individual quota
+// Google sign-in's (googleSignIn), or the community bridge plugin's,
+// which relays the same Antigravity pools for the same accounts
+// (antigravity-bridge, #7972): another vendor's "individual quota
 // reached" says nothing of pools, and rests what it always did.
 func antigravityPoolSpent(c candidate, why string, body []byte) bool {
-	return c.model != "" && (why == failQuota || why == failRate) && googleSignIn(c.p) && antigravityPoolQuota.Match(wordsOf(body))
+	return c.model != "" && (why == failQuota || why == failRate) &&
+		(googleSignIn(c.p) || c.p.PluginProvider() == "antigravity-bridge") &&
+		antigravityPoolQuota.Match(wordsOf(body))
 }
 
 // modelLimitedBy is modelLimited, and a Claude account's plain rate limit

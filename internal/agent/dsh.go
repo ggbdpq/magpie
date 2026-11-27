@@ -1974,6 +1974,7 @@ func dshPutProviders(providers *yaml.Node, on bool, models []catalog.Model, gw s
 		// what dsh's Models page added to it (a default level, headers)
 		// stays; magpie's fields are put as they are now
 		if cur != nil && cur.Kind == yaml.MappingNode {
+			dshEffortsKept(cur, &route)
 			dshKeepCompat(cur, &route)
 			for j := 0; j+1 < len(route.Content); j += 2 {
 				if route.Content[j].Value == dshIdleKey && yamlKey(cur, dshIdleKey) != nil {
@@ -1986,6 +1987,42 @@ func dshPutProviders(providers *yaml.Node, on bool, models []catalog.Model, gw s
 		}
 	}
 	return nil
+}
+
+// dshEffortsKept keeps the reasoningEfforts a model has in route cur, the
+// one in the file, in route, the one magpie writes now, where magpie has
+// none for it: dsh's effort slider, or a hand, puts levels on a model no
+// catalog magpie reads lists any for (given: true on the Providers page),
+// and the round's route rebuilt the models without them — the effort
+// picker gone, and the 30s round and the slider writing each other's work
+// away every few seconds, a request in between failing for a level the
+// model could no longer answer (#7998). Levels magpie has for the model
+// are put as magpie has them now, as every field of its own is.
+func dshEffortsKept(cur, route *yaml.Node) {
+	old, ms := yamlKey(cur, "models"), yamlKey(route, "models")
+	if old == nil || old.Kind != yaml.SequenceNode || ms == nil || ms.Kind != yaml.SequenceNode {
+		return
+	}
+	kept := map[string]*yaml.Node{}
+	for _, m := range old.Content {
+		id, re := yamlKey(m, "id"), yamlKey(m, "reasoningEfforts")
+		if id != nil && re != nil && re.Kind == yaml.MappingNode {
+			kept[id.Value] = re
+		}
+	}
+	if len(kept) == 0 {
+		return
+	}
+	for _, m := range ms.Content {
+		if yamlKey(m, "reasoningEfforts") != nil {
+			continue
+		}
+		if id := yamlKey(m, "id"); id != nil {
+			if re := kept[id.Value]; re != nil {
+				yamlSetKey(m, "reasoningEfforts", yamlCopy(re))
+			}
+		}
+	}
 }
 
 // dshKeepCompat carries the compat switches set by hand in dsh's Models page

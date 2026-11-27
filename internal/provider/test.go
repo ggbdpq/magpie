@@ -537,12 +537,43 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 		// the user disabled it (#1867): not even a test reaches it
 		return Result{Model: model, Error: fmt.Sprintf("model %s/%s is disabled in magpie (it matches %q in Settings › Models › Disabled models)", p.ID, model, pat)}
 	}
+	// the account a request for it goes to, not the pool's first: one
+	// the user lets serve it whose own list has it, as routing takes it
+	// (AccountsFor; #4992, scutken: a newapi pool's grok-4.7, served by
+	// its third account alone, was asked of the first and failed 503 "no
+	// available channel" while real requests were answered) — the user's
+	// pick first, before anything is branched on: a decision model's test
+	// went out signed by routing's account whatever the pick said, and
+	// the keys of a multi-key decision provider could not be told apart
+	// (#8006, tmr11235 on X)
+	var acct Provider
+	pinned := false
+	if ref := testOnRef(ctx); ref != "" {
+		if p.Account != nil {
+			// the account the user picked to test (TestOn)
+			var found bool
+			if acct, found = p.accountNamed(ref); !found {
+				return Result{Model: model, Error: fmt.Sprintf("no account %q", ref)}
+			}
+		} else {
+			var found bool
+			if p, found = p.keyNamed(ref); !found {
+				return Result{Model: model, Error: "no such key"}
+			}
+			acct = p
+		}
+		pinned = true
+	}
 	if p.DecidesModel(model) && p.AsksDecideModels() {
 		// a decision model is sent the smallest System One question, a
 		// yes-or-no (ARNO on Discord: a System One model typed in by hand
-		// couldn't be tested from its right-click)
+		// couldn't be tested from its right-click), signed by the pick
+		// when there is one
+		if pinned {
+			ctx, p = p.loggedAs(ctx, acct), acct
+		}
 		t0 := time.Now()
-		r := Result{Protocol: "decide", Model: model}
+		r := Result{Protocol: "decide", Model: model, Account: p.testedAccount()}
 		err := p.AskSystemOne(ctx, model)
 		r.Millis = time.Since(t0).Milliseconds()
 		if err != nil {
@@ -556,25 +587,7 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 	if why := p.TestsAs(client); why != "" {
 		return Result{Protocol: clientProto(client, p.Speaks()), Model: model, Error: why}
 	}
-	// the account a request for it goes to, not the pool's first: one
-	// the user lets serve it whose own list has it, as routing takes it
-	// (AccountsFor; #4992, scutken: a newapi pool's grok-4.7, served by
-	// its third account alone, was asked of the first and failed 503 "no
-	// available channel" while real requests were answered)
-	var acct Provider
-	if ref := testOnRef(ctx); ref != "" && p.Account != nil {
-		// the account the user picked to test (TestOn)
-		var found bool
-		if acct, found = p.accountNamed(ref); !found {
-			return Result{Model: model, Error: fmt.Sprintf("no account %q", ref)}
-		}
-	} else if ref != "" {
-		var found bool
-		if p, found = p.keyNamed(ref); !found {
-			return Result{Model: model, Error: "no such key"}
-		}
-		acct = p
-	} else {
+	if !pinned {
 		var ok bool
 		if acct, ok = p.accountFor(model); !ok {
 			return Result{Model: model, Error: "every account that's on is set not to serve this model"}

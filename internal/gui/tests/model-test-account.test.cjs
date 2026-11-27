@@ -25,9 +25,14 @@ const gpt = { ...base, id: "chatgpt-api", name: "ChatGPT API", chat: "", respons
   models: [{ id: "gpt-6.1-sol", name: "gpt-6.1-sol", on: true }], testPicks: [{ id: "a@mmuu.mom", name: "a@mmuu.mom" }, { id: "b@tirol.url", name: "b@tirol.url" }] };
 const plain = { ...base, id: "plain", name: "Plain", chat: "https://plain.example.com/v1",
   models: [{ id: "model-p", name: "model-p", on: true }] };
+// A decision-only provider (#8006, tmr11235 on X): its keys are per Cloud
+// project, and the pick is what tells them apart — "Test on account…" is
+// its menu entry too, "Test as Codex" is not
+const decidePool = { ...base, id: "decpool", name: "DecPool", decide: "https://decide.example.com/v1",
+  decideTest: true, models: [{ id: "d1", name: "d1", on: true }], testPicks: PICKS };
 
 function serve(lang, tests) {
-  const providers = { providers: [relay, gpt, plain], presets: [], excluded: [], gateway: { running: true, window: true } };
+  const providers = { providers: [relay, gpt, plain, decidePool], presets: [], excluded: [], gateway: { running: true, window: true } };
   const state = { agents: [], profiles: [], settings: { lang, theme: "light" } };
   return async (route) => {
     const url = new URL(route.request().url());
@@ -123,6 +128,23 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await other.waitFor();
       await rightClick(other);
       assert.equal(await menu.getByRole("menuitem", { name: await tr("Test on account…") }).count(), 0);
+
+      // a decision-only provider offers it too, and not Test as Codex
+      await page.goto("http://magpie.test/?view=providers");
+      await page.locator(".row.provider", { hasText: "DecPool" }).click();
+      const dec = page.locator(".editor .mchips .mchip", { hasText: "d1" });
+      await dec.waitFor();
+      await rightClick(dec);
+      assert.equal(await menu.getByRole("menuitem", { name: await tr("Test as Codex") }).count(), 0, "no Test as Codex for a decision model");
+      const onAccount = menu.getByRole("menuitem", { name: new RegExp("^" + (await tr("Test on account…")).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) });
+      await onAccount.click();
+      await pick.waitFor();
+      assert.deepEqual(await page.locator(".pop.proto-menu .pm-name").allTextContents(), ["Work", "Spare"]);
+      await page.locator(".pop.proto-menu .pm-item", { hasText: "Spare" }).click();
+      for (let i = 0; i < 60 && !tests.length; i++) await page.waitForTimeout(50);
+      const last = tests[tests.length - 1];
+      assert.deepEqual({ id: last?.id, test: last?.test, account: last?.account }, { id: "decpool", test: ["d1"], account: "k2" });
+      await page.waitForFunction(() => document.querySelector("#status")?.textContent.endsWith(" · Spare"));
       assert.deepEqual(errors, []);
     });
   }

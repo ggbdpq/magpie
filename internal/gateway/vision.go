@@ -139,12 +139,13 @@ func seer() (string, bool) {
 func VisionMissing() string { return pickedMissing(provider.HeldSettings().Vision) }
 
 // pickedMissing is a model the user picked in Settings (v) that doesn't
-// resolve: "" for none picked, off, or one magpie finds.
+// resolve, or one its provider has taken off the list (delisted, #7346):
+// "" for none picked, off, or one magpie finds and serves.
 func pickedMissing(v string) string {
 	if v == "" || v == "off" {
 		return ""
 	}
-	if _, _, ok := provider.Resolve(v); ok {
+	if p, model, ok := provider.Resolve(v); ok && !slices.Contains(p.Delisted, model) {
 		return ""
 	}
 	return v

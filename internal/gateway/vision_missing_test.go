@@ -142,3 +142,46 @@ func TestMissingImageGenerationModelIsSaid(t *testing.T) {
 		t.Fatalf("DrawerMissing with off = %q", got)
 	}
 }
+
+// A model the user picked for Image recognition that its provider has
+// taken off the list (delisted) is missing to a description as one whose
+// provider is gone: the request's image went to it over and over and 404
+// came back over and over, said nowhere (#7346, clinepass's muse-spark).
+// The one magpie picks describes in its place, and the row names the
+// delisted one, as a gone provider's does.
+func TestDelistedImageRecognitionModelIsSaid(t *testing.T) {
+	s, u := eyed(t)
+	pr, err := provider.Find("probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// delisted is what its list had and has no more: off Models, on the
+	// delisted list. Another model that sees stays, to describe in its
+	// place.
+	pr.Models = []string{"text", "iris"}
+	pr.Delisted = []string{"eye"}
+	if err := provider.Save(*pr); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive("probe", pr.Chat, []catalog.Model{
+		{ID: "text", ImageInput: imageInputBool(false)},
+		{ID: "iris", Images: true, ImageInput: imageInputBool(true)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pickVision(t, "probe/eye")
+	if got := VisionMissing(); got != "probe/eye" {
+		t.Fatalf("VisionMissing with a delisted probe/eye = %q", got)
+	}
+	if m, ok := seer(); !ok || m != "probe/iris" {
+		t.Fatalf("seer = %q %v, want the automatic probe/iris", m, ok)
+	}
+	code, out := postAs(t, s, "", `{"model":"probe/text","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,c2Vlbg=="}}]}]}`)
+	if code != 200 {
+		t.Fatalf("delisted vision: %d %s", code, out)
+	}
+	if r := s.trace.routes[len(s.trace.routes)-2]; r.Kind != "vision" || r.Model != "probe/iris" || r.For == nil || r.For.Missing != "probe/eye" {
+		t.Fatalf("delisted vision's row: kind %q model %q for %+v", r.Kind, r.Model, r.For)
+	}
+	_ = u
+}

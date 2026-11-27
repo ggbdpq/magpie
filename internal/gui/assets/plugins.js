@@ -1439,10 +1439,14 @@
     if (ag || e.isAgent) nm.append(kindChip("ag"));
     // a plugin of tools alone signs in to nothing: no Provider chip
     const toolsOnly = !!e.tools?.length && !e.providers?.length;
+    // so do a page or panels alone (#7950): one that ships a host part has
+    // inMagpieOnly false — it needs a window with no main and no exports —
+    // so without this it fell through to the Provider chip it doesn't earn
+    const pageOnly = (!!e.page || !!e.panels?.length) && !e.providers?.length;
     if (e.tools?.length) nm.append(kindChip("tl"));
     if (e.page) nm.append(kindChip("pg"));
     if (e.panels?.length) nm.append(kindChip("pn"));
-    if (e.providers?.length || !(e.gatewayOnly || e.middlewareOnly || e.inMagpieOnly || e.isAgent || toolsOnly || (mw && !e.isMiddleware) || (ag && !e.isAgent))) nm.append(kindChip("pv"));
+    if (e.providers?.length || !(e.gatewayOnly || e.middlewareOnly || e.inMagpieOnly || e.isAgent || toolsOnly || pageOnly || (mw && !e.isMiddleware) || (ag && !e.isAgent))) nm.append(kindChip("pv"));
     who.append(nm);
     const subs = subsOf(pkg);
     const sub = el("div", "sub");

@@ -1223,6 +1223,16 @@ func ownEntry(raw map[string]any, id, name string, priority int) map[string]any 
 		e["effective_context_window_percent"] = effectivePct
 	}
 	e["slug"], e["display_name"], e["priority"], e["visibility"] = id, name, priority, "list"
+	// a Codex catalog entry says whether the model takes its tool search
+	// (supports_search_tool): a row that keeps none — a vendor's own list
+	// shaped as one, say — reads as no, and Codex sent every tool's
+	// description with each request instead, 181,790 tokens a turn for a
+	// "你好" where a mark of yes puts the search tool in and the
+	// descriptions go (#7904). What the row says stands; what it doesn't
+	// say is yes, as the entries magpie makes itself are.
+	if _, ok := e["supports_search_tool"]; !ok {
+		e["supports_search_tool"] = true
+	}
 	if s, _ := e["base_instructions"].(string); s == "" {
 		// an entry with model_messages alone carries its instructions
 		// there; one with neither, those official Codex sends its model

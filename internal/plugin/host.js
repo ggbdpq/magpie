@@ -252,6 +252,17 @@ const toErr = (...xs) => process.stderr.write(xs.map((x) => (typeof x === "strin
 console.log = console.info = console.debug = console.warn = toErr
 process.stdout.write = (chunk, enc, cb) => process.stderr.write(chunk, enc, cb)
 
+// A plugin's own async work nobody awaits (dim 0.3.7's cache, #7868)
+// rejects where nothing sees it, and Bun's answer to an unhandled
+// rejection — or to an error nothing catches — is to quit. With the host
+// went every provider it serves: a model list asked again answered the
+// host's death, and a turn a conversation asked for a 502. What rejected
+// is said instead, with where in the plugin it came from, and the host
+// goes on: the turn the plugin itself was answering fails its own call,
+// and none of the others know.
+process.on("unhandledRejection", (e) => toErr("[plugin] an unhandled rejection:", e?.stack ?? e))
+process.on("uncaughtException", (e) => toErr("[plugin] an uncaught error:", e?.stack ?? e))
+
 // Nor may a program a plugin starts have them: one given the host's stdin
 // reads magpie's messages away (pi-devin-plus runs `devin auth login` with
 // stdio "inherit", which took the next requests as its answer and gave up,

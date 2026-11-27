@@ -7606,7 +7606,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// turns the whole request away for (#1611)
 			body = withThinkingOnToolTurns(body)
 		}
-		if !anthropicModel.MatchString(model) && !provider.Reasonless(p.ID, model) {
+		if !anthropicModel.MatchString(model) && !provider.Reasonless(p.ID, model) && !thinkingOffPointless(p) {
 			body = thinkingOffUnlessAsked(body)
 			// Claude Code's auto mode classifier, on a vendor's model that
 			// may think whatever it is told (#250); a Claude model's request

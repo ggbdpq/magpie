@@ -2146,3 +2146,14 @@ func stopDetails(raw json.RawMessage) json.RawMessage {
 	}
 	return raw
 }
+
+// thinkingOffPointless says p cannot turn a model's thinking off, so a
+// thinking ask of "disabled" would only hide the thinking the model does
+// anyway: agy-cli reads a disabled ask as no effort of its own and drops
+// the thinking blocks a disabled ask names from its stream (#7401) — the
+// model thinks at its default either way, and the client, which named no
+// thinking, is left watching a stream with nothing in it. Another plugin
+// evidenced the same way joins here.
+func thinkingOffPointless(p provider.Provider) bool {
+	return p.PluginProvider() == "agy-cli"
+}

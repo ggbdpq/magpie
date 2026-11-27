@@ -4133,13 +4133,40 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
 		// nothing in it as "Unknown error" (outrageous_piglet on Discord);
 		// the vendor's code, param and Retry-After go with it
 		who, msg := compactFailure(body, rec)
-		s.compactFails.failed(key, rec.status, msg)
 		for k, vs := range rec.header {
 			if k != "Content-Length" && k != "Content-Type" {
 				w.Header()[k] = vs
 			}
 		}
-		writeVendorError(w, provider.Responses, rec.status, compactFailed(who, rec.status, msg), rec.body.Bytes())
+		failure := compactFailed(who, rec.status, msg)
+		if rec.status == http.StatusTooManyRequests && strings.HasPrefix(model, "agy-cli/") &&
+			antigravityPoolQuota.Match(wordsOf(rec.body.Bytes())) {
+			// Antigravity's pool quota used up (#7996): the model rests
+			// until the reset its words name (antigravityPoolSpent), and
+			// the hold answers the tries after the first from the rest.
+			// Said as a rate_limit_error, Codex read a retryable one and
+			// asked on all the same, until the guard held the conversation
+			// besides; said as its own usage_limit_reached, with the reset
+			// (codex_out_reply.go), it waits instead. The failure is the
+			// pool's, not the conversation's, so none of these counts —
+			// as a sign-in's doesn't (codex_compact_guard.go).
+			reply := map[string]any{"type": "usage_limit_reached", "message": failure}
+			now := time.Now()
+			wait := retryAfterSaid(rec.header, now)
+			if wait <= 0 {
+				wait = resetsAfter(rec.body.Bytes())
+			}
+			if wait > 0 {
+				reply["resets_at"] = now.Add(wait).Unix()
+			}
+			w.Header().Del("Retry-After")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(rec.status)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": reply})
+			return
+		}
+		s.compactFails.failed(key, rec.status, msg)
+		writeVendorError(w, provider.Responses, rec.status, failure, rec.body.Bytes())
 		return
 	}
 	if err == nil && local == "" && res.Status == "incomplete" {

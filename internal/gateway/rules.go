@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -190,6 +191,63 @@ var turnRules = struct {
 	m map[string]turnRule // group|conversation → what its turn's rule was
 }{m: map[string]turnRule{}}
 
+// compactCarried keeps the turn's decision over the conversation's own
+// compaction (#7388): the summary the agent asks for replaces what the
+// turn's key was made of, so the requests after it carry the summary
+// where the turn's first user words were, and no key names them. The
+// compaction leaves the decision here, and the turn's next request picks
+// it up; a message of the user's own answers as a new turn and lets it go.
+var compactCarried = struct {
+	sync.Mutex
+	m map[string]turnRule
+}{m: map[string]turnRule{}}
+
+// compactCarryKeep is how long a decision left over a compaction waits
+// for the turn's next request, which follows within seconds.
+var compactCarryKeep = 5 * time.Minute
+
+// carryKey is the conversation a decision left over a compaction is
+// picked up by: the key the turn's requests go by without its first
+// words, which the summary replaced, and whose turn it was — a subagent's
+// own compaction is one of its own, not the lead's.
+func carryKey(key string, subagent bool) string {
+	if i := strings.LastIndex(key, "|"); i >= 0 {
+		key = key[:i+1]
+	}
+	return key + strconv.FormatBool(subagent)
+}
+
+// compactCarry leaves tr for the turn's next request.
+func compactCarry(k string, tr turnRule) {
+	compactCarried.Lock()
+	compactCarried.m[k] = tr
+	compactCarried.Unlock()
+}
+
+// takeCarried is the decision a compaction left, fresh enough to hold the
+// turn; taken, there is none.
+func takeCarried(k string) (turnRule, bool) {
+	compactCarried.Lock()
+	defer compactCarried.Unlock()
+	tr, ok := compactCarried.m[k]
+	if !ok {
+		return turnRule{}, false
+	}
+	delete(compactCarried.m, k)
+	if time.Since(tr.at) > compactCarryKeep {
+		return turnRule{}, false
+	}
+	return tr, true
+}
+
+// dropCarried lets a decision left over a compaction go: the user spoke,
+// and the turn it belonged to is over.
+func dropCarried(k string) {
+	compactCarried.Lock()
+	delete(compactCarried.m, k)
+	compactCarried.Unlock()
+}
+
 // ruleKey is the conversation a group's rules keep a turn's decision for:
 // the agent's session and the conversation's first words (firstWords).
 func ruleKey(g provider.Group, in http.Header, req *Request) string {
@@ -320,17 +378,43 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 			}
 			break
 		}
+		// the summary replaces the conversation, so what the requests after
+		// it carry as the turn's first user words is the summary, and no
+		// key holds the turn's decision for them: it is left here, for the
+		// turn's next request to pick up (compactCarry)
+		turnRules.Lock()
+		tr, had := turnRules.m[key]
+		turnRules.Unlock()
+		if had && now.Sub(tr.at) <= stickKeep {
+			compactCarry(carryKey(key, req.subagent), tr)
+		}
 		return hit
 	}
 	if within {
 		// the same turn: what was decided as it began, while the group
 		// still has that rule; else nothing moves it
 		ctx := memberContexts(ms) // before the lock: it reads the catalog
+		if !had {
+			// the conversation this turn carried was compacted: its summary
+			// stands where the first user words were, so no key names it —
+			// the decision the compaction left is the turn's (#7388)
+			if carried, ok := takeCarried(carryKey(key, req.subagent)); ok {
+				tr = turnRule{turn: turn, use: carried.use, n: carried.n, at: now, input: carried.input, intent: carried.intent,
+					ruleIntent: carried.ruleIntent, by: carried.by, effort: carried.effort, wanted: carried.wanted,
+					answered: carried.answered, size: size, hour: carried.hour, cold: carried.cold}
+				had = true
+			}
+		}
 		if had {
 			q.Intent = tr.intent // as the classifier said when the turn began
 		}
 		turnRules.Lock()
 		defer turnRules.Unlock()
+		if had {
+			if _, ok := turnRules.m[key]; !ok {
+				turnRules.m[key] = tr // carried over the compaction: it holds from here on
+			}
+		}
 		switch {
 		case !had || tr.turn != turn && turn > 0:
 			hit.Waits = true
@@ -362,6 +446,7 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 	// turn the agent asked to reason in. Reasoning turned off ("none",
 	// which Effort reads as low) is not asked to reason: the pick would
 	// never be sent (withEffort leaves "none" as it is), only shown (#2247)
+	dropCarried(carryKey(key, req.subagent))
 	intents := provider.Intents(g.Rules, q)
 	effort := g.Effort == provider.EffortAuto && hit.Effort != "" && !req.ThinkOff
 	above := ""

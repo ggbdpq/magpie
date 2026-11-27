@@ -736,3 +736,59 @@ func TestRuleFailsOverToTheNextRule(t *testing.T) {
 		t.Fatalf("a %d b %d c %d", a.n(), b.n(), c.n())
 	}
 }
+
+// The turn's rule holds over the agent's own compaction: the summary
+// request may go to the compaction rule's model, and the requests after
+// it — the same turn handing tool results back, its first user words now
+// the summary — keep the turn's member and use-effort until the user
+// speaks again (#7388). They went out with no rule and the agent's own
+// effort instead, and kept doing so for the rest of the turn.
+func TestRuleHoldsOverCompaction(t *testing.T) {
+	s, a, b := ruled(t,
+		provider.Rule{Use: "a/small", Compact: true},
+		provider.Rule{Use: "b/big", Tokens: 100, UseEffort: "low"})
+	_ = a
+	_ = b
+	post := func(body string) (string, Route) {
+		t.Helper()
+		code, out := postAs(t, s, "sess", body)
+		if code != 200 {
+			t.Fatalf("%d %s", code, out)
+		}
+		return out, lastRoute(s)
+	}
+	// the turn begins long: rule 2 sends it to b/big at low
+	out, r := post(`{"model":"group/r","reasoning_effort":"high","messages":[` +
+		`{"role":"user","content":` + quote(long(25000)) + `}]}`)
+	if !strings.Contains(out, "from kb") || r.Rule == nil || r.Rule.N != 2 || r.Rule.Use != "b/big" || r.Rule.UseEffort != "low" {
+		t.Fatalf("turn start: %s %+v", out, r.Rule)
+	}
+	// the agent compacts: the conversation with the ask behind it, as
+	// Claude Code sends it — the turn's first user words still first
+	compact := `{"model":"group/r","reasoning_effort":"high","messages":[` +
+		`{"role":"system","content":"You are a helpful AI assistant tasked with summarizing conversations."},` +
+		`{"role":"user","content":` + quote(long(25000)) + `},` +
+		`{"role":"assistant","content":"read it"},` +
+		`{"role":"user","content":"Your task is to create a detailed summary of the conversation so far."}]}`
+	out, r = post(compact)
+	if !strings.Contains(out, "from ka") || r.Rule == nil || !r.Rule.Compact {
+		t.Fatalf("compaction: %s %+v", out, r.Rule)
+	}
+	// the turn carries on over the summary: tool results in, the summary
+	// standing where the first user words were — the turn's rule holds
+	after := `{"model":"group/r","reasoning_effort":"high","messages":[` +
+		`{"role":"user","content":` + quote("Here is the summary of the conversation so far: the user asked to read files.") + `},` +
+		`{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"ls","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"c1","content":"file.txt"}]}`
+	for i := 0; i < 2; i++ {
+		out, r = post(after)
+		if !strings.Contains(out, "from kb") || r.Rule == nil || !r.Rule.Held || r.Rule.N != 2 || r.Rule.Use != "b/big" || r.Rule.UseEffort != "low" {
+			t.Fatalf("after compaction %d: %s %+v", i, out, r.Rule)
+		}
+	}
+	// a message of the user's own begins a new turn: the rules look at it
+	out, r = post(`{"model":"group/r","messages":[{"role":"user","content":"hi again"}]}`)
+	if !strings.Contains(out, "from ka") || r.Rule == nil || r.Rule.Held || r.Rule.Waits {
+		t.Fatalf("next turn: %s %+v", out, r.Rule)
+	}
+}

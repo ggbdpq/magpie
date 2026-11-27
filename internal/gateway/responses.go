@@ -1677,6 +1677,12 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 		out["include"] = include
 	}
 	b, _ := marshalBody(out, "input")
+	// an item a steer or a notice put inside a run of calls and results
+	// goes after the run, as a relayed request's does (joinToolRuns):
+	// a strict upstream reads the run as ended there and refuses the
+	// call's own answer "No tool output found for tool call <id>", every
+	// turn of the conversation after (#7975)
+	b = joinToolRuns(b)
 	// a call the client left unanswered (a turn it interrupted) gets its
 	// synthetic result, as buildChat's pairToolMessages and
 	// buildAnthropic's pairToolBlocks give one: the Responses API refuses

@@ -238,3 +238,110 @@ func TestChatSystemMessageBetweenCallAndResult(t *testing.T) {
 		t.Fatalf("relayed %v", q.Messages)
 	}
 }
+
+// strictResponses is a Responses upstream that reads a tool run as ended
+// wherever a message stands between a call and the output answering it,
+// and answers "No tool output found for tool call <id>" 400 — what the
+// report's deepseek-flash on a baseAPI "responses" provider did (#7975).
+// It keeps each body it was sent.
+func strictResponses(t *testing.T) (*fake, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var got []string
+	f := &fake{t: t}
+	f.refuse = func(b []byte) (int, string) {
+		mu.Lock()
+		got = append(got, string(b))
+		mu.Unlock()
+		var q struct {
+			Input []struct {
+				Type   string `json:"type"`
+				Role   string `json:"role"`
+				CallID string `json:"call_id"`
+			} `json:"input"`
+		}
+		open := []string{}
+		if json.Unmarshal(b, &q) == nil {
+			for _, it := range q.Input {
+				switch {
+				case strings.HasSuffix(it.Type, "_call") && it.CallID != "":
+					open = append(open, it.CallID)
+				case strings.HasSuffix(it.Type, "_output") && it.CallID != "":
+					for i, id := range open {
+						if id == it.CallID {
+							open = append(open[:i], open[i+1:]...)
+							break
+						}
+					}
+				case it.Type == "message" && len(open) > 0:
+					return 400, `{"error":{"message":"No tool output found for tool call ` + open[0] + `.","type":"invalid_request_error"}}`
+				}
+			}
+		}
+		f.reply = sse(
+			`event: response.created`+"\n"+`data: {"type":"response.created","response":{"id":"r1","model":"m","status":"in_progress"}}`,
+			`event: response.output_text.delta`+"\n"+`data: {"type":"response.output_text.delta","delta":"ok"}`,
+			`event: response.completed`+"\n"+`data: {"type":"response.completed","response":{"id":"r1","model":"m","status":"completed","output":[],"usage":{"input_tokens":2,"output_tokens":1}}}`)
+		return 0, ""
+	}
+	return f, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), got...)
+	}
+}
+
+// A Claude Desktop request to a Responses upstream whose history has a
+// {role:"system"} message between an assistant tool_use and the user
+// tool_result — the user steering while a tool runs — reaches it with the
+// message after the output, the call answered by its own result (#7975).
+// As it was, the message sat in the run, the upstream read the exchange
+// as ended there and refused 400 "No tool output found", and every later
+// turn of the conversation failed the same way. A text block before the
+// tool_result in the result's own message is the same shape.
+func TestSystemMessageBetweenCallAndResultOnResponses(t *testing.T) {
+	for _, tc := range []struct {
+		name, between string
+	}{
+		{"a system message between", `{"role":"system","content":"the user hasn't heard from you in a while"},`},
+		{"text before the result", `{"role":"user","content":[{"type":"text","text":"hurry"},{"type":"tool_result","tool_use_id":"call_a","content":"ok"}]},`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, sent := strictResponses(t)
+			setup(t, provider.Responses, f)
+			body := `{"model":"fake/deepseek-flash","max_tokens":32,"messages":[{"role":"user","content":"list the files"},` +
+				`{"role":"assistant","content":[{"type":"tool_use","id":"call_a","name":"Read","input":{}}]},` +
+				tc.between +
+				`{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_a","content":"ok"}]},` +
+				`{"role":"user","content":"go on"}]}`
+			rec := httptest.NewRecorder()
+			New().Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)))
+			if rec.Code != 200 {
+				t.Fatalf("%d %s", rec.Code, rec.Body)
+			}
+			got := sent()
+			if len(got) != 1 {
+				t.Fatalf("sent %d requests, want 1", len(got))
+			}
+			order := orderOf(t, []byte(got[0]))
+			var out, words int
+			for i, o := range order {
+				if o == "function_call_output:call_a" {
+					out = i
+				}
+				if strings.HasPrefix(o, "message:") {
+					words = i
+				}
+			}
+			if words < out {
+				t.Fatalf("a message stands inside the run: %v\n%s", order, got[0])
+			}
+			if strings.Contains(got[0], interruptedTool) {
+				t.Fatalf("the call got a made-up result, though its own came:\n%s", got[0])
+			}
+			if !strings.Contains(got[0], `"call_id":"call_a","output":"ok"`) {
+				t.Fatalf("the call's own result is gone:\n%s", got[0])
+			}
+		})
+	}
+}

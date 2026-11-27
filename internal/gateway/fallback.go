@@ -2014,14 +2014,31 @@ var unsaidWords = lazyre.New(`(?i)(^|"|\\"|: )invalid request error trace_id: [0
 // Google's word for a thought signature it didn't give (signatureRefused:
 // "Corrupted thought signature.", one Vertex AI gave replayed to AI Studio,
 // mimi001234) is one: the member that gave it may take it.
+// A vendor's word that an image or video URL in the request could not be
+// fetched (mediaFetchWords: Command Code's 400 media_fetch_failed,
+// #8023) is one: the vendor's fetching of the media is what failed, not
+// the request, and another member may fetch it its own way, as for
+// zhipuImageRefusal.
 // One that also says the account is out of quota or credit (quotaWords,
 // creditWords: "请充值") is that, and rests it (#4095).
 func shapeRefused(status int, body []byte) bool {
 	// the words are matched decoded, too (#1669)
 	body = wordsOf(body)
-	return (status == 400 || status == 422) && (shapeWords.Match(body) || unsaidWords.Match(body) || customToolRefusal.Match(body) || zhipuImageRefusal.Match(body) || wrongEndpoint(status, body) || upstreamFailedWords.Match(body) || reasoningBackRefused(body) || signatureRefused.Match(body)) &&
+	return (status == 400 || status == 422) && (shapeWords.Match(body) || unsaidWords.Match(body) || customToolRefusal.Match(body) || zhipuImageRefusal.Match(body) || wrongEndpoint(status, body) || upstreamFailedWords.Match(body) || reasoningBackRefused(body) || signatureRefused.Match(body) || mediaFetchWords.Match(body)) &&
 		!quotaWords.Match(body) && !creditWords.Match(body) && !unservedWords.Match(body) && !refusedWords.Match(body)
 }
+
+// mediaFetchWords is a vendor's word that an image or video URL in the
+// request could not be fetched: Command Code's 400 media_fetch_failed
+// "An image or video URL could not be downloaded. It must be public,
+// answer HTTP 200 within 30 seconds, and redirect at most 3 times."
+// (#8023). The vendor's fetching of the media is what failed, not the
+// request — the same conversation had carried the same image blocks
+// through 11 earlier requests on the same member, every one a 200, and
+// the URLs answered GET 200 all along — so the group's next member,
+// which may fetch the same URL its own way or take base64, is asked, as
+// for zhipuImageRefusal (#4732), and nothing rests for the member.
+var mediaFetchWords = lazyre.New(`(?i)media_fetch_failed|could not be downloaded`)
 
 // regionWords are how a vendor says it doesn't serve where the request
 // comes from: Google's 400 FAILED_PRECONDITION "User location is not
@@ -2250,7 +2267,10 @@ func retryable(status int, body []byte) bool {
 			upstreamFailedWords.Match(body) ||
 			// a model's demand for an earlier turn's reasoning (EDwinpzy):
 			// another member's model may not make it
-			reasoningBackRefused(body)
+			reasoningBackRefused(body) ||
+			// a vendor that could not fetch the request's media (#8023):
+			// another member may fetch it its own way
+			mediaFetchWords.Match(body)
 	}
 	return false
 }

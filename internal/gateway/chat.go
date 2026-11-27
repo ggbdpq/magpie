@@ -593,9 +593,17 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 				am["reasoning_content"] = think
 			} else if wants && (len(calls) > 0 || afterTool) {
 				// a tool call with no thinking (another model's turn), or a
-				// reply to a tool result with none, which DeepSeek turns the
-				// whole request away for (#1462, #1822)
+				// reply to a tool result with none, which DeepSeek turns
+				// the whole request away for (#1462, #1822)
 				am["reasoning_content"] = noReasoning
+			}
+			// WorkBuddy's signed reasoning (#8009): the payload the step's
+			// first call carried goes back on the turn that made it, and
+			// only to the account and model that gave it
+			if wrap := wbCarried(m.Parts); wrap != "" {
+				if payload := wbReplay(wrap, r.wbWho, model); payload != "" {
+					am["extra_fields"] = json.RawMessage(payload)
+				}
 			}
 			afterTool = false
 			msgs = append(msgs, am)

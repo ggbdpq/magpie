@@ -235,6 +235,10 @@ type Request struct {
 	// buildResponses folds it into the instructions, as the Chat and
 	// Anthropic builds do (#4632).
 	instructionsKept bool
+	// wbWho is the account or key the try goes to, as wbWrap scopes a
+	// WorkBuddy payload to the vendor that gave it (workbuddy_carry.go):
+	// buildChat reads it to replay only what this vendor gave.
+	wbWho string
 	// branch, for the Claude bridge, is the session of the run whose
 	// reply made the calls this request answers after another request
 	// did: its run branches off it there (subscriptionBridge.branch).

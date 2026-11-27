@@ -10352,7 +10352,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		}
 		return writeVendorErrorFrom(w, from, actual, p, res, msg, b), msg
 	}
-	dec := carryReasoning(decoderFor(p, actual, request.Tools), from, actual)
+	dec := wbCarryCapture(carryReasoning(decoderFor(p, actual, request.Tools), from, actual), p, model)
 	rd, sse := eventStream(res)
 	if !sse {
 		// the provider ignored stream:true; read the whole reply as one
@@ -10681,6 +10681,9 @@ func afterParse(proto provider.Protocol, body []byte, req *Request) (*Request, e
 	// and the sealed reasoning a Responses upstream gave before it
 	// (reasoning_carry.go)
 	unreasonCalls(req)
+	// and a WorkBuddy reply's extra_fields its first call's id carried
+	// (workbuddy_carry.go)
+	wbUnsignCalls(req)
 	// a call naming no function, which an upstream turns the whole
 	// request away for, and its answer (nameless_calls.go, #7565)
 	withoutNamelessCalls(req)
@@ -10734,9 +10737,10 @@ func buildFor(p provider.Provider, proto provider.Protocol, r *Request, model st
 		c.videoOff = true
 		r = &c
 	}
-	if proto == provider.Chat && r.signer != p.ID {
+	if proto == provider.Chat && (r.signer != p.ID || r.wbWho != wbWho(p)) {
 		c := *r
 		c.signer = p.ID
+		c.wbWho = wbWho(p)
 		r = &c
 	}
 	return build(proto, r, model, buildHost(p), p.RejectsTemperature(model))

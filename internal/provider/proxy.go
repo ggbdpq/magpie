@@ -22,6 +22,8 @@ import (
 // one with connect addresses (Resolve) has its hosts' connections made
 // there;
 // one asked to be spoken HTTP/1.1 to (HTTP1) is, at its own hosts alone;
+// so is Qianfan's own gateway, whose HTTP/2 cancels a body over ~2 MiB
+// (qianfanHTTP1Hosts, #8018);
 // one whose turns go over the Responses WebSocket (Socket) has them go
 // there, at its Responses URL alone (SocketTurn).
 func (p Provider) Via(ctx context.Context) context.Context {
@@ -31,6 +33,9 @@ func (p Provider) Via(ctx context.Context) context.Context {
 	}
 	if p.HTTP1 && p.TakesInsecureTLS() {
 		ctx = netproxy.WithHTTP1(ctx, p.UncheckedHosts()...)
+	}
+	if hosts := p.qianfanHTTP1Hosts(); len(hosts) > 0 {
+		ctx = netproxy.WithHTTP1(ctx, hosts...)
 	}
 	if len(p.Resolve) > 0 && p.TakesResolve() {
 		ctx = netproxy.WithResolve(ctx, p.Resolve)
@@ -323,4 +328,55 @@ func ViaRemoteMagpieAt(ctx context.Context, u *url.URL) context.Context {
 		}
 	}
 	return ctx
+}
+
+// qianfanHost is Qianfan's own, whose gateway cancels a request body
+// over ~2 MiB on HTTP/2 — "stream error: stream ID 17; CANCEL; received
+// from peer", a 502 some 33s in — and resets one over HTTP/1.1 that
+// doesn't wait for the 100; spoken HTTP/1.1 with the 100 asked
+// (ExpectsContinue), 3 MiB goes (yideriwen, #8018).
+const qianfanHost = "qianfan.baidubce.com"
+
+// qianfanContinueMin is the body size from which Qianfan is asked to
+// wait for the 100 before the body, as the report suggests.
+const qianfanContinueMin = 1 << 20
+
+// toQianfan says the provider's requests go to Qianfan's own gateway:
+// the baidu-qianfan preset's, or one pointed at its host.
+func (p Provider) toQianfan() bool {
+	if p.VendorPreset() == "baidu-qianfan" {
+		return true
+	}
+	for _, u := range p.UncheckedHosts() {
+		if HostOf(u) == qianfanHost {
+			return true
+		}
+	}
+	return false
+}
+
+// qianfanHTTP1Hosts are the provider's endpoints spoken HTTP/1.1 to for
+// Qianfan's sake. A preset takes no HTTP1 of the user's
+// (TakesInsecureTLS), so the vendor asks for it itself: the preset's own
+// endpoints, and a custom provider's pointed at Qianfan's host alone.
+func (p Provider) qianfanHTTP1Hosts() []string {
+	if !p.toQianfan() {
+		return nil
+	}
+	preset := p.VendorPreset() == "baidu-qianfan"
+	var out []string
+	for _, u := range p.UncheckedHosts() {
+		if preset || HostOf(u) == qianfanHost {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// ExpectsContinue is whether a request of size to the provider asks the
+// upstream to wait for the 100 before the body: Qianfan's gateway
+// resets a body over ~2 MiB sent straight away over HTTP/1.1 (#8018).
+// Another vendor is asked as it was.
+func ExpectsContinue(p Provider, size int) bool {
+	return size >= qianfanContinueMin && p.toQianfan()
 }

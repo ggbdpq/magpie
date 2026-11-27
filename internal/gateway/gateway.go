@@ -7005,6 +7005,11 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 	defer provider.LetGo(req)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	if provider.ExpectsContinue(p, len(body)) {
+		// Qianfan's gateway resets a body over ~2 MiB that doesn't wait
+		// for the 100 (#8018)
+		req.Header.Set("Expect", "100-continue")
+	}
 	// the agent's own where the provider passes it on, else magpie's
 	// (#1851); a signed-in account's signing, a client the vendor serves
 	// (OpenCode's, Cline's, Kilo's) and the user's own header put theirs

@@ -41,8 +41,9 @@ func TestDrainStderrKeepsTheChildGoing(t *testing.T) {
 		t.Fatal(err)
 	}
 	drained := make(chan struct{})
+	h := &host{}
 	go func() {
-		drainStderr(stderr)
+		h.drainStderr(stderr)
 		close(drained)
 	}()
 	exited := make(chan error, 1)

@@ -511,6 +511,12 @@ type host struct {
 	// tree is the child with what it starts (Output.StartTree), ended
 	// together; nil in the fake hosts
 	tree *proc.Tree
+	// said is the last of the child's stderr the drain kept: what a host
+	// that died was last told, which its error carries (quitErr), since
+	// the words that say why (Bun's crash note, a loader's missing
+	// library) are otherwise in the log alone.
+	saidMu sync.Mutex
+	said   []string
 }
 
 // wait is the child's end: what Wait said, once it has ended and the
@@ -531,7 +537,7 @@ func (h *host) wait() error {
 // after 47 hours as a systemd service). proc.Output waits for the child
 // at once and closes the pipe a moment later, which ends the reader too.
 func (h *host) reap() {
-	h.fail(quitErr(h.wait()))
+	h.fail(h.quitErr(h.wait()))
 	live.Lock()
 	delete(live.hosts, h)
 	live.Unlock()
@@ -579,12 +585,49 @@ func EndHosts() {
 	wg.Wait()
 }
 
-// quitErr is the error of a host whose child ended with err.
-func quitErr(err error) error {
+// quitErr is the error of a host whose child ended with err, with what
+// the child last said on stderr: a crash's own note (Bun's "Bun has
+// crashed", a loader's missing library) is in the error, not in the log
+// alone (#7967).
+func (h *host) quitErr(err error) error {
 	if err == nil {
 		err = errors.New("the plugin host quit")
 	}
-	return fmt.Errorf("the plugin host quit: %v", err)
+	e := fmt.Errorf("the plugin host quit: %v", err)
+	if said := h.lastSaid(); said != "" {
+		return fmt.Errorf("%w\nthe plugin host last said:\n%s", e, said)
+	}
+	return e
+}
+
+// saidKeep is how many of the child's last stderr lines its death carries.
+const saidKeep = 8
+
+// lastSaid is what the child last wrote to stderr, "" before it said
+// anything the drain kept.
+func (h *host) lastSaid() string {
+	h.saidMu.Lock()
+	defer h.saidMu.Unlock()
+	return strings.Join(h.said, "\n")
+}
+
+// noteSaid keeps one stderr line among the child's last words. Each line
+// is capped, so one long line cannot grow what an error holds.
+func (h *host) noteSaid(l string) {
+	l = strings.TrimRight(l, " \t")
+	if l = strings.TrimSpace(l); l == "" {
+		return
+	}
+	if len(l) > 200 {
+		l = l[:200]
+	}
+	h.saidMu.Lock()
+	h.said = append(h.said, l)
+	if n := len(h.said); n > saidKeep {
+		copy(h.said, h.said[n-saidKeep:])
+		h.said = h.said[:saidKeep]
+	}
+	h.saidMu.Unlock()
 }
 
 // lineLimit is the longest line this host reads from the child.
@@ -1199,7 +1242,7 @@ func startOn(ctx context.Context, bun string) (*host, bool, error) {
 	live.hosts[h] = true
 	live.Unlock()
 	go func() {
-		drainStderr(output.Err)
+		h.drainStderr(output.Err)
 		output.ErrRead()
 	}()
 
@@ -1356,14 +1399,16 @@ func (h *host) recycle() {
 
 var recycles atomic.Int64
 
-// drainStderr logs the child's stderr a line at a time. A line over 4 MiB
+// drainStderr logs the child's stderr a line at a time, keeping the last
+// of them for the error of a host that dies (noteSaid). A line over 4 MiB
 // stops the scanner; the rest is read and dropped, so the child is never left
 // blocked on a pipe nobody reads, and the log says from where.
-func drainStderr(r io.Reader) {
+func (h *host) drainStderr(r io.Reader) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64<<10), 4<<20)
 	for sc.Scan() {
 		log.Printf("plugin: %s", sc.Text())
+		h.noteSaid(sc.Text())
 	}
 	if errors.Is(sc.Err(), bufio.ErrTooLong) {
 		log.Printf("plugin: a stderr line over 4 MiB; the plugin's stderr is dropped from here on")
@@ -1395,7 +1440,7 @@ func (h *host) read(out io.Reader) {
 	if h.output != nil {
 		h.output.OutRead()
 	}
-	h.fail(quitErr(h.wait()))
+	h.fail(h.quitErr(h.wait()))
 }
 
 var (

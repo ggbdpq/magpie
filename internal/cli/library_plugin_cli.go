@@ -163,16 +163,17 @@ func listLibraryPlugins(asJSON bool) error {
 		return err
 	}
 	type item struct {
-		Name       string   `json:"name"`
-		Version    string   `json:"version,omitempty"`
-		Source     string   `json:"source,omitempty"`
-		On         bool     `json:"on"`
-		Agents     []string `json:"agents"`
-		Skills     []string `json:"skills,omitempty"`
-		MCP        []string `json:"mcp,omitempty"`
-		Hooks      []string `json:"hooks,omitempty"`
-		Subagents  []string `json:"subagents,omitempty"`
-		Extensions []string `json:"extensions,omitempty"`
+		Name       string               `json:"name"`
+		Version    string               `json:"version,omitempty"`
+		Source     string               `json:"source,omitempty"`
+		On         bool                 `json:"on"`
+		Agents     []string             `json:"agents"`
+		Skills     []string             `json:"skills,omitempty"`
+		MCP        []string             `json:"mcp,omitempty"`
+		Hooks      []string             `json:"hooks,omitempty"`
+		Subagents  []string             `json:"subagents,omitempty"`
+		Extensions []string             `json:"extensions,omitempty"`
+		Left       []library.PluginLeft `json:"left,omitempty"`
 	}
 	items := []item{}
 	for _, b := range v.Plugins {
@@ -180,7 +181,7 @@ func listLibraryPlugins(asJSON bool) error {
 		if ag == nil {
 			ag = []string{}
 		}
-		items = append(items, item{b.Name, b.Version, b.Source, !b.Off, ag, b.Skills, b.MCP, b.Hooks, b.Subagents, b.Extensions})
+		items = append(items, item{b.Name, b.Version, b.Source, !b.Off, ag, b.Skills, b.MCP, b.Hooks, b.Subagents, b.Extensions, b.Left})
 	}
 	slices.SortFunc(items, func(a, b item) int { return strings.Compare(a.Name, b.Name) })
 	if asJSON {

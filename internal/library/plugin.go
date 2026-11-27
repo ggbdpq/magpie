@@ -516,6 +516,11 @@ func readPlugin(dir, hint, force string, over map[string]any) (*plLoaded, error)
 			leave(k, "no agent magpie writes to reads it")
 		}
 	}
+	// monitors can be a folder of their own, monitors/monitors.json, where
+	// the manifest's key names nothing (#7986): said, as the key is
+	if _, err := os.Stat(filepath.Join(dir, "monitors", "monitors.json")); err == nil {
+		leave("monitors/", "no agent magpie writes to reads it")
+	}
 	return p, nil
 }
 
@@ -687,6 +692,32 @@ func toolKind(m string) (string, bool) {
 	return "", false
 }
 
+// plHookCmd is a hook's command and args as one command: a hooks.json may
+// name the program and its arguments apart ("command":"node",
+// "args":["x.js","--once"]), which every agent takes as one string only,
+// and without them the hook runs the program alone and nothing of the
+// plugin's (#7986). An argument with a shell character in it goes in
+// single quotes, so a path with a space in it stays one word and the
+// plugin's variables in it are replaced inside the quotes just the same.
+func plHookCmd(hm map[string]any) string {
+	cmd := plStr(hm["command"])
+	args, _ := hm["args"].([]any)
+	for _, a := range args {
+		if a == nil {
+			continue
+		}
+		s := strings.TrimSpace(fmt.Sprint(a))
+		if s == "" {
+			continue
+		}
+		if strings.ContainsAny(s, " \t'\"$`\\;&|<>()") {
+			s = "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+		}
+		cmd += " " + s
+	}
+	return cmd
+}
+
 // plHooksOf reads a hooks.json: {"hooks": {Event: [...]}} or the map itself.
 // A hook whose event and matcher are another agent's the same moment too
 // is the portable one; any other is given to Claude Code alone, as
@@ -729,7 +760,7 @@ func plHooksOfAgent(doc map[string]any, bundle, root string, sub func(string) st
 					left = append(left, PluginLeft{What: ev + " hook", Why: "a hook of type " + t + " isn't a command: agents take commands only"})
 					continue
 				}
-				cmd := sub(quoteRoot(pluginEnvRefs(plStr(hm["command"]), bundle), root))
+				cmd := sub(quoteRoot(pluginEnvRefs(plHookCmd(hm), bundle), root))
 				if cmd == "" {
 					continue
 				}
@@ -795,7 +826,7 @@ func agyPluginHooks(doc map[string]any, bundle, root string, sub func(string) st
 			left = append(left, PluginLeft{What: ev + " hook", Why: "a hook of type " + t + " isn't a command: agents take commands only"})
 			return
 		}
-		cmd := sub(plStr(hm["command"]))
+		cmd := sub(plHookCmd(hm))
 		if cmd == "" {
 			return
 		}
@@ -1293,6 +1324,18 @@ func installPlugins(p *PluginProbe, input string, names, agents []string, as str
 	return res, err
 }
 
+// temporarySource is why a source in the system's temporary folder won't
+// be there for an update, or "" when the source isn't one.
+func temporarySource(input string) string {
+	if !filepath.IsAbs(input) {
+		return ""
+	}
+	if t := os.TempDir(); t != "" && (input == t || strings.HasPrefix(input, t+string(os.PathSeparator))) {
+		return "a temporary folder, gone when the system cleans it: an update can't fetch it again; install from a folder you keep or a repository"
+	}
+	return ""
+}
+
 // installPlugin puts one plugin in l: its files in the library's folder,
 // its parts among the library's items.
 func installPlugin(l *Library, pl *plLoaded, dir, input, pick string, agents []string) ([]Problem, error) {
@@ -1300,6 +1343,12 @@ func installPlugin(l *Library, pl *plLoaded, dir, input, pick string, agents []s
 	b := &Plugin{Name: pl.name, Description: pl.description, Version: pl.version, Source: input, Pick: pick,
 		Agents: orNone(slices.Compact(slices.Sorted(slices.Values(agents)))), Installed: time.Now().Format(time.RFC3339),
 		Extensions: pl.extensions}
+	// the files are copied into the library and stay there, but an update
+	// fetches from the source again: one in a temporary folder will be gone
+	// by then, which is said rather than found out after a restart (#7986)
+	if why := temporarySource(input); why != "" {
+		b.Left = append(b.Left, PluginLeft{What: "source " + input, Why: why})
+	}
 	if old != nil {
 		b.Agents, b.Off = old.Agents, old.Off
 		if len(agents) > 0 {
@@ -1322,6 +1371,21 @@ func installPlugin(l *Library, pl *plLoaded, dir, input, pick string, agents []s
 	// what the old version made goes, to be made again
 	if old != nil {
 		removePluginParts(l, old)
+	}
+	// the old version's folder goes to the change's backups, as a skill's
+	// does when it is taken out: an update or an install over it is a
+	// replacement the user may want back (#7986)
+	if _, err := os.Lstat(pluginDir(pl.name)); err == nil {
+		aside := filepath.Join(BackupDir(), time.Now().Format("2006-01-02_15-04-05.000"), "plugins", pl.name)
+		if err := os.MkdirAll(filepath.Dir(aside), 0o700); err != nil {
+			os.RemoveAll(stage)
+			return nil, err
+		}
+		if err := move(pluginDir(pl.name), aside); err != nil {
+			os.RemoveAll(stage)
+			os.RemoveAll(aside)
+			return nil, err
+		}
 	}
 	os.RemoveAll(pluginDir(pl.name))
 	if err := os.Rename(stage, pluginDir(pl.name)); err != nil {

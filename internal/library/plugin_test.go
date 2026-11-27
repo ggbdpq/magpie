@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -290,5 +291,94 @@ func TestLibraryTakesAProfilesAgentID(t *testing.T) {
 		if checkAgent(id) == nil {
 			t.Errorf("%q taken for an agent's id", id)
 		}
+	}
+}
+
+// A hook written with a command and args (open-artifact's hooks/hooks.json,
+// #7986) is carried whole: the args go onto the command, each quoted where
+// it needs it, and the plugin's variables in them resolve as in the command.
+func TestPluginHookArgsCarried(t *testing.T) {
+	h := sandbox(t)
+	pluginAgents(t, h)
+	src := filepath.Join(t.TempDir(), "open-artifact")
+	write(t, filepath.Join(src, ".claude-plugin/plugin.json"), `{"name":"open-artifact","version":"0.17.0"}`)
+	write(t, filepath.Join(src, "hooks/hooks.json"), `{"hooks":{
+	  "SessionStart":[{"hooks":[{"type":"command","command":"node","args":["${CLAUDE_PLUGIN_ROOT}/hooks/activate.js","--once","a b"]}]}]}}`)
+
+	ok(t)(InstallPlugins(src, nil, []string{"claude"}))
+	v := View0(t)
+	if len(v.Hooks) != 1 {
+		t.Fatalf("hooks: %+v", v.Hooks)
+	}
+	cmd := v.Hooks[0].Command
+	want := "'" + filepath.Join(Dir(), "plugins", "open-artifact", "hooks/activate.js") + "'"
+	if !strings.HasPrefix(cmd, "node ") || !strings.Contains(cmd, want) || !strings.Contains(cmd, "--once") || !strings.Contains(cmd, " 'a b'") {
+		t.Errorf("hook command lost its args:\n%s", cmd)
+	}
+}
+
+// A monitors/ folder a plugin has (#7986) is said, as the manifest's own
+// key is: no agent magpie writes to reads it, and the install says so.
+func TestPluginMonitorsSaid(t *testing.T) {
+	h := sandbox(t)
+	pluginAgents(t, h)
+	src := filepath.Join(t.TempDir(), "open-artifact")
+	write(t, filepath.Join(src, ".claude-plugin/plugin.json"), `{"name":"open-artifact"}`)
+	write(t, filepath.Join(src, "skills/chat/SKILL.md"), "---\nname: chat\ndescription: Chat\n---\nChat.\n")
+	write(t, filepath.Join(src, "monitors/monitors.json"), `{"monitors":{"idle":{"command":"node watcher.js"}}}`)
+
+	res := ok(t)(InstallPlugins(src, nil, []string{"claude"}))
+	v := View0(t)
+	if len(v.Plugins) != 1 {
+		t.Fatalf("plugins: %+v", v.Plugins)
+	}
+	said := slices.ContainsFunc(v.Plugins[0].Left, func(x PluginLeft) bool { return x.What == "monitors/" })
+	if !said {
+		t.Errorf("the monitors folder went unsaid: %+v", v.Plugins[0].Left)
+	}
+	if !slices.ContainsFunc(res.Skipped, func(p Problem) bool { return strings.Contains(p.Error, "monitors") }) {
+		t.Errorf("the install's result says nothing of the monitors: %+v", res.Skipped)
+	}
+}
+
+// An update of a plugin, or an install over one, keeps the folder the old
+// version had in the library, beside the change's other backups (#7986).
+func TestPluginInstallBacksUpTheOldFolder(t *testing.T) {
+	h := sandbox(t)
+	pluginAgents(t, h)
+	src := filepath.Join(t.TempDir(), "open-artifact")
+	write(t, filepath.Join(src, ".claude-plugin/plugin.json"), `{"name":"open-artifact","version":"0.17.0"}`)
+	write(t, filepath.Join(src, "skills/chat/SKILL.md"), "---\nname: chat\ndescription: Chat\n---\nOne.\n")
+	ok(t)(InstallPlugins(src, nil, []string{"claude"}))
+
+	write(t, filepath.Join(src, "skills/chat/SKILL.md"), "---\nname: chat\ndescription: Chat\n---\nTwo.\n")
+	write(t, filepath.Join(src, ".claude-plugin/plugin.json"), `{"name":"open-artifact","version":"0.18.0"}`)
+	ok(t)(InstallPlugins(src, nil, []string{"claude"}))
+
+	matches, _ := filepath.Glob(filepath.Join(BackupDir(), "*", "plugins", "open-artifact", ".claude-plugin", "plugin.json"))
+	if len(matches) != 1 {
+		t.Errorf("no backup of the old plugin's folder: %v", matches)
+	}
+	if v := View0(t); v.Plugins[0].Version != "0.18.0" {
+		t.Errorf("the new version didn't take: %+v", v.Plugins[0])
+	}
+}
+
+// A source in a temporary folder is said: it won't be there when an update
+// looks for it (#7986).
+func TestPluginTemporarySourceSaid(t *testing.T) {
+	h := sandbox(t)
+	pluginAgents(t, h)
+	src := filepath.Join(t.TempDir(), "open-artifact")
+	write(t, filepath.Join(src, ".claude-plugin/plugin.json"), `{"name":"open-artifact"}`)
+	write(t, filepath.Join(src, "skills/chat/SKILL.md"), "---\nname: chat\ndescription: Chat\n---\nChat.\n")
+
+	ok(t)(InstallPlugins(src, nil, []string{"claude"}))
+	v := View0(t)
+	said := slices.ContainsFunc(v.Plugins[0].Left, func(x PluginLeft) bool {
+		return strings.Contains(x.What, "source") && strings.Contains(x.Why, "temporary")
+	})
+	if !said {
+		t.Errorf("a temporary source went unsaid: %+v", v.Plugins[0].Left)
 	}
 }

@@ -420,6 +420,11 @@ type Request struct {
 	// (AI Studio's, or a proxy in front of it on this machine or the LAN),
 	// which gives the model's thoughts only when asked in thinking_config.
 	GeminiCompat bool
+	// googleRefused is a Gemini-looking route whose backend turned away
+	// Gemini's google fields (thinkingConfigRefused, Poe behind OmniRoute,
+	// #7821): its tool calls go back without extra_content.google too
+	// (#7935, aron-intframe).
+	googleRefused bool
 	// OffLevel is the level such an API is asked to think at when the
 	// client turned reasoning off: Gemini 3 can't stop thinking, and thinks
 	// least at minimal, or at its lowest level where it has no minimal or

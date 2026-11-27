@@ -9195,6 +9195,13 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 			r := *req
 			r.GeminiCompat, req = want, &r
 		}
+		if refused := to == provider.Chat && geminiCompat(p.VendorHost(), model) && !s.fits(p.ID, thinkingConfigRefused(model), to); refused != req.googleRefused {
+			// a Gemini-looking route whose backend refused Gemini's google
+			// fields (#7821): its replayed tool calls go without
+			// extra_content.google (#7935, aron-intframe)
+			r := *req
+			r.googleRefused, req = refused, &r
+		}
 		if req.GeminiCompat {
 			// Gemini 3 turns away a thinking level the model hasn't
 			// (gemini-3.8-flash has no minimal): reasoning off goes at the

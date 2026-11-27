@@ -488,8 +488,12 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 	// api.minimax.cn is MiniMax China's host beside api.minimaxi.com.
 	inlineThink := strings.HasSuffix(host, "minimax.io") || strings.HasSuffix(host, "minimaxi.com") || strings.HasSuffix(host, "minimax.cn")
 	// Gemini wants each step's thought signature back on its first call
-	// (#687), and one it can't check for a step it didn't sign
-	gemini := geminiCompat(host, model)
+	// (#687), and one it can't check for a step it didn't sign. A route
+	// whose backend turned Gemini's google fields away (#7821) takes the
+	// thinking config's refusal as its own: replayed calls go without
+	// extra_content there, or the round after a tool result fails the
+	// same refusal (#7935, aron-intframe)
+	gemini := geminiCompat(host, model) && !r.googleRefused
 	// A tool message holds text only, so the images tools returned go to
 	// the model in a user message after the tool messages, as the start of
 	// the user's own message when one comes next: some models' chat

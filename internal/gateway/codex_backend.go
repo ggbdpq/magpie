@@ -4348,7 +4348,10 @@ func itemNotFound(rec *recorder) bool {
 // Mmx233, a Codex subagent's history), and Grok's backend an
 // agent_message 422 "unknown item type", and a local Qwen server's
 // Responses API 400 "Unsupported input item: agent_message" (cyberestro
-// on X). It comes as that status, as
+// on X), and hy4-openai's whitelist of the same kinds 400
+// "input[261].type must be one of: message, function_call, …", another
+// code and no param, for the custom_tool_call items a compaction after
+// apply_patch replays (#8008). It comes as that status, as
 // another magpie's message in front of it ("Remote magpie: Command Code:
 // {…}", a 400 or its 502), or as an error event in the summary's stream.
 // The conversation as text is messages alone, which it takes. A refusal
@@ -4364,7 +4367,7 @@ func inputKindRefused(rec *recorder, err error) bool {
 	return inputKindWords.Match(rec.body.Bytes())
 }
 
-var inputKindWords = lazyre.New(`(?i)unsupported[ _]input[ _]item|unknown item type`)
+var inputKindWords = lazyre.New(`(?i)unsupported[ _]input[ _]item|unknown item type|input\[\d+\]\.type must be one of`)
 
 // compactFailure names who answered a summary request with a failure — the
 // provider, the model and the provider's base URL — and what it said.

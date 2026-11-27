@@ -43,6 +43,22 @@ func (s *sentBody) Read(p []byte) (int, error) {
 
 func (s *sentBody) Close() error { return nil }
 
+// HeldBody is the bytes SetBody gave req whole, nil when it gave none —
+// another reader's body — or once LetGo said the request was answered.
+// A plugin's fetch reads them without a second copy of the whole
+// request (#7596).
+func HeldBody(req *http.Request) []byte {
+	if req == nil || req.Body == nil {
+		return nil
+	}
+	if s, ok := req.Body.(*sentBody); ok {
+		if p := s.h.b.Load(); p != nil {
+			return *p
+		}
+	}
+	return nil
+}
+
 // SetBody makes b req's body, as NewRequest would from a bytes.Reader,
 // read again by GetBody for a retry or a redirect until LetGo.
 func SetBody(req *http.Request, b []byte) {

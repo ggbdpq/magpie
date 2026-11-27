@@ -768,7 +768,11 @@ func WithEffort(ctx context.Context, effort string) context.Context {
 func pluginFetch(pp plugin.Provider, account string, req *http.Request) (*http.Response, error) {
 	ctx := req.Context()
 	var body []byte
-	if req.Body != nil {
+	if held := HeldBody(req); held != nil {
+		// the gateway's own bytes, held until the answer: no second copy
+		// of a whole request body (#7596)
+		body = held
+	} else if req.Body != nil {
 		// read into the length said: io.ReadAll grows from 512 bytes, so a
 		// 1 MB request was some 3 MB read (#3472)
 		buf := bytes.NewBuffer(make([]byte, 0, max(req.ContentLength, 0)+bytes.MinRead))

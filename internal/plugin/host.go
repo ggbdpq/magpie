@@ -2152,7 +2152,7 @@ func hostAddr(env []string) string {
 // to "direct" couldn't go around them. host.js gives each fetch the proxy
 // they name instead. A SOCKS5 one, which Bun can't use, is bridged.
 func hostEnv(env []string) []string {
-	out := make([]string, 0, len(env)+1)
+	out := make([]string, 0, len(env)+2)
 	addr := hostAddr(env)
 	for _, e := range env {
 		k, v, _ := strings.Cut(e, "=")
@@ -2167,7 +2167,40 @@ func hostEnv(env []string) []string {
 			out = append(out, e)
 		}
 	}
+	out = homeEnv(out)
 	return append(out, "MAGPIE_ADDR="+addr)
+}
+
+// homeEnv gives the host a HOME when the process has none. Windows sets
+// USERPROFILE, not HOME; a plugin that joins "$HOME/.config/magpie" with
+// an empty HOME gets a relative path and writes under the host's working
+// directory (C:\.config\magpie). USERPROFILE is its home there, and
+// os.UserHomeDir covers the other platforms that don't give us HOME; an
+// explicit non-empty HOME is always left alone (#4296).
+func homeEnv(env []string) []string {
+	value := func(name string) string {
+		found := ""
+		for _, e := range env {
+			k, v, _ := strings.Cut(e, "=")
+			if strings.EqualFold(k, name) && v != "" {
+				found = v
+			}
+		}
+		return found
+	}
+	if value("HOME") != "" {
+		return env
+	}
+	home := value("USERPROFILE")
+	if home == "" {
+		if h, err := os.UserHomeDir(); err == nil {
+			home = h
+		}
+	}
+	if home == "" {
+		return env
+	}
+	return append(env, "HOME="+home)
 }
 
 // Fetch sends r through the provider's plugin — its loader's fetch, or

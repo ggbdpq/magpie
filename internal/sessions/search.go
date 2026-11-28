@@ -390,6 +390,9 @@ func gatewayFileTitle(path, agent, id string) (title string, whole bool) {
 		lines++
 		var turn GatewayTurn
 		if json.Unmarshal(scan.Bytes(), &turn) == nil && turn.Agent == agent && turn.Session == id {
+			if turn.Title != "" {
+				return turn.Title, true
+			}
 			if t := firstAsked(turn.Input); t != "" {
 				return t, true
 			}

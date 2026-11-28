@@ -44,6 +44,12 @@ type GatewayTurn struct {
 	Input   []Part    `json:"input"`
 	Output  []Part    `json:"output"`
 	Cut     bool      `json:"cut,omitempty"`
+	// Title is the first thing the user asked, picked before bounding the
+	// input: the system prompt and tool definitions are stored first and can
+	// fill the 64 KiB budget, but they must not crowd out the question that
+	// names the session (#6541). Older turns have no title and fall back to
+	// firstAsked over the stored input.
+	Title string `json:"title,omitempty"`
 }
 
 func gatewayDir() string { return filepath.Join(settings.Dir(), "gateway-conversations") }
@@ -109,6 +115,12 @@ func saveGatewayTurn(turn GatewayTurn, generation uint64) error {
 			out = append(out, p)
 		}
 		return out
+	}
+	// Pick the title before bounding: firstAsked stops at the first user text
+	// part, so it needs the unbounded input when a long system prompt or tool
+	// schema would otherwise crowd that part out of the stored turn (#6541).
+	if turn.Title == "" {
+		turn.Title = redact.Scrub(firstAsked(turn.Input))
 	}
 	turn.Input = bound(turn.Input)
 	turn.Output = bound(turn.Output)

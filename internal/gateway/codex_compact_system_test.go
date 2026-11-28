@@ -96,6 +96,7 @@ func errorEvent(typ, msg string) func(http.ResponseWriter) {
 func TestCodexCompactSystemRefusedAsksAgainDeveloper(t *testing.T) {
 	for name, refusal := range map[string]func(http.ResponseWriter){
 		"passed through":              refuseWith(400, chatgptSystem400),
+		"vllm system position":        refuseWith(400, `{"error":{"message":"System message must be at the beginning.","type":"invalid_request_error"}}`),
 		"sub2api":                     refuseWith(400, sub2apiSystem400),
 		"older sub2api":               refuseWith(400, sub2apiOld400),
 		"in the stream":               errorEvent("invalid_request_error", "System messages are not allowed"),

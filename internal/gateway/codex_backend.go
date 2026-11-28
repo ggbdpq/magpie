@@ -4308,7 +4308,13 @@ var upstreamFailedWords = lazyre.New(`(?i)upstream request failed`)
 // failed" as an older one words every refusal (upstreamFailed) — as a 4xx,
 // or as an error event in the summary's 200 stream, which had counted
 // toward the guard without either retry. The summary is asked again the
-// way the turns go (askAsSent), and as text when that is refused too.
+// way the turns go (askAsSent), and as text when that is refused too. A
+// self-hosted vLLM that serves the Responses API but validates a message
+// role's place ("System message must be at the beginning.", #7301) says
+// the same in its own words: a summary whose developer message was swapped
+// for a trailing system one is refused where the ordinary turns, developer
+// as sent, are taken. The phrases stay tied to a system message, so a
+// refusal of some other message's position is not read as one.
 func roleRefused(rec *recorder, err error) bool {
 	if rec.status >= 400 {
 		return upstreamFailed(rec) || rec.status == http.StatusBadRequest && systemRefusedWords.Match(rec.body.Bytes())
@@ -4316,7 +4322,7 @@ func roleRefused(rec *recorder, err error) bool {
 	return err != nil && (systemRefusedWords.MatchString(err.Error()) || upstreamFailedWords.MatchString(err.Error()) || vendorUnsaidWords.MatchString(err.Error()))
 }
 
-var systemRefusedWords = lazyre.New(`(?i)system messages are not allowed`)
+var systemRefusedWords = lazyre.New(`(?i)system messages are not allowed|system message must be at the beginning`)
 
 // summaryTooLarge is a summary request refused for its size: past the
 // vendor's byte cap (413; DeepSeek's "Failed to buffer the request body:

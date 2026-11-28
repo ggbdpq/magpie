@@ -4042,6 +4042,9 @@ func sharedEntry(p *Provider, m catalog.Model, s settings.Settings) Entry {
 		Images: images, ImageInput: imageInput, Context: ctx, WindowSet: p.ContextOf(m.ID) > 0, MaxContext: m.MaxContext, Output: output, OutputSet: outputOf(s, p.ID, m.ID) > 0, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Tiers: m.Tiers, Released: m.Released,
 		Inputs: InputsOf(m), Outputs: m.OutputModalities, Codex: m.Codex,
 		AlwaysThinks: m.AlwaysThinks, DynamicTools: m.DynamicTools, DefaultEffort: m.DefaultEffort}
+	// a model whose source listed none of the modalities its maker
+	// documents takes them and gives them all the same (#3715)
+	e.Inputs, e.Outputs = withKnownModalities(m.ID, e.Inputs, e.Outputs)
 	if lv, ok := catalog.CodexLevels(m.Codex); ok {
 		// the levels the vendor lists the model at in Codex's shape are
 		// its word, over models.dev's for the same id (Decorate)
@@ -4102,6 +4105,51 @@ func (e Entry) Modalities() (in, out []string) {
 		in = []string{"text"}
 	}
 	return in, slices.Clone(e.Outputs)
+}
+
+// knownModalities are the inputs and outputs a model takes and gives as its
+// maker documents them, filled in where its source (a plugin's model list,
+// models.dev, …) named none of them. GLM-5.3 and GLM-5.3-Flash take and
+// give audio and video as Zhipu AI documents, but some plugins' lists omit
+// them, so magpie advertised no video and clients that read /v1/models
+// (ZCode's Vercel AI SDK) rejected video/mp4 file parts with
+// UnsupportedFunctionality, without the request ever reaching the model
+// (#3715). Add a model here once its maker's capabilities are confirmed;
+// the map is keyed by the bare model id so it covers every provider that
+// serves the same model. models unknown here keep magpie's fail-closed
+// default: what their source named, no more.
+var knownModalities = map[string]struct {
+	in  []string
+	out []string
+}{
+	"glm-5.3":       {[]string{"text", "image", "audio", "video", "pdf"}, []string{"text"}},
+	"glm-5.3-flash": {[]string{"text", "image", "audio", "video", "pdf"}, []string{"text"}},
+}
+
+// withKnownModalities adds the inputs and outputs a model is known to take
+// or give where its source listed none of them, without dropping any the
+// source did name. A model not in knownModalities is left as it is.
+func withKnownModalities(id string, in, out []string) (nIn, nOut []string) {
+	k, ok := knownModalities[id]
+	if !ok {
+		return in, out
+	}
+	nIn = appendMissing(in, k.in)
+	nOut = appendMissing(out, k.out)
+	return nIn, nOut
+}
+
+func appendMissing(base, extra []string) []string {
+	if len(base) == 0 {
+		return slices.Clone(extra)
+	}
+	out := slices.Clone(base)
+	for _, x := range extra {
+		if !slices.Contains(out, x) {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // EntryOf is the model as the agents see it, by the id they ask for. It is

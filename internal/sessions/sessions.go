@@ -972,11 +972,25 @@ func listCCFiles(agent, dir string) []file {
 			ccListed.Store(dir, names.names())
 		}
 	}()
+	// Two names in projects/ can be one folder: a link left under a project's
+	// old name after it moved points at the folder now listed under its new
+	// name (#6578). Walking both counts its sessions twice. Keep the first
+	// name for each real directory; a folder that is itself a link to outside
+	// projects/ is still read, since no other name resolves to it.
+	seenProjects := make(map[string]struct{})
 	for _, project := range readDirectory(projects) {
 		if !dirent.IsFolder(projects, project) {
 			continue
 		}
 		root := filepath.Join(projects, project.Name())
+		real, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			real = root
+		}
+		if _, seen := seenProjects[real]; seen {
+			continue
+		}
+		seenProjects[real] = struct{}{}
 		for _, e := range readDirectory(root) {
 			if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
 				if bridged(agent, strings.TrimSuffix(e.Name(), ".jsonl")) {

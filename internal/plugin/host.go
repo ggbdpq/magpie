@@ -1012,7 +1012,7 @@ func (h *host) kill() {
 		h.tree.Kill()
 		return
 	}
-	if h.cmd.Process != nil {
+	if h.cmd != nil && h.cmd.Process != nil {
 		_ = h.cmd.Process.Kill()
 	}
 }
@@ -1718,6 +1718,13 @@ func (h *host) fail(err error) {
 				break drain
 			}
 		}
+		// A host failed by an I/O error (a write to its stdin, a line too
+		// long) can still have a live child: nothing has waited for it.
+		// Ending the logical host alone leaves a live magpie-bun behind
+		// for every such failure, until the container's pids limit is hit
+		// and every fork/exec 502s (#6464). reap's fail is a no-op here:
+		// its wait already reaped the child. kill is idempotent.
+		h.kill()
 	})
 }
 

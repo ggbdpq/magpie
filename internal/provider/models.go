@@ -1847,10 +1847,26 @@ func (p Provider) Exposed() []catalog.Model {
 	return p.ExposedOf(p.Available())
 }
 
+// ExposedForRouting is the models a route group may match. With no picks of
+// its own a provider exposes the first manyModels to an agent's picker; that
+// slice is a display limit, not the user's choice, so a pattern group sees
+// the whole servable catalog. Picks and Select none are the user's choice
+// and stay authoritative (#8059).
+func (p Provider) ExposedForRouting() []catalog.Model {
+	if len(p.Models) > 0 {
+		return p.Exposed()
+	}
+	return p.exposedOf(p.Available(), true)
+}
+
 // ExposedOf is Exposed of avail, p.Available() as the caller has already
 // read it: an editor's look at a provider read the vendor's list four
 // times over, each built afresh with its names and levels.
 func (p Provider) ExposedOf(avail []catalog.Model) []catalog.Model {
+	return p.exposedOf(avail, false)
+}
+
+func (p Provider) exposedOf(avail []catalog.Model, routing bool) []catalog.Model {
 	if p.ServesNone() || p.waitsForPicks() {
 		return nil
 	}
@@ -1910,7 +1926,7 @@ func (p Provider) ExposedOf(avail []catalog.Model) []catalog.Model {
 		avail = catalog.BestInFamily(avail)
 	}
 	// another magpie's list is already the models its user exposed
-	if len(avail) <= manyModels || p.IsRemoteMagpie() {
+	if routing || len(avail) <= manyModels || p.IsRemoteMagpie() {
 		return avail
 	}
 	// More than an agent's picker wants. Show the first slice of the
@@ -3961,6 +3977,33 @@ func heldOffEntries() []Entry {
 
 // entriesOf is the catalog of the providers of, less the models off reports.
 func entriesOf(of func(Provider) bool, off func(pid, model string) bool) []Entry {
+	return entriesWith(of, off, Provider.Exposed)
+}
+
+// routingEntries adds the models the agent picker's slice left out to a
+// catalog a route group reads: a pattern still runs before the first 24,
+// but only over models the provider serves and the user did not pick away
+// or turn off (#8059). The caller's entries stay first and in their order.
+func routingEntries(entries []Entry) []Entry {
+	return heldFrom("routing entries", entries, extendRoutingEntries)
+}
+
+func extendRoutingEntries(entries []Entry) []Entry {
+	full := entriesWith(Provider.On, disabledNow(), Provider.ExposedForRouting)
+	have := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		have[e.ID] = true
+	}
+	out := slices.Clone(entries)
+	for _, e := range full {
+		if !have[e.ID] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func entriesWith(of func(Provider) bool, off func(pid, model string) bool, exposed func(Provider) []catalog.Model) []Entry {
 	var out []Entry
 	s := settings.Load()
 	gone := retiredNow() // its vendor said it is retired (retired.go)
@@ -3968,7 +4011,7 @@ func entriesOf(of func(Provider) bool, off func(pid, model string) bool) []Entry
 		if !of(p) || p.DecideOnly() { // a dedicated decision API only routes
 			continue
 		}
-		for _, m := range p.Exposed() {
+		for _, m := range exposed(p) {
 			if off(p.ID, m.ID) { // the user turned it off (#1867)
 				continue
 			}

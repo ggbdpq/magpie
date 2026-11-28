@@ -548,7 +548,9 @@ func Groups() []Group {
 // groups over every model (FindGroup, then the groups' entries). Each
 // caller gets a copy of its own to change.
 func groupsIn(entries []Entry) []Group {
-	return cloneGroups(heldFrom("groups", entries, buildGroupsIn))
+	return cloneGroups(heldFrom("groups", entries, func(in []Entry) []Group {
+		return buildGroupsIn(routingEntries(in))
+	}))
 }
 
 // sharedGroups is Groups for a caller that only reads them: no copy, so
@@ -565,7 +567,9 @@ func sharedGroups() []Group {
 // rules for the one it wanted, each time: 4 MB of the window's 15-second
 // drift poll, and once per request on a group.
 func sharedGroupsIn(entries []Entry) []Group {
-	return heldFrom("groups", entries, buildGroupsIn)
+	return heldFrom("groups", entries, func(in []Entry) []Group {
+		return buildGroupsIn(routingEntries(in))
+	})
 }
 
 // cloneGroup is g with nothing shared with it (cloneGroups).

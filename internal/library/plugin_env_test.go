@@ -156,6 +156,47 @@ func TestPluginEnvRefsEachSpelling(t *testing.T) {
 // A command server is given both variables, as Claude Code gives them; a
 // subagent's prompt and a skill's SKILL.md have ${CLAUDE_PLUGIN_ROOT}
 // resolved, as Claude Code resolves it in their Markdown.
+// A hook can assign to process.env.CLAUDE_PLUGIN_ROOT itself. Claude Code's
+// hook entry sets the variable first (pluginHookEnv), so the assignment is
+// valid and must survive: replacing the left side with a folder literal
+// writes "'P'=r", which every plugin hook then fails to parse (#8057).
+func TestPluginEnvAssignmentTargetIsNotRewritten(t *testing.T) {
+	sandbox(t)
+	root := filepath.ToSlash(pluginDir("p"))
+	for _, c := range []struct{ in, want string }{
+		{`process.env.CLAUDE_PLUGIN_ROOT=r;`, `process.env.CLAUDE_PLUGIN_ROOT=r;`},
+		{`process.env.CLAUDE_PLUGIN_ROOT=n;`, `process.env.CLAUDE_PLUGIN_ROOT=n;`},
+		{`process.env.CLAUDE_PLUGIN_ROOT=process.env.PLUGIN_ROOT;`, `process.env.CLAUDE_PLUGIN_ROOT=process.env.PLUGIN_ROOT;`},
+		{`process.env['CLAUDE_PLUGIN_ROOT'] = r;`, `process.env['CLAUDE_PLUGIN_ROOT'] = r;`},
+		{`ENV['CLAUDE_PLUGIN_ROOT']=r;`, `ENV['CLAUDE_PLUGIN_ROOT']=r;`},
+		{`$env:CLAUDE_PLUGIN_ROOT='r';`, `$env:CLAUDE_PLUGIN_ROOT='r';`},
+		{`x=process.env.CLAUDE_PLUGIN_ROOT;`, `x='` + root + `';`},
+		{`if (process.env.CLAUDE_PLUGIN_ROOT === 'x') r();`, `if ('` + root + `' === 'x') r();`},
+	} {
+		if got := pluginEnvRefs(c.in, "p"); got != c.want {
+			t.Errorf("#8057 %s\n got %s\nwant %s", c.in, got, c.want)
+		}
+	}
+}
+
+// The same assignment through the real install path: the command Claude Code
+// receives still assigns to the variable, after its exported environment.
+func TestPluginHookAssignmentWrittenToClaudeSettings(t *testing.T) {
+	h := sandbox(t)
+	pluginAgents(t, h)
+	src := filepath.Join(t.TempDir(), "assign")
+	write(t, filepath.Join(src, ".claude-plugin/plugin.json"), `{"name":"assign"}`)
+	write(t, filepath.Join(src, "hooks/hooks.json"), `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"node -e \"process.env.CLAUDE_PLUGIN_ROOT=r;\""}]}]}}`)
+	ok(t)(InstallPlugins(src, nil, []string{"claude"}))
+	s := read(t, filepath.Join(h, ".claude/settings.json"))
+	if !strings.Contains(s, `process.env.CLAUDE_PLUGIN_ROOT=r;`) {
+		t.Fatalf("#8057 the assignment was rewritten in settings.json:\n%s", s)
+	}
+	if !strings.Contains(s, "export CLAUDE_PLUGIN_ROOT=") {
+		t.Fatalf("#8057 the hook env prefix is missing:\n%s", s)
+	}
+}
+
 func TestPluginPartsGetItsFolders(t *testing.T) {
 	h := sandbox(t)
 	pluginAgents(t, h)

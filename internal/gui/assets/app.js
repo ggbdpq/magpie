@@ -11379,7 +11379,7 @@ function addFormModels(ex) {
   go.onclick = async (e) => {
     e.preventDefault();
     const body = { ...asTyped(), preset: draft.preset || "", name: draft.name || "" };
-    if (!body.chat && !body.responses && !body.anthropic && !body.modelsURL) { status(t("Type the base URL first"), "warn"); return; }
+    if (!body.chat && !body.responses && !body.anthropic && !body.gemini && !body.modelsURL) { status(t("Type the base URL first"), "warn"); return; }
     go.classList.add("busy");
     out.hidden = false;
     out.replaceChildren(el("span", "hint", t("Asking the vendor…")));

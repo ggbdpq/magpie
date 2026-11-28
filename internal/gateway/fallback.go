@@ -1971,8 +1971,13 @@ func promptRefused(status int, body []byte) bool {
 // tagged union has no member for, a DeepSeek channel's 422 "Input tag
 // 'reasoning' found using 'type' does not match any of the expected tags:
 // 'message', 'tool_result'" (yyhhyyyyyy on X): the same kind as xAI's
-// unknown item type, which DeepSeek's own API, another member, takes.
-var shapeWords = lazyre.New(`(?i)failed to deserialize|unknown (item |content |input )?(type|variant|field|parameter)|does not match any of the expected tags|unknown_parameter|unrecognized (request argument|field|parameter)|extra (inputs|fields) are not permitted|additional properties are not allowed|schema exceeds the maximum (nesting )?depth|schema[^"]{0,60}\bnesting depth\b|function_declarations\[\d+\]\.parameters\b|schema specified other fields alongside any_?of|InferHub\.001001005\.400`)
+// unknown item type, which DeepSeek's own API, another member, takes. And
+// an OpenAI-compatible relay re-exposing DeepSeek (AutoDL's 400 "The
+// parameter `tools.type` specified in the request are not valid: invalid
+// value: `deepseek_web_search`, value must be `function`", #7209) that
+// won't take a server-side tool type the vendor's own API serves: the
+// next member, DeepSeek official, answers the same request.
+var shapeWords = lazyre.New(`(?i)failed to deserialize|unknown (item |content |input )?(type|variant|field|parameter)|does not match any of the expected tags|unknown_parameter|unrecognized (request argument|field|parameter)|extra (inputs|fields) are not permitted|additional properties are not allowed|schema exceeds the maximum (nesting )?depth|schema[^"]{0,60}\bnesting depth\b|function_declarations\[\d+\]\.parameters\b|schema specified other fields alongside any_?of|InferHub\.001001005\.400|invalid value[^\n]{0,120}value must be|specified in the request are not valid`)
 
 // unsaidWords are Command Code's Provider API turning a request away with
 // nothing but a trace id: {"message":"invalid request error trace_id:

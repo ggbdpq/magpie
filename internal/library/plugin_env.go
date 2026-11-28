@@ -87,6 +87,14 @@ func pluginEnvRefs(cmd, name string) string {
 			}
 		}
 		b.WriteString(cmd[last:m[0]])
+		if pluginEnvAssignedAt(cmd, m[1]) {
+			// The hook assigns to the variable itself (Claude Code's entry
+			// sets it first). A folder on the left of "=" is not a JS
+			// lvalue, so leave the whole reference as it was (#8057).
+			b.WriteString(cmd[m[0]:m[1]])
+			last = m[1]
+			continue
+		}
 		// forward slashes: every runtime here takes them on Windows too,
 		// and a backslash would be an escape in the literal
 		p := filepath.ToSlash(folder(v))
@@ -98,12 +106,43 @@ func pluginEnvRefs(cmd, name string) string {
 		last = m[1]
 	}
 	b.WriteString(cmd[last:])
-	return pluginEnvShell.ReplaceAllStringFunc(b.String(), func(s string) string {
-		if strings.Contains(s, "DATA") {
-			return pluginData(name)
+	shell := b.String()
+	var out strings.Builder
+	last = 0
+	for _, m := range pluginEnvShell.FindAllStringSubmatchIndex(shell, -1) {
+		out.WriteString(shell[last:m[0]])
+		s := shell[m[0]:m[1]]
+		if pluginEnvAssignedAt(shell, m[1]) {
+			out.WriteString(s)
+		} else if strings.Contains(s, "DATA") {
+			out.WriteString(pluginData(name))
+		} else {
+			out.WriteString(pluginDir(name))
 		}
-		return pluginDir(name)
-	})
+		last = m[1]
+	}
+	out.WriteString(shell[last:])
+	return out.String()
+}
+
+// pluginEnvAssignedAt reports whether the reference ending at end is the
+// left side of an assignment, including compound assignments, rather than a
+// read. "==" and "===" are comparisons and still count as reads.
+func pluginEnvAssignedAt(s string, end int) bool {
+	i := end
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	if i >= len(s) {
+		return false
+	}
+	if s[i] == '=' {
+		return i+1 == len(s) || s[i+1] != '='
+	}
+	if i+1 < len(s) && s[i+1] == '=' && strings.ContainsRune("+-*/%&|^?", rune(s[i])) {
+		return true
+	}
+	return i+2 < len(s) && s[i] == '?' && s[i+1] == '?' && s[i+2] == '='
 }
 
 // pluginHookEnv is cmd, a hook of plugin name written for Claude Code,

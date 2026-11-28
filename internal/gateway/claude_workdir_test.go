@@ -323,6 +323,54 @@ func workDirsBody(system string, said ...[2]string) func(string) string {
 
 // The run works in the folder the caller itself works in, not in one a
 // message merely quotes. The caller says its folder in its instructions
+// ZCode puts its whole environment in a <system-reminder> on the first user
+// turn. Claude Code really runs in magpie's folder, but the tools are the
+// caller's and run in ZCode's: the model must be told which environment is
+// which, without reading a quoted directory line as the caller's word
+// (#8007).
+func TestClaudeZCodeTurnWorkDirIsNamedToTheModel(t *testing.T) {
+	ws := t.TempDir()
+	reminder := "<system-reminder>\n# Environment\nYou have been invoked in the following environment:\n" +
+		" - Primary working directory: " + ws + "\n - Is a git repository: false\n - Platform: win32\n - Shell: Git Bash\n</system-reminder>"
+	body := zCodeWorkDirBody([]map[string]any{
+		{"role": "user", "content": reminder},
+		{"role": "user", "content": "where are you"},
+	})
+	dirs, work, _, _, told := claudeWorkDirsBody(t, "", nil, func(string) string { return body })
+	// a warm-up run in the test's folder can precede the two requests
+	if len(dirs) < 2 || dirs[len(dirs)-2] != work || dirs[len(dirs)-1] != work {
+		t.Fatalf("#8007 the run left magpie's folder: dirs %v, work %s", dirs, work)
+	}
+	if !strings.Contains(told, envTurnsNote(ws)) {
+		t.Fatalf("#8007 the caller's folder wasn't named to the model:\n%s", told)
+	}
+}
+
+// A line quoted in an ordinary user turn stays nobody's word: it neither
+// moves the run nor gets named as the caller's environment (#4449).
+func TestClaudeQuotedTurnWorkDirIsNotNamed(t *testing.T) {
+	quoted := t.TempDir()
+	body := zCodeWorkDirBody([]map[string]any{
+		{"role": "user", "content": "A note I copied: Primary working directory: " + quoted},
+		{"role": "user", "content": "where are you"},
+	})
+	dirs, work, _, _, told := claudeWorkDirsBody(t, "", nil, func(string) string { return body })
+	if len(dirs) < 2 || dirs[len(dirs)-2] != work || dirs[len(dirs)-1] != work {
+		t.Fatalf("the quoted line moved the run: dirs %v, work %s", dirs, work)
+	}
+	if strings.Contains(told, envTurnsNote(quoted)) {
+		t.Fatalf("a quoted line was named to the model:\n%s", told)
+	}
+}
+
+func zCodeWorkDirBody(messages []map[string]any) string {
+	b, err := json.Marshal(map[string]any{"model": "claude-sonnet-5", "max_tokens": 100, "system": "You are Claude Code.", "messages": messages})
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
 // (--bare's "CWD:" line, Claude Code's " - Primary working directory:")
 // or in a system message of its own (Claude Code 2.1.296 and later), and
 // a user turn is no caller's word: a line it quotes — alone on its line,

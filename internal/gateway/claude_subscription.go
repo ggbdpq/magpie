@@ -707,6 +707,49 @@ var clientSaidWorkDir = lazyre.New(`(?m)^\s*(?:-\s*)?(?:Primary working director
 // Claude Code's or anyone's — is no caller's word.
 var clientTurnWorkDir = lazyre.New(`(?m)^\s*(?:-\s*)?(?:Working directory|Current working directory): *([^\r\n]+)$|<cwd>\s*([^<\r\n]+?)\s*</cwd>`)
 
+// zCodeTurnWorkDir is the folder an environment block of ZCode's own says
+// its tools run in: it starts the first user turn as a <system-reminder>
+// with "# Environment" and "You have been invoked...", not a line a user
+// quoted in passing. It is only used to tell the model which of the
+// environments it sees is the caller's (envTurnsNote), never to choose the
+// folder Claude Code itself runs in (#8007).
+var zCodeTurnWorkDir = lazyre.New(`(?sm)^\s*<system-reminder>\s*\n\s*# Environment\s*\n\s*You have been invoked in the following environment:\s*\n.*?^\s*(?:-\s*)?Primary working directory:\s*([^\r\n]+)`)
+
+// callerTurnWorkDirFromReminder reads that block from the first user turn
+// alone. A folder that isn't one here names no environment the tools can
+// use, and is left alone.
+func callerTurnWorkDirFromReminder(req *Request) string {
+	first := false
+	for _, m := range req.Messages {
+		if m.Role != "user" {
+			continue
+		}
+		if first {
+			break
+		}
+		first = true
+		for _, p := range m.Parts {
+			if p.Kind != Text {
+				continue
+			}
+			mm := zCodeTurnWorkDir.FindStringSubmatch(p.Text)
+			if mm == nil {
+				continue
+			}
+			dir := strings.Trim(strings.TrimSpace(html.UnescapeString(mm[1])), "`'\"")
+			if dir == "" || !filepath.IsAbs(dir) {
+				return ""
+			}
+			dir = filepath.Clean(dir)
+			if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+				return ""
+			}
+			return dir
+		}
+	}
+	return ""
+}
+
 func evalSymlinks(path string) string {
 	if p, err := filepath.EvalSymlinks(path); err == nil {
 		return p
@@ -1112,6 +1155,15 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		req.envElsewhere = named != ""
 		req.envInTurns = inTurns
 		req.envDir = named
+		if !req.envElsewhere {
+			// ZCode states its caller's folder in a system reminder on the
+			// first user turn. Its shape, not a quoted line, tells us it is
+			// the caller's: name that environment to the model, but keep
+			// Claude Code running here (#8007).
+			if dir := callerTurnWorkDirFromReminder(req); dir != "" {
+				req.envElsewhere, req.envInTurns, req.envDir = true, true, dir
+			}
+		}
 		// a caller on another computer that names no folder: Claude Code's
 		// environment is this computer's, and the tools run on the
 		// caller's (packinggoods on Discord: a Mac client of a Windows

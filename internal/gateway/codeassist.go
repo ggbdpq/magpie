@@ -563,6 +563,22 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 	}
 	names := map[string]string{}
 	var contents []map[string]any
+	appendTurn := func(role string, ps []map[string]any) {
+		if len(ps) == 0 {
+			return
+		}
+		if n := len(contents); n > 0 && contents[n-1]["role"] == role && (role != "user" || hasResponse(contents[n-1]["parts"].([]map[string]any)) == hasResponse(ps)) {
+			contents[n-1]["parts"] = append(contents[n-1]["parts"].([]map[string]any), ps...)
+			return
+		}
+		contents = append(contents, map[string]any{"role": role, "parts": ps})
+	}
+	// A tool's image (and user text beside a tool turn) waits its own user
+	// turn after every response of a parallel call is in (#6799): a Vertex
+	// turn mixing functionResponse and inlineData, or an inlineData turn
+	// between two responses, leaves the following call short of answers
+	// and Vertex answers 400.
+	var heldSaid []map[string]any
 	msgs := dropSecondAnswers(r.Messages)
 	if ag {
 		// a model turn that carried its call written out in the text goes
@@ -698,7 +714,8 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 		// the two as separate turns. A Claude model on Antigravity keeps them
 		// in one, the tool_result turn Anthropic reads them as.
 		var said []map[string]any
-		if role == "user" && !(ag && claude) && hasResponse(parts) {
+		toolTurn := role == "user" && !(ag && claude) && hasResponse(parts)
+		if toolTurn {
 			var tools, images []map[string]any
 			for i, part := range parts {
 				switch {
@@ -719,16 +736,28 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 			said = append(images, said...)
 			parts = tools
 		}
-		for _, ps := range [][]map[string]any{parts, said} {
-			if len(ps) == 0 {
-				continue
+		// On Vertex a tool's images can't share the turn with its
+		// functionResponse, so they were split into `said`. Hold that turn
+		// until the responses of the whole parallel call are in: emitting
+		// it here leaves the next tool's response stranded after it, and
+		// Vertex answers 400 over the call/response count (#6799).
+		if vx && toolTurn {
+			// the responses of every tool in the parallel call go in one
+			// turn; their images (and the user text beside them) wait for
+			// a turn of their own after them (#6799)
+			appendTurn(role, parts)
+			heldSaid = append(heldSaid, said...)
+		} else {
+			if len(heldSaid) > 0 {
+				appendTurn("user", heldSaid)
+				heldSaid = nil
 			}
-			if n := len(contents); n > 0 && contents[n-1]["role"] == role && (role != "user" || hasResponse(contents[n-1]["parts"].([]map[string]any)) == hasResponse(ps)) {
-				contents[n-1]["parts"] = append(contents[n-1]["parts"].([]map[string]any), ps...)
-				continue
-			}
-			contents = append(contents, map[string]any{"role": role, "parts": ps})
+			appendTurn(role, parts)
+			appendTurn(role, said)
 		}
+	}
+	if len(heldSaid) > 0 {
+		appendTurn("user", heldSaid)
 	}
 	contents = pairFunctionTurns(contents, ag, ag && claude)
 	if len(contents) > 0 && contents[0]["role"] == "model" {

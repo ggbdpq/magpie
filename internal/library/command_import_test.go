@@ -125,7 +125,9 @@ func TestCommandImportPiPrompts(t *testing.T) {
 	c.Prompt = "Review $ARGUMENTS."
 	c.Agents = []string{"claude", "pi"}
 	ok(t)(SaveCommand("pr", *c))
-	if got := read(t, files["pi"]); got != "---\ndescription: \"Review PRs from URLs with structured issue and code analysis\"\n---\n\nReview $ARGUMENTS.\n" {
+	// The argument-hint the user set stays through the edit (#6831): only
+	// the prompt changes, the front matter keeps what Pi's file had.
+	if got := read(t, files["pi"]); got != "---\ndescription: \"Review PRs from URLs with structured issue and code analysis\"\nargument-hint: \"<PR-URL>\"\n---\n\nReview $ARGUMENTS.\n" {
 		t.Errorf("Pi's pr after an edit:\n%s", got)
 	}
 	if v, _ := load(); v.command("pr").Taken["pi"] == nil {

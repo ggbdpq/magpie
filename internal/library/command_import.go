@@ -62,10 +62,11 @@ type CommandProbe struct {
 // CommandCandidate is one command found, in one agent or several.
 type CommandCandidate struct {
 	// Path is its first file's, which names it to the import
-	Path        string `json:"path"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Prompt      string `json:"prompt"`
+	Path         string `json:"path"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	ArgumentHint string `json:"argumentHint,omitempty"`
+	Prompt       string `json:"prompt"`
 	// Agents are those it was found in, each with its file
 	Agents []string          `json:"agents"`
 	Files  map[string]string `json:"files"`
@@ -87,9 +88,11 @@ type CommandsImported struct {
 
 const maxCommandFile = 1 << 20
 
-// commandHash is what a command says.
-func commandHash(description, prompt string) string {
-	h := sha256.Sum256([]byte(description + "\x00" + prompt))
+// commandHash is what a command says: its description, argument hint and
+// prompt. The hint is part of what the user set, so a change to it makes a
+// taken file no longer the command's own (#6831).
+func commandHash(description, hint, prompt string) string {
+	h := sha256.Sum256([]byte(description + "\x00" + hint + "\x00" + prompt))
 	return hex.EncodeToString(h[:8])
 }
 
@@ -125,7 +128,7 @@ func takenFor(c *Command, id string, sp *commandSpec) (path string, body []byte,
 	if !in {
 		return "", nil, false
 	}
-	if k.Hash == commandHash(c.Description, c.Prompt) {
+	if k.Hash == commandHash(c.Description, c.ArgumentHint, c.Prompt) {
 		return k.Path, []byte(k.Body), true
 	}
 	if filepath.Ext(k.Path) == sp.ext {
@@ -191,7 +194,7 @@ func readCommandAt(id, f, ext string) (*Command, string, []byte) {
 	if !commandNameRe.MatchString(name) {
 		return nil, "magpie names a command with lowercase letters, digits, - and _ only", nil
 	}
-	var desc, prompt string
+	var desc, prompt, hint string
 	if ext == ".toml" {
 		var t struct {
 			Description string `toml:"description"`
@@ -204,6 +207,9 @@ func readCommandAt(id, f, ext string) (*Command, string, []byte) {
 	} else {
 		front, body := splitFront(b)
 		desc, prompt = plStr(front["description"]), body
+		// Pi's prompts and Claude Code's commands say what to type after
+		// /name in argument-hint; keep it with the command (#6831)
+		hint = plStr(front["argument-hint"])
 	}
 	desc = strings.Join(strings.Fields(desc), " ")
 	if utf8.RuneCountInString(desc) > maxCommandDescription {
@@ -212,7 +218,7 @@ func readCommandAt(id, f, ext string) (*Command, string, []byte) {
 	// as SaveCommand keeps a prompt, for an unchanged save to keep it
 	prompt = strings.ReplaceAll(prompt, "\r\n", "\n")
 	prompt = strings.TrimRight(strings.TrimLeft(commandBack(id, prompt), "\n"), " \n\t")
-	c := &Command{Name: name, Description: desc, Prompt: prompt, Agents: []string{id}}
+	c := &Command{Name: name, Description: desc, ArgumentHint: hint, Prompt: prompt, Agents: []string{id}}
 	if err := c.check(); err != nil {
 		return nil, err.Error(), nil
 	}
@@ -285,9 +291,9 @@ func (l *Library) findCommands(targets []*Target) *CommandProbe {
 		return all[i].path < all[j].path
 	})
 	for _, f := range all {
-		h := commandHash(f.c.Description, f.c.Prompt)
+		h := commandHash(f.c.Description, f.c.ArgumentHint, f.c.Prompt)
 		i := slices.IndexFunc(p.Candidates, func(x CommandCandidate) bool {
-			return x.Name == f.c.Name && commandHash(x.Description, x.Prompt) == h
+			return x.Name == f.c.Name && commandHash(x.Description, x.ArgumentHint, x.Prompt) == h
 		})
 		if i >= 0 && p.Candidates[i].files[f.id] != nil {
 			// a second file of this agent (OpenCode's command/ and
@@ -295,7 +301,7 @@ func (l *Library) findCommands(targets []*Target) *CommandProbe {
 			continue
 		}
 		if i < 0 {
-			p.Candidates = append(p.Candidates, CommandCandidate{Path: f.path, Name: f.c.Name, Description: f.c.Description, Prompt: f.c.Prompt,
+			p.Candidates = append(p.Candidates, CommandCandidate{Path: f.path, Name: f.c.Name, Description: f.c.Description, ArgumentHint: f.c.ArgumentHint, Prompt: f.c.Prompt,
 				Agents: []string{}, Files: map[string]string{}, files: map[string]*TakenFile{}})
 			i = len(p.Candidates) - 1
 		}
@@ -313,7 +319,7 @@ func (l *Library) findCommands(targets []*Target) *CommandProbe {
 		}
 		if c := l.command(x.Name); c != nil {
 			x.State = "taken"
-			if commandHash(c.Description, c.Prompt) == commandHash(x.Description, x.Prompt) {
+			if commandHash(c.Description, c.ArgumentHint, c.Prompt) == commandHash(x.Description, x.ArgumentHint, x.Prompt) {
 				x.State = "same"
 			}
 		}
@@ -361,7 +367,7 @@ func ImportCommands(paths []string) (*Result, error) {
 		for _, x := range picked {
 			c := l.command(x.Name)
 			if c == nil {
-				c = &Command{Name: x.Name, Description: x.Description, Prompt: x.Prompt, Agents: []string{}}
+				c = &Command{Name: x.Name, Description: x.Description, ArgumentHint: x.ArgumentHint, Prompt: x.Prompt, Agents: []string{}}
 				l.Commands = append(l.Commands, c)
 				done.Added = append(done.Added, x.Name)
 			} else {

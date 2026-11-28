@@ -39,10 +39,15 @@ import (
 
 // Command is a slash command the agents ticked for it are given.
 type Command struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Prompt      string   `json:"prompt"`
-	Agents      []string `json:"agents"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// ArgumentHint is the argument-hint in a Pi prompt's or Claude Code
+	// command's front matter: the words its completion shows after /name.
+	// It is metadata of the command, kept when the library is carried to
+	// another computer (#6831), never read by the model.
+	ArgumentHint string   `json:"argumentHint,omitempty"`
+	Prompt       string   `json:"prompt"`
+	Agents       []string `json:"agents"`
 	// Taken are, by agent, the agent's own files it was imported from
 	// (command_import.go): this computer's, never carried or shown
 	Taken map[string]*TakenFile `json:"taken,omitempty"`
@@ -101,32 +106,44 @@ func commandSpecOf(t *Target) (*commandSpec, string) {
 	if a.WSL != "" {
 		return nil, wslNoCommands
 	}
-	md := func(dir string, body func(string) string) *commandSpec {
+	md := func(dir string, hint bool, body func(string) string) *commandSpec {
 		return &commandSpec{dir: dir, ext: ".md", render: func(c *Command) []byte {
-			if c.Description == "" {
+			front := [][2]string{}
+			if c.Description != "" {
+				front = append(front, [2]string{"description", yamlStr(c.Description)})
+			}
+			// Pi and Claude Code show the words after /name from the
+			// argument-hint; write it back so a carried command keeps what
+			// the user set (#6831). Other agents' formats have no such key.
+			if hint && c.ArgumentHint != "" {
+				front = append(front, [2]string{"argument-hint", yamlStr(c.ArgumentHint)})
+			}
+			if len(front) == 0 {
 				// each takes the prompt's first line for what it is for
 				return []byte(strings.TrimRight(body(c.Prompt), "\n") + "\n")
 			}
-			return frontmatter([][2]string{{"description", yamlStr(c.Description)}}, body(c.Prompt))
+			return frontmatter(front, body(c.Prompt))
 		}}
 	}
 	same := func(p string) string { return p }
 	args := func(p string) string { return strings.ReplaceAll(p, "$ARGUMENTS", "{{args}}") }
 	switch a.ID {
 	case "claude":
-		// Claude Code counts $0 as the first word, and reads \$ as a $
-		sp := md(filepath.Join(claudeDir(), "commands"), claudeArgs)
+		// Claude Code counts $0 as the first word, and reads \$ as a $;
+		// its command front matter carries argument-hint
+		sp := md(filepath.Join(claudeDir(), "commands"), true, claudeArgs)
 		sp.args = true
 		return sp, ""
 	case "codex":
 		return nil, codexNoCommands
 	case "opencode":
 		// it reads command/ and commands/; commands/ is the one its docs name
-		sp := md(filepath.Join(filepath.Dir(a.Path), "commands"), same)
+		sp := md(filepath.Join(filepath.Dir(a.Path), "commands"), false, same)
 		sp.args = true
 		return sp, ""
 	case "pi":
-		sp := md(filepath.Join(a.Dir, "prompts"), same)
+		// Pi's prompt front matter carries argument-hint
+		sp := md(filepath.Join(a.Dir, "prompts"), true, same)
 		sp.args = true
 		return sp, ""
 	case "gemini":
@@ -138,9 +155,9 @@ func commandSpecOf(t *Target) (*commandSpec, string) {
 			return b
 		}}, ""
 	case "qwen":
-		return md(filepath.Join(a.Dir, "commands"), args), ""
+		return md(filepath.Join(a.Dir, "commands"), false, args), ""
 	case "droid":
-		return md(filepath.Join(a.Dir, "commands"), same), ""
+		return md(filepath.Join(a.Dir, "commands"), false, same), ""
 	}
 	return nil, "magpie can't give " + a.Name + " slash commands: it reads none from a folder of its own"
 }
@@ -249,6 +266,7 @@ func (l *Library) syncCommands(t *Target, b *backups, res *Result) {
 func SaveCommand(old string, c Command) (*Result, error) {
 	c.Name = strings.TrimSpace(c.Name)
 	c.Description = strings.Join(strings.Fields(c.Description), " ")
+	c.ArgumentHint = strings.TrimSpace(c.ArgumentHint)
 	c.Prompt = strings.TrimRight(strings.ReplaceAll(c.Prompt, "\r\n", "\n"), " \n\t")
 	if err := c.check(); err != nil {
 		return nil, err

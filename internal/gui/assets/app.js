@@ -16092,7 +16092,9 @@ function editorError(msg, kind = "err") {
     box = el("div", "editor-error");
     box.setAttribute("role", "alert");
     const bar = ed.querySelector(":scope > .bar");
-    bar ? bar.before(box) : ed.append(box);
+    // after the bar, not before: an error shown by a failed Remove must not
+    // push the Remove button (or any bar control) down under the click
+    bar ? bar.after(box) : ed.append(box);
     ed.addEventListener("input", () => box.remove(), { once: true });
   }
   box.className = "editor-error " + kind;

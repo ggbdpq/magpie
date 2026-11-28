@@ -258,6 +258,11 @@ func (p Provider) test(ctx context.Context) []Result {
 // tiny is the smallest request for model on proto's endpoint, streamed
 // to a backend that only streams.
 func tiny(q Provider, proto Protocol, model string) (url, body string) {
+	// A picked model id can carry magpie's window mark (Claude Code's "[1m]",
+	// the catalog's "[1M]"). The gateway strips it in Resolve before asking
+	// the vendor; a probe builds its body straight from the stored id, so it
+	// must strip it too or the vendor answers the marked name with 400 (#6826).
+	model = probeModel(model)
 	if kind := retrievalOf(model); kind != "" && proto == Chat && q.Account == nil {
 		// an embedding or rerank model chats nowhere: it is asked where
 		// the gateway sends it (retrieve), the OpenAI-style base's
@@ -276,6 +281,14 @@ func tiny(q Provider, proto Protocol, model string) (url, body string) {
 		body = clineProbe(body)
 	}
 	return url, body
+}
+
+// probeModel is model as the vendor names it: without magpie's window mark.
+// The forward path takes the mark off in Resolve; the probe must do the same
+// so it tests the id the vendor knows, not a magpie-only suffix (#6826).
+func probeModel(model string) string {
+	model = strings.TrimSuffix(model, "[1m]")
+	return strings.TrimSuffix(model, "[1M]")
 }
 
 // retrievalOf is the retrieval API model is made for, as its id says

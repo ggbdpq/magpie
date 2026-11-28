@@ -907,8 +907,15 @@ func (l *Library) syncSkills(t *Target, res *Result, all []*Target) {
 					Error: fmt.Sprintf("%s already has a skill of its own called %s, in %s", t.Agent.Name, s.Name, q)})
 			}
 			// a copy of its own of the very same files would be the skill
-			// twice as much as a link: kept aside, as it would be for one
-			if _, err := os.Lstat(p); err == nil && !ours(p, s.Name) && realDir(p) != realDir(skillDir(s.Name)) && sameTree(p, skillDir(s.Name)) {
+			// twice as much as a link: kept aside, as it would be for one.
+			// So would a stale link of its own straight at the same folder
+			// the library's skill reaches (#6425): realDir(p) equals
+			// realDir(skillDir(name)) there, which used to skip it, and a
+			// readsShared agent that scans both roots (Droid) then loads
+			// the skill twice. sameTree still keeps a link to other files
+			// the user's own, to be settled as before.
+			if _, err := os.Lstat(p); err == nil && !ours(p, s.Name) &&
+				(realDir(p) != realDir(skillDir(s.Name)) || linked(p)) && sameTree(p, skillDir(s.Name)) {
 				if _, err := setAside(id, p); err != nil {
 					res.fail(id, "skill:"+s.Name, err)
 				} else {

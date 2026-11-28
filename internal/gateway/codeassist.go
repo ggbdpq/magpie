@@ -34,6 +34,19 @@ const skipSignature = "skip_thought_signature_validator"
 
 var unsafeToolID = lazyre.New(`[^a-zA-Z0-9_-]`)
 
+// agyCutOutputLink is the note Antigravity CLI writes at the end of a tool
+// result it cut short. The file it names is under the bridge's own account
+// home inside its container, so a client reading the model's tool result
+// cannot open it (#7542). Only this note is rewritten: a file:// a tool
+// wrote itself, or the same words in any other agent's turn, go as they came.
+var agyCutOutputLink = lazyre.New(`(?s)\bThe tool's output was truncated\..{0,200}?file:///[^\s"'<>]*\.gemini/antigravity-cli/brain/[^\s"'<>]*/\.system_generated/steps/\d+/output\.txt`)
+
+const agyCutOutputSaid = "The tool's output was truncated. Its full text is kept inside Antigravity CLI's own container and cannot be read from here; ask the tool for a smaller result (for example, line_offset and n_lines)."
+
+func noAgyContainerLink(text string) string {
+	return agyCutOutputLink.ReplaceAllString(text, agyCutOutputSaid)
+}
+
 // antigravityBaseOf is the model an id of Antigravity's own is one level
 // of; a var so tests can stand in for it.
 var antigravityBaseOf = provider.AntigravityBase
@@ -630,7 +643,11 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 				case p.IsError:
 					key = "error"
 				}
-				res := map[string]any{"name": name, "response": map[string]any{key: p.Text}}
+				text := p.Text
+				if ag {
+					text = noAgyContainerLink(text)
+				}
+				res := map[string]any{"name": name, "response": map[string]any{key: text}}
 				if id := toolID(p.CallID); id != "" {
 					res["id"] = id
 				}

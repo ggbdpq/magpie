@@ -34,7 +34,12 @@ import (
 
 // prefillRefusal is an upstream's refusal of a conversation ending with
 // the assistant's message.
-var prefillRefusal = lazyre.New(`(?i)does not support (?:assistant message )?prefill|requests ending with a model turn are not supported`)
+// GitHub Copilot's Gemini face (#6847) words it as "The last message in a
+// Gemini request must not be from the assistant. Ensure the conversation
+// ends with a user or tool message." on a Codex reconnect whose input ends
+// with the partial assistant reply. Both clauses name an assistant-last
+// conversation, so both are matched here.
+var prefillRefusal = lazyre.New(`(?i)does not support (?:assistant message )?prefill|requests ending with a model turn are not supported|last message in a gemini request must not be from the assistant|conversation (?:must )?ends? with a user or tool message`)
 
 // prefillRefused is how unfit remembers a provider's model refusing a
 // conversation ending with the assistant's message.

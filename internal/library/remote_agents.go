@@ -87,6 +87,31 @@ func (l *Library) meetRemote(id string) {
 	}
 }
 
+// RemoveRemoteAgent forgets id as a remote agent and takes it out of every
+// server's agents: a client that connected once used to stay in
+// RemoteAgents and keep its first ticks forever (#8063). Other agents'
+// ticks and the servers themselves stay as they are.
+func RemoveRemoteAgent(id string) (*Result, error) {
+	var gone bool
+	res, err := changeMCP(func(l *Library) error {
+		if slices.Contains(l.RemoteAgents, id) {
+			l.RemoteAgents = slices.DeleteFunc(l.RemoteAgents, func(x string) bool { return x == id })
+			gone = true
+		}
+		for _, s := range l.MCP {
+			if slices.Contains(s.Agents, id) {
+				s.Agents = slices.DeleteFunc(s.Agents, func(x string) bool { return x == id })
+				gone = true
+			}
+		}
+		return nil
+	})
+	if err == nil && gone {
+		log.Printf("library: forgot remote agent %s, connected to the MCP router from another computer", id)
+	}
+	return res, err
+}
+
 // knownAgent is the agent, or app, whose id is id exactly: never one by an
 // alias or a prefix, as Find would take.
 func knownAgent(id string) *agent.Agent {

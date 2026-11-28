@@ -33,6 +33,7 @@ const libraryUsage = `magpie library                     what the library gives 
                                      the others keeping the synced one (its name, agents and note still sync); off goes back to it
   magpie library mcp off|on <name>   take it from every agent, project and app, keeping its settings; on gives it back as it was
   magpie library mcp rm <name>
+  magpie library mcp remote rm <id>   forget a remote MCP agent and take its ticks back from every server
   magpie library mcp router on|off   give each agent one MCP server, magpie, in place of the library's (magpie runs them, once for every agent)
   magpie library mcp router <name> shared|direct   with the router on, share the server through it (the default) or keep it each
                                      agent's own entry, as with the router off: for one that reads its project from the folder it starts in
@@ -207,6 +208,9 @@ func libraryCmd(args []string) error {
 			res, err = library.ServerOn(rest[1], rest[0] == "on")
 		case len(rest) == 2 && rest[0] == "rm":
 			res, err = library.RemoveServer(rest[1])
+		case len(rest) == 3 && rest[0] == "remote" && rest[1] == "rm":
+			// a client on another computer that connected once and is gone (#8063)
+			res, err = library.RemoveRemoteAgent(rest[2])
 		case len(rest) == 2 && (rest[0] == "router" || rest[0] == "hub") && (rest[1] == "on" || rest[1] == "off"):
 			res, err = library.SetMCPHub(rest[1] == "on")
 		case len(rest) == 3 && (rest[0] == "router" || rest[0] == "hub") && (rest[2] == "shared" || rest[2] == "direct") && !strings.HasPrefix(rest[1], "-"):

@@ -34,6 +34,11 @@ func saltCallID(id, salt string) string {
 
 // unsaltCallID is the id saltCallID was given, and whether it was one. An
 // id that wasn't — a client's own, or one another mark holds — is none.
+// The NUL saltCallID puts between id and salt is the LAST one: an upstream
+// may number its calls with ids whose own raw form already carries NULs
+// (#6313). Splitting at the first would drop everything after it, so ids
+// that differed only there would come back as the same truncated id and
+// the upstream would refuse the request ("tool_use ids must be unique").
 func unsaltCallID(id string) (string, bool) {
 	if !strings.HasPrefix(id, anthropicIDMark) || !safeIDChars.MatchString(id) {
 		return "", false
@@ -42,7 +47,7 @@ func unsaltCallID(id string) (string, bool) {
 	if err != nil || !utf8.Valid(raw) {
 		return "", false
 	}
-	at := bytes.IndexByte(raw, 0)
+	at := bytes.LastIndexByte(raw, 0)
 	if at <= 0 || at == len(raw)-1 {
 		return "", false // no salt, or no id
 	}
